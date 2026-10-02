@@ -125,6 +125,29 @@ func TestResolveManagementServers(t *testing.T) {
 		}
 	})
 
+	t.Run("username and password must be configured together", func(t *testing.T) {
+		for _, tc := range []struct{ username, password string }{
+			{username: "", password: "secret"},
+			{username: "admin", password: ""},
+		} {
+			conf := &config.Config{}
+			conf.Global.EndpointListenAddress = "127.0.0.1:5556"
+			conf.Global.EndpointUsername = tc.username
+			conf.Global.EndpointPassword = tc.password
+			_, err := resolveManagementServers(conf, log)
+			if err == nil || !strings.Contains(err.Error(), "endpoint_username and endpoint_password") {
+				t.Fatalf("username=%q password=%q: err = %v, want pairing error", tc.username, tc.password, err)
+			}
+		}
+		conf := &config.Config{}
+		conf.Global.EndpointListenAddress = "127.0.0.1:5556"
+		conf.Global.EndpointUsername = "admin"
+		conf.Global.EndpointPassword = "secret"
+		if _, err := resolveManagementServers(conf, log); err != nil {
+			t.Fatalf("paired credentials: %v", err)
+		}
+	})
+
 	t.Run("tls validation error", func(t *testing.T) {
 		conf := &config.Config{}
 		conf.Global.EndpointListenAddress = "127.0.0.1:5556"

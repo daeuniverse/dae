@@ -6,23 +6,32 @@
 package metrics
 
 import (
-	"github.com/daeuniverse/dae/common/consts"
+	"fmt"
+
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// dialerMetricNetworkTypes must be indexed by the Idx* constants in
-// component/outbound/dialer (IdxDnsTcp4=0 … IdxUdp6=7) so that
-// AliveDialerSets()[i] and dialerMetricNetworkTypes[i] stay in sync.
-var dialerMetricNetworkTypes = [8]dialer.NetworkType{
-	{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4, IsDns: true},                                             // [0] IdxDnsTcp4
-	{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6, IsDns: true},                                             // [1] IdxDnsTcp6
-	{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: true, UdpHealthDomain: dialer.UdpHealthDomainDns}, // [2] IdxDnsUdp4
-	{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, IsDns: true, UdpHealthDomain: dialer.UdpHealthDomainDns}, // [3] IdxDnsUdp6
-	{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4, IsDns: false},                                            // [4] IdxTcp4
-	{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_6, IsDns: false},                                            // [5] IdxTcp6
-	{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_4, IsDns: false},                                            // [6] IdxUdp4
-	{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStr_6, IsDns: false},                                            // [7] IdxUdp6
+// dialerMetricNetworkTypes lists each distinct health collection once.
+// tcp4(DNS)/tcp6(DNS) share the tcp4/tcp6 collection and alive set (see
+// dialer.NewDialerContext and DialerGroup.buildSelectionState), so exporting
+// them would duplicate the TCP series.
+var dialerMetricNetworkTypes = func() (types [6]*dialer.NetworkType) {
+	for i, key := range dialer.StandardHealthKeys() {
+		types[i] = key.NetworkType()
+	}
+	return types
+}()
+
+// dialerMetricName keeps label sets unique when a group holds several nodes
+// with the same name (common with multiple subscriptions): a duplicate label
+// set fails the whole scrape.
+func dialerMetricName(seen map[string]int, name string) string {
+	seen[name]++
+	if n := seen[name]; n > 1 {
+		return fmt.Sprintf("%s #%d", name, n)
+	}
+	return name
 }
 
 type DialerCollector struct {
@@ -66,7 +75,7 @@ func NewDialerCollector(state *State) *DialerCollector {
 		),
 		healthCheckTotal: prometheus.NewDesc(
 			"dae_health_check_total",
-			"Total number of dialer connectivity health checks",
+			"Total number of dialer connectivity health checks that produced a verdict (success or failure)",
 			[]string{"group", "dialer", "network"},
 			nil,
 		),
@@ -107,6 +116,7 @@ func (c *DialerCollector) Collect(ch chan<- prometheus.Metric) {
 		if group == nil {
 			continue
 		}
+		seen := make(map[string]int, len(group.Dialers))
 		for _, d := range group.Dialers {
 			if d == nil {
 				continue
@@ -115,26 +125,27 @@ func (c *DialerCollector) Collect(ch chan<- prometheus.Metric) {
 			if prop == nil {
 				continue
 			}
-			for i := range dialerMetricNetworkTypes {
-				typ := dialerMetricNetworkTypes[i]
-				alive, lastLatency, avg10, movingAvg, hasLastLatency := d.GetCollectionState(&typ)
+			name := dialerMetricName(seen, prop.Name)
+			for _, typ := range dialerMetricNetworkTypes {
+				alive, lastLatency, avg10, movingAvg, hasLastLatency := d.GetCollectionState(typ)
 				aliveFloat := 0.0
 				if alive {
 					aliveFloat = 1
 				}
-				labels := []string{group.Name, prop.Name, typ.String()}
+				labels := []string{group.Name, name, typ.String()}
 				ch <- prometheus.MustNewConstMetric(c.dialerAlive, prometheus.GaugeValue, aliveFloat, labels...)
 				if hasLastLatency {
 					ch <- prometheus.MustNewConstMetric(c.dialerLatencyLast, prometheus.GaugeValue, lastLatency.Seconds(), labels...)
 				}
 				ch <- prometheus.MustNewConstMetric(c.dialerLatencyAvg10, prometheus.GaugeValue, avg10.Seconds(), labels...)
 				ch <- prometheus.MustNewConstMetric(c.dialerLatencyMovingAvg, prometheus.GaugeValue, movingAvg.Seconds(), labels...)
-				checkTotal, checkFailureTotal := d.GetCollectionCounters(&typ)
+				checkTotal, checkFailureTotal := d.GetCollectionCounters(typ)
 				ch <- prometheus.MustNewConstMetric(c.healthCheckTotal, prometheus.CounterValue, float64(checkTotal), labels...)
 				ch <- prometheus.MustNewConstMetric(c.healthCheckFailure, prometheus.CounterValue, float64(checkFailureTotal), labels...)
 			}
 		}
-		for i, set := range group.AliveDialerSets() {
+		for _, typ := range dialerMetricNetworkTypes {
+			set := group.MustGetAliveDialerSet(typ)
 			if set == nil {
 				continue
 			}
@@ -143,7 +154,7 @@ func (c *DialerCollector) Collect(ch chan<- prometheus.Metric) {
 				prometheus.GaugeValue,
 				float64(set.Len()),
 				group.Name,
-				dialerMetricNetworkTypes[i].String(),
+				typ.String(),
 			)
 		}
 	}

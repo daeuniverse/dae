@@ -7,12 +7,40 @@ package metrics
 
 import (
 	"regexp"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var descNamePattern = regexp.MustCompile(`fqName: "([^"]+)"`)
+var (
+	descNamePattern   = regexp.MustCompile(`fqName: "([^"]+)"`)
+	descLabelsPattern = regexp.MustCompile(`variableLabels: \{([^}]*)\}`)
+)
+
+// descriptorLabels maps each descriptor name to its variable label names.
+func descriptorLabels(collector prometheus.Collector) map[string][]string {
+	ch := make(chan *prometheus.Desc, 64)
+	collector.Describe(ch)
+	close(ch)
+
+	labels := make(map[string][]string)
+	for desc := range ch {
+		s := desc.String()
+		name := descNamePattern.FindStringSubmatch(s)
+		vars := descLabelsPattern.FindStringSubmatch(s)
+		if len(name) != 2 || len(vars) != 2 {
+			continue
+		}
+		if vars[1] == "" {
+			labels[name[1]] = nil
+		} else {
+			labels[name[1]] = strings.Split(vars[1], ",")
+		}
+	}
+	return labels
+}
 
 func descriptorNames(collector prometheus.Collector) map[string]struct{} {
 	ch := make(chan *prometheus.Desc, 64)
@@ -95,14 +123,41 @@ func TestConnCollectorDescribeIncludesPhase2Descriptors(t *testing.T) {
 	})
 }
 
-func TestRuntimeCollectorDescribeIncludesRuntimeAndNodeDescriptors(t *testing.T) {
+func TestRuntimeCollectorDescribeIncludesRuntimeDescriptors(t *testing.T) {
 	names := descriptorNames(NewRuntimeCollector(nil))
 	requireDescriptors(t, names, []string{
 		"dae_runtime_upload_bytes_total",
 		"dae_runtime_download_bytes_total",
 		"dae_runtime_upload_rate_bytes_per_second",
 		"dae_runtime_download_rate_bytes_per_second",
-		"dae_node_latency_seconds",
-		"dae_node_alive",
 	})
+	// The node metrics exported the share link, which carries credentials.
+	requireNoDescriptor(t, names, "dae_node_latency_seconds")
+	requireNoDescriptor(t, names, "dae_node_alive")
+}
+
+// TestNoDescriptorExportsLinkLabel guards against exporting node share links:
+// they embed proxy passwords and UUIDs.
+func TestNoDescriptorExportsLinkLabel(t *testing.T) {
+	collectors := map[string]prometheus.Collector{
+		"dns":     NewDnsCollector(nil),
+		"dialer":  NewDialerCollector(nil),
+		"conn":    NewConnCollector(nil),
+		"runtime": NewRuntimeCollector(nil),
+	}
+	for collectorName, collector := range collectors {
+		labels := descriptorLabels(collector)
+		if len(labels) == 0 {
+			t.Fatalf("%s collector: no descriptor labels parsed; descriptorLabels is out of date", collectorName)
+		}
+		for desc, names := range labels {
+			if slices.Contains(names, "link") {
+				t.Fatalf("%s collector: %s exports a link label", collectorName, desc)
+			}
+		}
+	}
+	// Keep the check non-vacuous: a labelled descriptor must parse.
+	if got := descriptorLabels(NewDialerCollector(nil))["dae_dialer_alive"]; !slices.Equal(got, []string{"group", "dialer", "network"}) {
+		t.Fatalf("dae_dialer_alive labels = %v", got)
+	}
 }

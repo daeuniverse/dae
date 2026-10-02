@@ -54,6 +54,11 @@ func resolveManagementServers(conf *config.Config, log *logrus.Logger) (manageme
 	}
 
 	cfg := endpointConfigFromGlobal(conf, log)
+	// BasicAuth is keyed on the username; a password alone would leave the
+	// endpoint open while looking protected.
+	if (cfg.Username == "") != (cfg.Password == "") {
+		return managementPlan{}, fmt.Errorf("endpoint_username and endpoint_password must be configured together")
+	}
 	if err := validateEndpointTLSFiles(cfg); err != nil {
 		return managementPlan{}, fmt.Errorf("invalid endpoint tls config: %w", err)
 	}

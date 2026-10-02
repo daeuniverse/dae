@@ -28,39 +28,38 @@ func writeTempFile(t *testing.T, mode os.FileMode) (string, os.FileInfo) {
 	return path, fi
 }
 
-func TestValidateFilePermissionNotTooOpen(t *testing.T) {
-	_, fi0600 := writeTempFile(t, 0o600)
-	if err := ValidateFilePermissionNotTooOpen("test-0600", fi0600); err != nil {
-		t.Fatalf("0600 should pass: %v", err)
+func TestValidateFilePermissionForbidden(t *testing.T) {
+	for _, tc := range []struct {
+		mode      os.FileMode
+		forbidden os.FileMode
+		wantErr   bool
+	}{
+		// Private key: no group/other access.
+		{mode: 0o600, forbidden: 0o077},
+		{mode: 0o400, forbidden: 0o077},
+		{mode: 0o640, forbidden: 0o077, wantErr: true},
+		{mode: 0o604, forbidden: 0o077, wantErr: true},
+		// Certificate: no group/other write.
+		{mode: 0o644, forbidden: 0o022},
+		{mode: 0o640, forbidden: 0o022},
+		{mode: 0o600, forbidden: 0o022},
+		{mode: 0o444, forbidden: 0o022},
+		{mode: 0o664, forbidden: 0o022, wantErr: true},
+		{mode: 0o646, forbidden: 0o022, wantErr: true},
+	} {
+		path, fi := writeTempFile(t, tc.mode)
+		err := ValidateFilePermissionForbidden(path, fi, tc.forbidden)
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("mode %04o forbidden %04o: err = %v, wantErr %v", tc.mode, tc.forbidden, err, tc.wantErr)
+		}
 	}
 
-	_, fi0640 := writeTempFile(t, 0o640)
-	if err := ValidateFilePermissionNotTooOpen("test-0640", fi0640); err != nil {
-		t.Fatalf("0640 should pass: %v", err)
+	dir := t.TempDir()
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
 	}
-
-	_, fi0644 := writeTempFile(t, 0o644)
-	if err := ValidateFilePermissionNotTooOpen("test-0644", fi0644); err == nil {
-		t.Fatal("0644 should fail as too open")
-	}
-}
-
-func TestValidateFilePermissionAllowed(t *testing.T) {
-	_, fi0600 := writeTempFile(t, 0o600)
-	if err := ValidateFilePermissionAllowed("key", fi0600, 0o600); err != nil {
-		t.Fatalf("0600 should pass for key: %v", err)
-	}
-	if err := ValidateFilePermissionAllowed("key", fi0600, 0o640, 0o644); err == nil {
-		t.Fatal("0600 should fail for cert-only allowed modes")
-	}
-
-	_, fi0640 := writeTempFile(t, 0o640)
-	if err := ValidateFilePermissionAllowed("cert", fi0640, 0o640, 0o644); err != nil {
-		t.Fatalf("0640 should pass for cert: %v", err)
-	}
-
-	_, fi0644 := writeTempFile(t, 0o644)
-	if err := ValidateFilePermissionAllowed("cert", fi0644, 0o640, 0o644); err != nil {
-		t.Fatalf("0644 should pass for cert: %v", err)
+	if err := ValidateFilePermissionForbidden(dir, fi, 0o077); err == nil {
+		t.Fatal("a directory should be rejected")
 	}
 }

@@ -41,7 +41,9 @@ func NewEndpointServer(cfg EndpointConfig, registry *prometheus.Registry) *http.
 	if cfg.PrometheusEnabled && registry != nil {
 		mux.Handle(NormalizePrometheusPath(cfg.PrometheusPath),
 			BasicAuthMiddleware(
-				promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
+				// ContinueOnError: one collector's error must not blank the
+				// whole scrape.
+				promhttp.HandlerFor(registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}),
 				cfg.Username, cfg.Password,
 			),
 		)

@@ -99,4 +99,22 @@ func TestValidateEndpointTLSFilesChecksPermissions(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected too-open certificate permissions to fail")
 	}
+
+	// Stricter modes than the common defaults must keep passing.
+	strictCert := writeEndpointFile(t, "cert-strict.pem", 0o600)
+	strictKey := writeEndpointFile(t, "key-strict.pem", 0o400)
+	if err := validateEndpointTLSFiles(metricshttp.EndpointConfig{
+		TlsCertificate: strictCert,
+		TlsKey:         strictKey,
+	}); err != nil {
+		t.Fatalf("expected 0600 certificate and 0400 key to pass: %v", err)
+	}
+
+	groupReadableKey := writeEndpointFile(t, "key-open.pem", 0o640)
+	if err := validateEndpointTLSFiles(metricshttp.EndpointConfig{
+		TlsCertificate: cert,
+		TlsKey:         groupReadableKey,
+	}); err == nil {
+		t.Fatal("expected group-readable key to fail")
+	}
 }

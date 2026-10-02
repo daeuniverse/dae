@@ -98,3 +98,35 @@ func TestNewEndpointServerServesPrometheusAndPprofWithAuth(t *testing.T) {
 		t.Fatalf("unexpected pprof status: got=%d want=%d", pprofRec.Code, http.StatusOK)
 	}
 }
+
+// dupCollector emits the same label set twice, as two same-named nodes in one
+// group would.
+type dupCollector struct{ desc *prometheus.Desc }
+
+func (c dupCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
+func (c dupCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, 1, "dup")
+	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, 0, "dup")
+}
+
+func TestPrometheusHandlerSurvivesCollectorError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	counter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "dae_test_metric_total",
+		Help: "test metric",
+	})
+	reg.MustRegister(counter, dupCollector{prometheus.NewDesc("dae_test_dup", "dup", []string{"name"}, nil)})
+
+	server := NewEndpointServer(EndpointConfig{
+		ListenAddress:     "127.0.0.1:0",
+		PrometheusEnabled: true,
+	}, reg)
+	rec := httptest.NewRecorder()
+	server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("one bad collector must not fail the scrape: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "dae_test_metric_total") {
+		t.Fatalf("healthy metrics missing from body: %q", body)
+	}
+}

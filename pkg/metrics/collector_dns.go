@@ -64,7 +64,7 @@ func NewDnsCollector(state *State) *DnsCollector {
 		),
 		cacheHitTotal: prometheus.NewDesc(
 			"dae_dns_cache_hit_total",
-			"Total number of fresh DNS cache hits",
+			"Total number of DNS queries answered from the response cache, including stale (lazy) hits also counted in dae_dns_cache_lazy_hit_total",
 			nil,
 			nil,
 		),

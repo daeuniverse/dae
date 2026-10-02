@@ -54,7 +54,8 @@ func validateEndpointTLSFiles(cfg metricshttp.EndpointConfig) error {
 	if err != nil {
 		return fmt.Errorf("cannot stat endpoint_tls_certificate '%s': %w", cfg.TlsCertificate, err)
 	}
-	if err = common.ValidateFilePermissionAllowed(cfg.TlsCertificate, certFi, 0o640, 0o644); err != nil {
+	// The certificate is public: reject only group or other write access.
+	if err = common.ValidateFilePermissionForbidden(cfg.TlsCertificate, certFi, 0o022); err != nil {
 		return fmt.Errorf("invalid endpoint_tls_certificate: %w", err)
 	}
 
@@ -67,7 +68,8 @@ func validateEndpointTLSFiles(cfg metricshttp.EndpointConfig) error {
 	if err != nil {
 		return fmt.Errorf("cannot stat endpoint_tls_key '%s': %w", cfg.TlsKey, err)
 	}
-	if err = common.ValidateFilePermissionAllowed(cfg.TlsKey, keyFi, 0o600); err != nil {
+	// The private key must not be accessible by group or others.
+	if err = common.ValidateFilePermissionForbidden(cfg.TlsKey, keyFi, 0o077); err != nil {
 		return fmt.Errorf("invalid endpoint_tls_key: %w", err)
 	}
 	return nil

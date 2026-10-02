@@ -8,37 +8,16 @@ package common
 import (
 	"fmt"
 	"os"
-	"sort"
-	"strings"
 )
 
-func ValidateFilePermissionNotTooOpen(path string, fi os.FileInfo) error {
+// ValidateFilePermissionForbidden rejects a directory, or a file whose
+// permission bits include any of forbidden.
+func ValidateFilePermissionForbidden(path string, fi os.FileInfo, forbidden os.FileMode) error {
 	if fi.IsDir() {
 		return fmt.Errorf("cannot read a directory: %v", path)
 	}
-	if fi.Mode()&0o037 > 0 {
-		return fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0o777, path)
+	if perm := fi.Mode().Perm(); perm&forbidden != 0 {
+		return fmt.Errorf("permissions %04o for '%v' are too open; bits %04o must not be set", perm, path, forbidden.Perm())
 	}
 	return nil
-}
-
-func ValidateFilePermissionAllowed(path string, fi os.FileInfo, allowedModes ...os.FileMode) error {
-	if fi.IsDir() {
-		return fmt.Errorf("cannot read a directory: %v", path)
-	}
-	perm := fi.Mode().Perm()
-	for _, mode := range allowedModes {
-		if perm == mode.Perm() {
-			return nil
-		}
-	}
-	if len(allowedModes) == 0 {
-		return fmt.Errorf("permissions %04o for '%v' are invalid", perm, path)
-	}
-	allowed := make([]string, 0, len(allowedModes))
-	for _, mode := range allowedModes {
-		allowed = append(allowed, fmt.Sprintf("%04o", mode.Perm()))
-	}
-	sort.Strings(allowed)
-	return fmt.Errorf("permissions %04o for '%v' are invalid; allowed: %s", perm, path, strings.Join(allowed, ", "))
 }
