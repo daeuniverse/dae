@@ -718,6 +718,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "时间范围内所选 network（$network）健康检查的成功率（排除 block/direct 组），只统计得出结论的检查（成功或失败；跳过与探测基础设施故障不计入）。只有 tcp4/tcp6 与 udp4(DNS)/udp6(DNS) 会被主动探测；数据 UDP（udp4/udp6）没有主动检查，此处显示 No data。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -779,7 +780,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(1 - sum(increase(dae_health_check_failure_total{network=\"$network\", group=~\"$group\", group!~\"block|direct\"}[$__range])) / clamp_min(sum(increase(dae_health_check_total{network=\"$network\", group=~\"$group\", group!~\"block|direct\"}[$__range])), 1), 0)",
+          "expr": "clamp_min(1 - sum(increase(dae_health_check_failure_total{network=\"$network\", group=~\"$group\", group!~\"block|direct\"}[$__range])) / (sum(increase(dae_health_check_total{network=\"$network\", group=~\"$group\", group!~\"block|direct\"}[$__range])) > 0), 0)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -793,7 +794,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "时间范围内所选 network（$network）健康检查失败的累计次数（排除 block/direct 组）。失败包括连接错误，以及 tcp6/udp6 检查目标无 IPv6 地址时的 ErrNoApplicableIP（每次检查都计为失败，节点 alive=0）。尚未完成首次探测的节点（0ms）没有检查记录，不计入。",
+      "description": "时间范围内所选 network（$network）健康检查失败的累计次数（排除 block/direct 组）。失败包括连接错误，以及 tcp6/udp6(DNS) 检查目标无 IPv6 地址时的 ErrNoApplicableIP（每次检查都计为失败，节点 alive=0）；跳过与探测基础设施故障不计入。数据 UDP（udp4/udp6）没有主动检查，恒为 0。尚未完成首次探测的节点（0ms）没有检查记录，不计入。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3280,13 +3281,13 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(dae_dialer_alive{network!~\".*DNS.*\"}, network)",
+        "definition": "label_values(dae_dialer_alive, network)",
         "includeAll": false,
         "label": "Network",
         "name": "network",
         "options": [],
         "query": {
-          "query": "label_values(dae_dialer_alive{network!~\".*DNS.*\"}, network)",
+          "query": "label_values(dae_dialer_alive, network)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
