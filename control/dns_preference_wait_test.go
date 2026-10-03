@@ -92,7 +92,7 @@ func TestSingleflightLeaderDoesNotRunResolutionDelay(t *testing.T) {
 	t.Cleanup(func() { ctrl.prefWaitRegistry.remove(wait) })
 
 	query := corpusDnsQuery(0x6602, "pref-leader.test.", dnsmessage.TypeA)
-	respMsg, err := ctrl.resolveForSingleflight(context.Background(), query, defaultUdpRequest(),
+	respMsg, _, _, err := ctrl.resolveForSingleflight(context.Background(), query, defaultUdpRequest(),
 		consts.DnsRequestOutboundIndex_AsIs, nil, "pref-leader.test.:1|asis")
 	if err != nil {
 		t.Fatalf("resolveForSingleflight: %v", err)

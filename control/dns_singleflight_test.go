@@ -42,7 +42,7 @@ func TestResolveForSingleflightRechecksCache(t *testing.T) {
 	// Publish through the controller's store so the base-key index stays in sync.
 	controller.storeDnsCache(cacheKey, cache)
 
-	response, err := controller.resolveForSingleflight(
+	response, _, _, err := controller.resolveForSingleflight(
 		context.Background(),
 		query,
 		&udpRequest{},
