@@ -300,6 +300,14 @@ func (t *udpIngressTask) Run() {
 		}
 	}
 
+	// L3 reject fast-drop: the data plane hands off every packet of a rejected
+	// flow; once we have injected the ICMP error for this flow, skip the
+	// userspace routing lookup and re-injection for the rest of its lifetime so
+	// the control-plane cost stays at O(flows) instead of O(packets).
+	if isRejectFlow(convergeSrc, realDst) {
+		return
+	}
+
 	var cacheLookup cachedRoutingLookup
 	if !c.udpRouteScopeSensitive && c.ownsActiveRoutingEpoch() {
 		cacheLookup = lookupCachedRoutingBinding(flowDecision, realDst)
@@ -360,6 +368,9 @@ func (t *udpIngressTask) Run() {
 				}).WithError(e).Warn("reject: failed to inject ICMP port-unreachable")
 			}
 		}
+		// Mark the flow so later packets of it are dropped in userspace
+		// without re-running the routing lookup (see isRejectFlow).
+		markRejectFlow(convergeSrc, realDst)
 		return
 	}
 

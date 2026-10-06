@@ -121,7 +121,7 @@ func writeGo(path string, spec syncSpec) error {
 		fmt.Fprintf(&b, "\t%s OutboundIndex = 0x%X\n", goOutboundName(nv.Name), nv.Value)
 	}
 	b.WriteString("\tOutboundUserDefinedMin OutboundIndex = OutboundBlock + 1\n")
-	b.WriteString("\tOutboundUserDefinedMax               = OutboundMustRules - 1\n")
+	b.WriteString("\tOutboundUserDefinedMax               = OutboundReject - 1\n")
 	b.WriteString(")\n\n")
 
 	b.WriteString("type L4ProtoType uint8\n\n")

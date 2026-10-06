@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -29,12 +30,39 @@ const (
 	rejectIcmpRateMax    = 50
 )
 
+// rejectRateBucket is the per-client ICMP budget. count is accessed
+// concurrently and must only be mutated through atomic operations.
 type rejectRateBucket struct {
-	count int
+	count atomic.Int64
 	start time.Time
 }
 
+// rejectRateBuckets maps a client endpoint (netip.AddrPort.String()) to its
+// ICMP budget. Entries are evicted by rejectSweeper once they fall outside the
+// rate window, so the map no longer grows without bound (each QUIC client uses
+// a fresh source port, which previously left a permanent entry per connection).
 var rejectRateBuckets sync.Map // netip.AddrPort.String() -> *rejectRateBucket
+
+// icmpV4Fd / icmpV6Fd are the process-lifetime raw sockets used to emit ICMP
+// port-unreachable messages. They are created once on first use instead of
+// per packet (see rejectIcmpSockets).
+var (
+	icmpV4Fd   int = -1
+	icmpV6Fd   int = -1
+	icmpFdOnce sync.Once
+)
+
+func rejectIcmpSockets() (v4, v6 int) {
+	icmpFdOnce.Do(func() {
+		if fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_ICMP); err == nil {
+			icmpV4Fd = fd
+		}
+		if fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW, unix.IPPROTO_ICMPV6); err == nil {
+			icmpV6Fd = fd
+		}
+	})
+	return icmpV4Fd, icmpV6Fd
+}
 
 // rejectAllowed reports whether an ICMP port-unreachable may still be sent to
 // client within the per-client budget. It is safe for concurrent use.
@@ -44,15 +72,39 @@ func rejectAllowed(client netip.AddrPort) bool {
 	if v, ok := rejectRateBuckets.Load(key); ok {
 		b := v.(*rejectRateBucket)
 		if now.Sub(b.start) <= rejectIcmpRateWindow {
-			if b.count >= rejectIcmpRateMax {
+			if b.count.Load() >= rejectIcmpRateMax {
 				return false
 			}
-			b.count++
+			b.count.Add(1)
 			return true
 		}
+		// Expired: drop the stale bucket so it does not leak.
+		rejectRateBuckets.Delete(key)
 	}
-	rejectRateBuckets.Store(key, &rejectRateBucket{count: 1, start: now})
+	b := &rejectRateBucket{start: now}
+	b.count.Store(1)
+	rejectRateBuckets.Store(key, b)
 	return true
+}
+
+// rejectSweeper periodically evicts stale entries from rejectRateBuckets so the
+// map does not grow without bound under sustained rejection pressure.
+func rejectSweeper() {
+	ticker := time.NewTicker(rejectIcmpRateWindow)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		rejectRateBuckets.Range(func(k, v any) bool {
+			if now.Sub(v.(*rejectRateBucket).start) > rejectIcmpRateWindow {
+				rejectRateBuckets.Delete(k)
+			}
+			return true
+		})
+	}
+}
+
+func init() {
+	go rejectSweeper()
 }
 
 // sendICMPPortUnreachable injects an ICMP Destination Port Unreachable (IPv4,
@@ -147,15 +199,13 @@ func sendICMPv4PortUnreachable(client, originalDst netip.AddrPort) error {
 	if err != nil {
 		return err
 	}
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_ICMP)
-	if err != nil {
-		return fmt.Errorf("icmp_inject: socket: %w", err)
+	v4, _ := rejectIcmpSockets()
+	if v4 < 0 {
+		return errors.New("icmp_inject: raw ICMPv4 socket unavailable")
 	}
-	defer func() { _ = unix.Close(fd) }()
-
 	sa := &unix.SockaddrInet4{}
 	sa.Addr = client.Addr().As4()
-	if err := unix.Sendto(fd, msg, 0, sa); err != nil {
+	if err := unix.Sendto(v4, msg, 0, sa); err != nil {
 		return fmt.Errorf("icmp_inject: sendto: %w", err)
 	}
 	return nil
@@ -206,15 +256,13 @@ func sendICMPv6PortUnreachable(client, originalDst netip.AddrPort) error {
 	if err != nil {
 		return err
 	}
-	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW, unix.IPPROTO_ICMPV6)
-	if err != nil {
-		return fmt.Errorf("icmp_inject: socket: %w", err)
+	_, v6 := rejectIcmpSockets()
+	if v6 < 0 {
+		return errors.New("icmp_inject: raw ICMPv6 socket unavailable")
 	}
-	defer func() { _ = unix.Close(fd) }()
-
 	sa := &unix.SockaddrInet6{}
 	sa.Addr = client.Addr().As16()
-	if err := unix.Sendto(fd, msg, 0, sa); err != nil {
+	if err := unix.Sendto(v6, msg, 0, sa); err != nil {
 		return fmt.Errorf("icmp_inject: sendto: %w", err)
 	}
 	return nil

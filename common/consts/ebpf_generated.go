@@ -35,7 +35,7 @@ const (
 	OutboundLogicalAnd          OutboundIndex = 0xFF
 	OutboundLogicalMask         OutboundIndex = 0xFE
 	OutboundUserDefinedMin      OutboundIndex = OutboundBlock + 1
-	OutboundUserDefinedMax                    = OutboundMustRules - 1
+	OutboundUserDefinedMax                    = OutboundReject - 1
 )
 
 type L4ProtoType uint8
