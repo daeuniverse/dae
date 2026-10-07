@@ -3818,10 +3818,10 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (!wan_egress_needs_control_plane(outbound, mark))
+	if (!wan_egress_needs_control_plane(outbound, mark)) {
 		return DAE_TC_CONTINUE;
-	else if (unlikely(outbound == OUTBOUND_BLOCK ||
-			  outbound == OUTBOUND_REJECT)) {
+	} else if (unlikely(outbound == OUTBOUND_BLOCK ||
+			   outbound == OUTBOUND_REJECT)) {
 		if (outbound == OUTBOUND_REJECT)
 			send_reject_event(outbound, IPPROTO_UDP,
 					  tuples->five.sip.u6_addr32,
