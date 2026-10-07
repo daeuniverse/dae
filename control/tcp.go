@@ -288,6 +288,14 @@ func (c *ControlPlane) handleConnWithRoutingResultOwned(
 		if daerrors.IsIgnorableConnectionError(err) {
 			return nil
 		}
+		if stderrors.Is(err, ErrReservedOutboundReject) {
+			// REJECT is handled entirely in the datapath (silent drop, or
+			// ICMP port-unreachable injection for UDP/QUIC). The control
+			// plane never dials a reserved outbound, so this error means a
+			// REJECT slipped through to the TCP path; treat it as a quiet
+			// drop rather than a misleading "failed to dial" log.
+			return nil
+		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	if ownership != nil {

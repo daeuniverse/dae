@@ -689,6 +689,13 @@ enum dae_event_type {
 	// A pure SYN on a live flow was re-routed because the flow's cached
 	// routing belonged to a different routing epoch or datapath generation.
 	DAE_EVENT_SYN_REBIND_REROUTED = 9,
+	// A connection was rejected (OUTBOUND_REJECT). UDP/QUIC is handed to the
+	// control plane for an ICMP port-unreachable injection that fails the
+	// QUIC handshake so the client falls back to TCP; TCP and WAN reject are a
+	// silent drop. Emitted so reject traffic is visible to monitoring, matching
+	// DAE_EVENT_BLOCKED. Rate-limited via the shared blocked_key (1/s) to bound
+	// ringbuf cost; the userspace consumer (event_ringbuf.go) logs it at debug.
+	DAE_EVENT_REJECTED = 10,
 };
 
 struct dae_event {
@@ -845,6 +852,23 @@ send_blocked_event(__u8 outbound, __u8 l4proto, const __u32 *sip,
 		return;
 
 	send_dae_event(DAE_EVENT_BLOCKED, 0, NULL, false, outbound, l4proto, sip,
+		       dip, sport, dport);
+}
+
+// send_reject_event emits DAE_EVENT_REJECTED (type 10) at most once per second,
+// sharing block's rate-limit budget (EVENT_RATE.blocked_key) so the two
+// control-plane-visible outcomes of a routing decision (block vs reject) stay
+// on the same 1/s ringbuf budget. Unlike DAE_EVENT_BLOCKED it has a userspace
+// consumer (event_ringbuf.go) that logs the rejection at debug level, so reject
+// traffic is observable instead of silent.
+static __always_inline void
+send_reject_event(__u8 outbound, __u8 l4proto, const __u32 *sip,
+		  const __u32 *dip, __u16 sport, __u16 dport)
+{
+	if (blocked_event_rate_limited(EVENT_RATE.blocked_key))
+		return;
+
+	send_dae_event(DAE_EVENT_REJECTED, 0, NULL, false, outbound, l4proto, sip,
 		       dip, sport, dport);
 }
 
@@ -3177,18 +3201,32 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		goto block;
 	} else if (unlikely(outbound == OUTBOUND_REJECT)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("HANDOFF OUTBOUND_REJECT -> control plane");
+		bpf_printk("OUTBOUND_REJECT");
 #endif
-		/* Hand the original packet to the control plane, which injects an
-		 * ICMP port-unreachable (sourced from the dae host's own egress
-		 * address) so the client's QUIC handshake fails instantly and falls
-		 * back to TCP. */
-		pkt->handoff_required = 1;
-		return redirect_lan_packet_to_control_plane(
-			skb, link_h_len, pkt,
-			build_routing_meta(outbound, mark, must,
-					   pkt->tuples.dscp).raw,
-			routing_epoch_slot);
+		/* Emit a rate-limited reject event so the rejection is observable
+		 * (matches DAE_EVENT_BLOCKED). */
+		send_reject_event(outbound, pkt->l4proto,
+				  pkt->tuples.five.sip.u6_addr32,
+				  pkt->tuples.five.dip.u6_addr32,
+				  pkt->tuples.five.sport, pkt->tuples.five.dport);
+		if (pkt->l4proto == IPPROTO_UDP) {
+			/* UDP/QUIC: hand the packet to the control plane so it can
+			 * inject an ICMP port-unreachable (sourced from the dae
+			 * host's own egress address). That fails the QUIC handshake
+			 * instantly and makes the client fall back to TCP. */
+			pkt->handoff_required = 1;
+			return redirect_lan_packet_to_control_plane(
+				skb, link_h_len, pkt,
+				build_routing_meta(outbound, mark, must,
+						   pkt->tuples.dscp).raw,
+				routing_epoch_slot);
+		}
+		/* TCP: an ICMP port-unreachable is meaningless for TCP, and the
+		 * control plane would only log a misleading "failed to dial"
+		 * before dropping. A silent drop (like block) makes the client
+		 * time out, which is exactly the outcome the handoff would have
+		 * produced without the wasted round-trip. */
+		goto block;
 	}
 
 	if (!wan_outbound_is_alive(skb, outbound, pkt->l4proto,
@@ -3624,6 +3662,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("SHOT OUTBOUND_BLOCK/REJECT");
 #endif
+		if (outbound == OUTBOUND_REJECT)
+			send_reject_event(outbound, IPPROTO_TCP,
+					  tuples->five.sip.u6_addr32,
+					  tuples->five.dip.u6_addr32,
+					  tuples->five.sport, tuples->five.dport);
 		return TC_ACT_SHOT;
 	}
 
@@ -3778,8 +3821,14 @@ fast_path_skip_routing:
 	if (!wan_egress_needs_control_plane(outbound, mark))
 		return DAE_TC_CONTINUE;
 	else if (unlikely(outbound == OUTBOUND_BLOCK ||
-			  outbound == OUTBOUND_REJECT))
+			  outbound == OUTBOUND_REJECT)) {
+		if (outbound == OUTBOUND_REJECT)
+			send_reject_event(outbound, IPPROTO_UDP,
+					  tuples->five.sip.u6_addr32,
+					  tuples->five.dip.u6_addr32,
+					  tuples->five.sport, tuples->five.dport);
 		return TC_ACT_SHOT;
+	}
 
 	if (!cached_routing &&
 	    !wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,

@@ -53,6 +53,15 @@ const (
 	// handoff that let a connection drain: the connection is not cut, and the
 	// next SYN moves it onto the current rules.
 	daeEventSynRebindRerouted
+	// daeEventRejected: a connection was rejected (OUTBOUND_REJECT). Mirrors
+	// DAE_EVENT_REJECTED in kern/tproxy.c. UDP/QUIC is handed to the control
+	// plane for an ICMP port-unreachable injection (QUIC->TCP downgrade); TCP
+	// and WAN reject are a silent drop. Consumed at debug level so reject
+	// traffic is visible to operators without storming the log. The kernel
+	// rate-limits emission to 1/s, so this is one sample per second, not a
+	// per-flow count; there is intentionally no bpf_stats_map counter, matching
+	// DAE_EVENT_BLOCKED.
+	daeEventRejected
 )
 
 // daeEvent mirrors struct dae_event in control/kern/tproxy.c. The kernel writes
@@ -190,6 +199,16 @@ func (r *bpfMaintenanceRuntime) readEvents() {
 			// event emission per outbound (1/s), so this cannot storm the
 			// probe workers.
 			target.handleBlockedAliveEvent(&ev)
+		case daeEventRejected:
+			// Connection rejected (OUTBOUND_REJECT). UDP/QUIC is handed to the
+			// control plane for an ICMP port-unreachable injection that fails
+			// the QUIC handshake so the client falls back to TCP; TCP and WAN
+			// reject are a silent drop. The kernel rate-limits this event to
+			// 1/s, so it is one sample per second, not a per-flow count. Logged
+			// at debug; the authoritative per-packet count is intentionally
+			// absent, matching DAE_EVENT_BLOCKED (which also has no
+			// bpf_stats_map counter).
+			reportDatapathEventAt(c, logrus.DebugLevel, &ev, "connection rejected (OUTBOUND_REJECT: QUIC->TCP downgrade or silent drop)")
 		default:
 			// Unknown types cannot be acted on, but they must not be dropped
 			// in silence: kernel events and this binary ship together, so an
