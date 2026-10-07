@@ -208,7 +208,7 @@ func (r *bpfMaintenanceRuntime) readEvents() {
 			// at debug; the authoritative per-packet count is intentionally
 			// absent, matching DAE_EVENT_BLOCKED (which also has no
 			// bpf_stats_map counter).
-			reportDatapathEventAt(c, logrus.DebugLevel, &ev, "connection rejected (OUTBOUND_REJECT: QUIC->TCP downgrade or silent drop)")
+			reportDatapathEventAt(target, logrus.DebugLevel, &ev, "connection rejected (OUTBOUND_REJECT: QUIC->TCP downgrade or silent drop)")
 		default:
 			// Unknown types cannot be acted on, but they must not be dropped
 			// in silence: kernel events and this binary ship together, so an
