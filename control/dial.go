@@ -104,8 +104,44 @@ func endpointNetworkTypeForSelection(requestedNetworkType *dialer.NetworkType, a
 	return &endpointType
 }
 
+// ErrReservedOutboundReject indicates the resolved outbound is the reserved
+// reject index (0xFB). It is not a dialable group: the caller must perform the
+// L3 reject action (an ICMP port-unreachable for UDP, used to downgrade QUIC
+// to TCP) instead of dialing. Returning this rather than letting the index fall
+// through to the out-of-range check is what makes domain-rules that resolve to
+// reject behave identically to 4-tuple rules that resolve to reject (both inject
+// the ICMP error instead of being silently dropped with an "out of range" error).
+var ErrReservedOutboundReject = stderrors.New("reserved outbound reject is handled by the caller, not dialed")
+
+// isReservedOutbound reports whether the resolved outbound index is one of the
+// reserved, non-dialable values that the data plane signals via an L3 message
+// rather than an actual proxy connection.
+func isReservedOutbound(id consts.OutboundIndex) bool {
+	return id == consts.OutboundReject
+}
+
 func (c *ControlPlane) chooseProxyDialer(p *proxyDialParam) (*proxyDialResult, error) {
 	outboundIndex := p.Outbound
+	// Reserved outbounds are not real dialer groups. For UDP the reject action
+	// is an ICMP port-unreachable (so the client's QUIC stack downgrades to
+	// TCP); inject it here so domain-rules that resolve to reject take the same
+	// path as 4-tuple rules that resolve to reject. Signal the caller with
+	// ErrReservedOutboundReject so it does not try to dial a reserved index.
+	if isReservedOutbound(outboundIndex) {
+		if p.Network == "udp" {
+			if rejectAllowed(p.Src) {
+				if e := sendICMPPortUnreachable(p.Src, p.Dest); e != nil {
+					c.log.Warnf("reject: failed to inject ICMP port-unreachable to %s: %v", p.Dest, e)
+				}
+			} else {
+				c.log.Debugf("reject: per-client ICMP budget exhausted; silently dropping for %s", p.Src)
+			}
+			// Mark the flow so later packets of it are dropped in userspace
+			// without re-running the routing lookup (see isRejectFlow).
+			markRejectFlow(p.Src, p.Dest)
+		}
+		return nil, ErrReservedOutboundReject
+	}
 	domain := p.Domain
 	src := p.Src
 	dst := p.Dest

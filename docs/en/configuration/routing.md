@@ -5,7 +5,7 @@
 ### Built-in outbounds
 
 ```shell
-### Built-in outbounds: block, direct, must_rules
+### Built-in outbounds: block, direct, must_rules, reject
 
 # must_rules means no redirecting DNS traffic to dae and continue to matching.
 # For single rule, the difference between "direct" and "must_direct" is that "direct" will hijack and process DNS request
@@ -13,6 +13,13 @@
 # "must_direct" can also be written as "direct(must)".
 # Similarly, "must_groupname" is also supported to NOT hijack and process DNS traffic, which equals to "groupname(must)".
 ```
+
+`reject` drops matching packets like `block`, but for UDP/QUIC it additionally
+injects an ICMP port-unreachable (sourced from the dae host) so the client's
+QUIC handshake fails instantly and falls back to TCP. Use it to force HTTP/3 off
+without a full block. On the WAN side (traffic originating from the local
+machine) `reject` behaves exactly like `block` — a silent drop with no ICMP
+injection — because the local OS already signals the failure to the application.
 
 ### Fallback
 

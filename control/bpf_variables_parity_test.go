@@ -246,6 +246,7 @@ func TestDaeEventTypeNumbersMatchKernelSource(t *testing.T) {
 		{"DAE_EVENT_RESERVED_FRAG_TAIL_PASSED", daeEventReservedFragTailPassed},
 		{"DAE_EVENT_REDIRECT_UPDATE_FAILED", daeEventRedirectUpdateFailed},
 		{"DAE_EVENT_SYN_REBIND_REROUTED", daeEventSynRebindRerouted},
+		{"DAE_EVENT_REJECTED", daeEventRejected},
 	}
 	for _, entry := range contract {
 		value, ok := cTypes[entry.cName]
