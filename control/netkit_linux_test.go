@@ -56,6 +56,26 @@ func TestNetkitIpLinkAddArgsScrubNoneUsesNamedValues(t *testing.T) {
 	}
 }
 
+func TestNetkitIpLinkAddArgsInNetnsAppendsNetnsAfterPeerName(t *testing.T) {
+	tests := []struct {
+		name      string
+		scrubNone bool
+	}{
+		{name: "scrub none", scrubNone: true},
+		{name: "no scrub", scrubNone: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			args := netkitIpLinkAddArgsInNetns("dae0", "dae0peer", test.scrubNone, "daens")
+			peerNameIdx := slices.Index(args, "dae0peer")
+			netnsIdx := slices.Index(args, "netns")
+			if peerNameIdx < 0 || netnsIdx != peerNameIdx+1 || netnsIdx+1 >= len(args) || args[netnsIdx+1] != "daens" {
+				t.Fatalf("`netns NAME` must directly follow the peer name so iplink_parse() reads it as a peer attribute: %v", args)
+			}
+		})
+	}
+}
+
 func TestNetkitScrubNoneRequiresAttributesOnBothEnds(t *testing.T) {
 	tests := []struct {
 		name     string

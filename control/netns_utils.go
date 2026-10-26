@@ -414,6 +414,158 @@ func (ns *DaeNetns) setupVethOrNetkit() (err error) {
 	return nil
 }
 
+// ensureNetnsAndLo creates the daens named namespace and brings its loopback
+// interface up, leaving the calling thread back in the host namespace (the
+// caller must already run there). It is split out of setupNetns so that the
+// namespace exists before the veth/netkit pair is created, which allows the
+// peer end to be born directly inside daens.
+func (ns *DaeNetns) ensureNetnsAndLo() (err error) {
+	// ip netns a daens
+	if err = ns.prepareNamedNetns(); err != nil {
+		return err
+	}
+	ns.daeNs, err = newNamedNetnsFunc(NsName)
+	if err != nil {
+		return fmt.Errorf("failed to create netns: %w", err)
+	}
+	// NewNamed() leaves the calling thread inside the new namespace; manage
+	// its loopback before returning to the host.
+	defer func() { _ = setNetnsFunc(ns.hostNs) }()
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		return fmt.Errorf("failed to get link lo: %w", err)
+	}
+	// (ip net e daens) ip l s lo up
+	if err = netlink.LinkSetUp(lo); err != nil {
+		return fmt.Errorf("failed to set link lo up: %w", err)
+	}
+	return
+}
+
+// releaseNetnsHandle closes the daens handle opened by ensureNetnsAndLo when
+// the legacy fallback is about to re-create the namespace via setupNetns;
+// otherwise the superseded handle would leak. Only meaningful on a setup()
+// path: a bare DaeNetns zero-value daeNs handle is fd 0, which must never be
+// closed, hence the handlesInitialized guard.
+func (ns *DaeNetns) releaseNetnsHandle() {
+	if !ns.handlesInitialized || !ns.daeNs.IsOpen() {
+		return
+	}
+	_ = ns.daeNs.Close()
+	ns.daeNs = netns.None()
+}
+
+// setupVethOrNetkitInNetns creates the pair with the peer end landing directly
+// inside the daens namespace, so the host namespace never sees a link named
+// NsVethName. This structurally removes the transient peer window that races
+// netlink watchers (libvirtd ethtool probes, NetworkManager, ...) between
+// "create both ends in the host netns" and "move the peer to daens": there is
+// no RTM_NEWLINK broadcast for the peer in the host namespace at all.
+//
+// The netkit flavor goes through iproute2 (`peer ... netns <name>`) because
+// the netlink library has no PeerNamespace field for Netkit; the veth flavor
+// uses the library's native Veth.PeerNamespace (IFLA_NET_NS_FD nested in the
+// peer attributes — the same kernel mechanism).
+//
+// On failure the caller falls back to the legacy create-then-move sequence.
+func (ns *DaeNetns) setupVethOrNetkitInNetns() (err error) {
+	if !ns.daeNs.IsOpen() {
+		return fmt.Errorf("dae netns is not initialized")
+	}
+	if ns.supportsNetkit() {
+		err := ns.tryCreateNetkitInNetns()
+		if err == nil {
+			ns.useNetkit = true
+			ns.log.Infof("Successfully created Netkit device pair with peer directly in netns %s", NsName)
+			return nil
+		}
+		ns.log.WithError(err).Warn("Failed to create Netkit device with peer in netns, trying veth with peer in netns")
+	}
+	return ns.setupVethInNetns()
+}
+
+// tryCreateNetkitInNetns creates the netkit pair with the peer born inside
+// daens via iproute2. It only brings up the host end; the peer end is brought
+// up later by setupPeerInNetns.
+func (ns *DaeNetns) tryCreateNetkitInNetns() (err error) {
+	// Delete existing link if present
+	_ = DeleteLink(HostVethName)
+
+	// scrub=NONE configuration mirrors tryCreateNetkit (bpf_redirect_peer).
+	if err := createNetkitDeviceInNetns(ns.log, HostVethName, NsVethName, DaeVethTxQLen, true, NsName); err != nil {
+		return fmt.Errorf("failed to create Netkit device with peer in netns: %w", err)
+	}
+
+	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
+		return fmt.Errorf("failed to get link dae0: %w", err)
+	}
+	// ip l s dae0 up
+	if err = netlink.LinkSetUp(ns.dae0); err != nil {
+		return fmt.Errorf("failed to set link dae0 up: %w", err)
+	}
+	return nil
+}
+
+// setupVethInNetns creates the veth pair with the peer born inside daens via
+// the netlink library (Veth.PeerNamespace -> IFLA_NET_NS_FD in the nested peer
+// attributes). It only brings up the host end; the peer end is brought up
+// later by setupPeerInNetns.
+func (ns *DaeNetns) setupVethInNetns() (err error) {
+	// ip l a dae0 type veth peer name dae0peer netns daens
+	_ = DeleteLink(HostVethName)
+	if err = netlink.LinkAdd(&netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{
+			Name:   HostVethName,
+			TxQLen: DaeVethTxQLen,
+		},
+		PeerName:      NsVethName,
+		PeerTxQLen:    DaeVethTxQLen,
+		PeerNamespace: netlink.NsFd(ns.daeNs),
+	}); err != nil {
+		return fmt.Errorf("failed to add veth pair with peer in netns: %w", err)
+	}
+	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
+		return fmt.Errorf("failed to get link dae0: %w", err)
+	}
+	// ip l s dae0 up
+	if err = netlink.LinkSetUp(ns.dae0); err != nil {
+		return fmt.Errorf("failed to set link dae0 up: %w", err)
+	}
+	return
+}
+
+// setupPeerInNetns brings up the peer end inside daens and re-fetches its link
+// (for the latest MAC address). For netkit pairs it also enforces
+// requireNetkitL2WithMAC; on violation the pair is deleted so the caller can
+// retry via the legacy path.
+func (ns *DaeNetns) setupPeerInNetns() (err error) {
+	if err = setNetnsFunc(ns.daeNs); err != nil {
+		return fmt.Errorf("failed to switch to daens: %w", err)
+	}
+	defer func() { _ = setNetnsFunc(ns.hostNs) }()
+	// (ip net e daens) ip l s dae0peer up
+	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
+		return fmt.Errorf("failed to get link dae0peer in daens: %w", err)
+	}
+	if ns.useNetkit {
+		if err = requireNetkitL2WithMAC(ns.dae0, ns.dae0peer); err != nil {
+			ns.log.Warnf("Rejecting Netkit pair: %v", err)
+			_ = DeleteLink(HostVethName)
+			ns.dae0 = nil
+			ns.dae0peer = nil
+			return fmt.Errorf("netkit pair rejected: %w", err)
+		}
+	}
+	if err = netlink.LinkSetUp(ns.dae0peer); err != nil {
+		return fmt.Errorf("failed to set link dae0peer up: %w", err)
+	}
+	// re-fetch dae0peer to make sure we have the latest mac address
+	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
+		return fmt.Errorf("failed to get link dae0peer: %w", err)
+	}
+	return
+}
+
 // tryCreateNetkit attempts to create a Netkit device pair.
 // createNetkitDevice prefers netlink and falls back to iproute2.
 func (ns *DaeNetns) tryCreateNetkit() (err error) {
@@ -525,11 +677,46 @@ func (ns *DaeNetns) setup() (err error) {
 			return
 		}
 
-		if setupErr = ns.setupVethOrNetkit(); setupErr != nil {
+		if setupErr = ns.ensureNetnsAndLo(); setupErr != nil {
 			return
 		}
-		if setupErr = ns.setupNetns(); setupErr != nil {
-			return
+
+		// Preferred path: create the pair with the peer landing directly in
+		// daens, so the host namespace never sees a transient dae0peer. Any
+		// failure falls back to the legacy two-step sequence (create both
+		// ends in the host namespace, then move the peer), which keeps the
+		// transient dae0peer window but preserves today's behavior.
+		if setupErr = ns.setupVethOrNetkitInNetns(); setupErr != nil {
+			ns.log.WithError(setupErr).Warn(
+				"failed to create the pair with the peer directly in the daens namespace; " +
+					"falling back to the legacy create-then-move sequence (transient dae0peer window returns)")
+			setupErr = ns.setupVethOrNetkit()
+			if setupErr != nil {
+				return
+			}
+			// setupNetns re-creates the named namespace, superseding the one
+			// ensureNetnsAndLo created above.
+			ns.releaseNetnsHandle()
+			setupErr = ns.setupNetns()
+			if setupErr != nil {
+				return
+			}
+		} else if setupErr = ns.setupPeerInNetns(); setupErr != nil {
+			ns.log.WithError(setupErr).Warn(
+				"failed to bring up the peer inside the daens namespace; " +
+					"falling back to the legacy create-then-move sequence (transient dae0peer window returns)")
+			_ = DeleteLink(HostVethName)
+			ns.dae0 = nil
+			ns.dae0peer = nil
+			setupErr = ns.setupVethOrNetkit()
+			if setupErr != nil {
+				return
+			}
+			ns.releaseNetnsHandle()
+			setupErr = ns.setupNetns()
+			if setupErr != nil {
+				return
+			}
 		}
 		if setupErr = ns.setupSysctl(); setupErr != nil {
 			return
