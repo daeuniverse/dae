@@ -1021,6 +1021,14 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 		if !d.hasAliveDialerSets(opt.networkType) {
 			continue
 		}
+		// Advisory probes cannot influence selection, so they have no part in
+		// resuscitation. Emergency probes match on L4Proto only, so without
+		// this guard a recovering node submits four TCP-family probes instead
+		// of two, each queued behind the 0-2s stagger that exists to prevent
+		// exactly that thundering herd.
+		if isResuscitation && opt.Advisory {
+			continue
+		}
 
 		select {
 		case <-d.ctx.Done():
