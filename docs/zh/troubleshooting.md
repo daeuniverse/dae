@@ -8,6 +8,23 @@ dae 暂停后不会劫持任何 DNS 请求。因此，请勿在 DHCP 设置中�
 
 - [PVE 网卡硬件直通](https://github.com/daeuniverse/dae/issues/43)
 
+## 启动失败：残留的 `/run/netns/daens`
+
+上一次运行可能残留命名 netns 的挂载点 `/run/netns/daens`。当 dae 运行在用户命名空间环境中（LXC 容器，例如 Proxmox VE 容器，或被沙箱化的服务）时，内核可能锁定该挂载点（`MNT_LOCKED`）：`umount`、`umount -l`、`umount -f` 一律返回 `EINVAL`，而 `rm` 返回 `EBUSY`，任何重试或标志组合都无法清除。此时 netns 本身已经消失，只剩这个挂载点。
+
+当前版本会精确识别该特征并自动恢复：dae 用一个全新的 tmpfs 覆盖 `/run/netns`，打印告警说明本次恢复以及该覆盖隐藏的其他命名 netns，然后在干净的目录上启动。该覆盖会一直保留到下次重启——这是有意为之；移除它会让残留条目重新暴露。旧版本只会报出误导性的 `failed to create netns: open /run/netns/daens: file exists`。
+
+dae 只对这一精确特征自动恢复。其他拒绝原因——错误码不同，或 dae 自身无权挂载（例如所在容器缺少相应的 `capability`）——会立即失败，并报出 `failed to clean up the stale named netns daens: ...`，其中带有真实的错误码。若失败源于权限，下面的人工兜底同样需要该权限：
+
+```bash
+sudo mount -t tmpfs -o mode=755 tmpfs /run/netns
+sudo systemctl start dae
+```
+
+该命令必须在与 dae 相同的挂载命名空间中执行：若 dae 运行在容器内，请在容器内执行，而不是在宿主机上执行。
+
+该 tmpfs 会隐藏同一挂载命名空间里的所有命名 netns：`ip netns list` 读取的正是这个目录，因此除 `daens` 之外的名字都会从中消失，`ip netns exec`、`ip netns pids`、`ip netns delete` 都找不到它们。被隐藏的命名空间及其进程仍在运行，只是名字不再可达。该覆盖是 dae 挂载命名空间中的一个挂载，因此会一直存在到重启为止，即使 dae 本身已经退出、或之后因其他原因启动失败也是如此。`/run` 中的内容不会在重启后保留：重启会同时清除覆盖和残留条目，其他命名 netns 会在其所属工具重新创建时恢复。参见 [issue #1109](https://github.com/daeuniverse/dae/issues/1109)。
+
 ## 绑定 WAN 后无网络
 
 ### 排查本地 DNS 服务

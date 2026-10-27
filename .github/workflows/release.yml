@@ -192,9 +192,7 @@ jobs:
 
       - name: Create full source archive
         if: matrix.goarch == 'arm64'
-        run: |
-          zip -9vr ./bundled/dae-full-src.zip . -x .git/\* bundled/\*
-          tar -I 'xz -9' -cvf ./bundled/dae-full-src.tar.xz --exclude .git --exclude bundled .
+        run: bash scripts/archive-source.sh
 
       - name: Build dae
         env:

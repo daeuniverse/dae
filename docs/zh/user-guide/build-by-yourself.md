@@ -31,6 +31,14 @@ make GOFLAGS="-buildvcs=false" \
 #make CGO_ENABLED=0 GOARCH=mips
 ```
 
+### 完整源码归档
+
+完整源码归档包含 Git 子模块和 `go-mod/` 缓存，Makefile 会自动使用。安装构建工具链后可离线编译：
+
+```shell
+make GOFLAGS="-buildvcs=false" GOPROXY=off GOSUMDB=off
+```
+
 ### 各架构的 trace 支持
 
 当工具链能够生成可选的 `dae trace` eBPF 程序时，`make` 会将其构建进二进制文件。结果记录在 `.build_tags` 中：包含该程序时为 `trace`，未包含时为空。

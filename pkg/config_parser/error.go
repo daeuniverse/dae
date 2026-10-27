@@ -22,8 +22,17 @@ const (
 )
 
 // Error hint messages for common configuration mistakes.
+//
+// The digit-prefix hint must not tell the user to quote the *name*: a
+// declaration key has to be an ID (dae_config.g4: `ID : SAFE_ID_HEAD_CHAR
+// SAFE_CHAR*`), so a quoted name is a QUOTE_STRING and still cannot match. The
+// form that does work in list blocks is quoting the whole `name: value` entry,
+// which parses as one literal and is split again by the consumer (see
+// control.ParseFixedDomainTtl).
 const (
-	hintDigitPrefixDomain = `Hint: Domains or keys starting with a digit must be enclosed in quotes.
+	hintDigitPrefixDomain = `Hint: a name starting with a digit cannot be used as a bare key.
+  In list blocks (fixed_domain_ttl, upstream, subscription, node, ...), quote the whole
+  "name: value" entry instead of the name:
   Change: %s
   To:    '%s'
 `
@@ -57,15 +66,43 @@ func (d *ConsoleErrorListener) detectDigitPrefixDomainError(msg, strLine string)
 		return ""
 	}
 
-	// Look for pattern: digit(s) followed by dot and colon (like "123.com:60")
-	words := strings.FieldsSeq(strLine)
+	// Look for pattern: digit(s) followed by dot and colon (like "123.com:60").
+	// The hint must show the whole entry rather than the offending word:
+	// quoting only the name cannot work, and the word carries the trailing ':'
+	// while dropping the value, so the quoted form it suggested was both
+	// unparsable as a key and, once a value was re-added, invalid at startup.
+	entry := strings.TrimSpace(stripLineComment(strLine))
+	if entry == "" {
+		return ""
+	}
+	words := strings.FieldsSeq(entry)
 	for w := range words {
 		if d.isDigitPrefixDomainPattern(w) {
-			return fmt.Sprintf("\n\n"+hintDigitPrefixDomain, w, w)
+			return fmt.Sprintf("\n\n"+hintDigitPrefixDomain, entry, entry)
 		}
 	}
 
 	return ""
+}
+
+// stripLineComment removes a trailing '#' comment so the hint quotes the entry
+// itself instead of the entry plus its comment. A '#' inside a quoted literal
+// is kept: quote state is tracked while scanning.
+func stripLineComment(s string) string {
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#':
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // isDigitPrefixDomainPattern checks if a string matches the pattern of a domain

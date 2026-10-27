@@ -72,10 +72,10 @@ GOARCH ?= $(shell go env GOARCH)
 TRACE_UNSUPPORTED_GOARCH ?= arm mips mips64 mips64le mipsle s390x
 TRACE_UNSUPPORTED_THIS_ARCH := $(filter $(GOARCH),$(TRACE_UNSUPPORTED_GOARCH))
 
-# Do NOT remove the line below. This line is for CI.
-# CI passes GOMODCACHE in the build step environment; it must not rewrite this
-# file in place (a rewritten Makefile no longer matches the release tag).
-#export GOMODCACHE=$(PWD)/go-mod
+# Full-source release archives carry their own module cache.
+ifneq ($(wildcard go-mod/.),)
+export GOMODCACHE ?= $(CURDIR)/go-mod
+endif
 
 # Get version from .git.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)

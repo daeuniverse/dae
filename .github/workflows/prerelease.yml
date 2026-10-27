@@ -1,10 +1,16 @@
 name: Publish Pre-release
-run-name: Publish prerelease ${{ inputs.tag }} by @${{ github.actor }}
+run-name: Publish prerelease ${{ inputs.tag || 'nightly' }} by @${{ github.actor }}
 
 on:
   workflow_dispatch:
     inputs:
       tag:
+        type: string
+        required: true
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to build and publish to the rolling nightly release"
         type: string
         required: true
 
@@ -13,7 +19,7 @@ permissions:
 
 jobs:
   preflight:
-    name: Preflight (tag commit, asset names)
+    name: Preflight (commit, asset names)
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.tag.outputs.sha }}
@@ -22,16 +28,15 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ inputs.ref || format('refs/tags/{0}', inputs.tag) }}
 
-      # See release.yml: the published source must be the tag, not a tree that
-      # the workflow edited in place before packing the full-source archive.
-      - name: Assert the working tree matches the tag
+      # Build and archive the selected commit without editing its source.
+      - name: Assert the working tree matches the selected commit
         id: tag
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::working tree differs from tag ${{ inputs.tag }}"
+            echo "::error::working tree differs from the selected commit"
             git status --porcelain
             exit 1
           fi
@@ -40,7 +45,7 @@ jobs:
       - name: Assert release asset names are unique
         run: ./scripts/check-asset-names.sh install/friendly-filenames.json
 
-  # Run gates on the resolved tag commit: path-filtered push checks may be absent.
+  # Run gates on the resolved commit: path-filtered push checks may be absent.
   go-test:
     needs: [preflight]
     uses: ./.github/workflows/go-test.yml
@@ -131,8 +136,14 @@ jobs:
           REF: ${{ inputs.tag }}
         run: |
           version=${REF}
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
-          echo "VERSION=$version" >> $GITHUB_ENV
+          if [[ -z "$version" ]]; then
+            date=$(git log -1 --format=%cd --date=format:%Y%m%d)
+            count=$(git rev-list --count HEAD)
+            commit=$(git rev-parse --short=6 HEAD)
+            version="0.0.0.nightly.${date}.r${count}.${commit}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Show workflow information
         id: get_filename
@@ -189,9 +200,7 @@ jobs:
 
       - name: Create full source archive
         if: matrix.goarch == 'arm64'
-        run: |
-          zip -9vr ./bundled/dae-full-src.zip . -x .git/\* bundled/\*
-          tar -I 'xz -9' -cvf ./bundled/dae-full-src.tar.xz --exclude .git --exclude bundled .
+        run: bash scripts/archive-source.sh
 
       - name: Build dae
         env:
@@ -315,7 +324,7 @@ jobs:
           path: ./bundled/*
 
   upload-release:
-    needs: [build]
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     # Only this job may write: action-gh-release attaches the assets to the tag.
     permissions:
@@ -332,9 +341,24 @@ jobs:
           cd release
           ls -lh */*
 
+      - name: Checkout nightly commit
+        if: inputs.ref != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          path: source
+
+      - name: Move only the nightly tag
+        if: inputs.ref != ''
+        working-directory: source
+        run: git push --force origin HEAD:refs/tags/nightly
+
       - name: Upload full source and artifacts to GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ inputs.tag }}
+          tag_name: ${{ inputs.tag || 'nightly' }}
+          name: ${{ inputs.tag || 'nightly' }}
+          target_commitish: ${{ needs.preflight.outputs.sha }}
           files: release/*/*
           prerelease: true
+          make_latest: false

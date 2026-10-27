@@ -691,7 +691,16 @@ func (r *Router) lookupBootstrapIPAddr(ctx context.Context, network, host string
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []net.IPAddr{{IP: net.IP(addr.AsSlice())}}, nil
 	}
-	dnsNetwork := common.MagicNetworkWithIPVersion("udp", r.soMark, r.mptcp, requestedIPVersion(network))
+	// The bootstrap resolver is reached at a fixed address (119.29.29.29:53
+	// and 223.5.5.5:53 by default), so the family used to dial it follows
+	// from that address and must not be inherited from the caller. Passing
+	// the requested family here made both the A and the AAAA query dial a v4
+	// bootstrap literal over "udp6" whenever a v6-origin flow needed
+	// bootstrap resolution; that fails with "no suitable address found" and
+	// disabled bootstrap resolution entirely. Dial family-agnostically, the
+	// way the upstream queries in client.go already do. The requested family
+	// is still honoured when filtering the answers below.
+	dnsNetwork := common.MagicNetwork("udp", r.soMark, r.mptcp)
 	ip46, err4, err6 := r.resolveBootstrap(ctx, host, dnsNetwork)
 	addrs := make([]net.IPAddr, 0, 2)
 	switch requestedIPVersion(network) {
