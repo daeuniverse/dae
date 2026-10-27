@@ -219,7 +219,7 @@ func TestCheckIpNetkitSupportLive(t *testing.T) {
 
 func TestScrubRejected(t *testing.T) {
 	rejected := []string{
-		`ip: either "dev" is duplicate, or "scrub" is a garbage instead of "dev"`,
+		`ip: Garbage instead of arguments "scrub".`,
 		`Error: argument of "scrub" is unknown`,
 		`Unknown parameter (scrub)`,
 	}
