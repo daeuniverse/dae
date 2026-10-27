@@ -572,6 +572,26 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 type CheckOption struct {
 	networkType *NetworkType
 	CheckFunc   func(ctx context.Context, typ *NetworkType) (ok bool, err error)
+	// Advisory probes run on the same schedule as the health probes but never
+	// feed health state: their result is only logged on transition, and
+	// markAvailable/markUnavailable are never called for them.
+	//
+	// They exist for paths that have no selection-level probe of their own and
+	// cannot get one for free: a probe of such a path would have to share a
+	// collection with an existing probe, and two probes racing into one
+	// collection is not something this scheduler is built for (the TCP
+	// threshold is a single failure, so the loser of the race would decide the
+	// node's alive state at random each cycle, and a dead edge would fire
+	// NotifyHealthCheckResult and invalidate the sticky-IP cache). Giving the
+	// path its own health domain additionally needs a new slot in the kernel
+	// alive map, so until that exists the honest thing is to make the failure
+	// observable instead of silent.
+	Advisory bool
+
+	// advisorySeen/advisoryOK carry the last advisory verdict so a steady
+	// state is logged at debug level and only a transition is logged loudly.
+	advisorySeen atomic.Bool
+	advisoryOK   atomic.Bool
 }
 
 func (d *Dialer) ActivateCheck() {
@@ -724,6 +744,10 @@ func (d *Dialer) aliveBackground() {
 			return d.HttpCheck(ctx, IdxTcp6, opt.Url, opt.Ip6, opt.Method, tcpSomark, mptcp)
 		},
 	}
+	tcpNetwork := netproxy.MagicNetwork{
+		Network: "tcp",
+		Mark:    d.CheckDnsOptionRaw.Somark,
+	}.Encode()
 	udpNetwork := netproxy.MagicNetwork{
 		Network: "udp",
 		Mark:    d.CheckDnsOptionRaw.Somark,
@@ -772,6 +796,54 @@ func (d *Dialer) aliveBackground() {
 		CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &udpNetwork),
 	}
 	var CheckOpts = []*CheckOption{tcp4CheckOpt, tcp6CheckOpt, udp4CheckDnsOpt, udp6CheckDnsOpt}
+	if d.CheckDnsTcp {
+		// TCP DNS legs. dns.upstream entries may carry the tcp scheme
+		// ("tcp://8.8.8.8:53", and tcp+udp's TCP fallback), and desc.go states
+		// that udp_check_dns "also be used to check TCP DNS connectivity of
+		// nodes" in that case -- but only the UDP legs were ever registered, so
+		// such an upstream could fail forever while every probe stayed green.
+		//
+		// What they test is udp_check_dns' host over TCP, not the configured
+		// dns.upstream: CheckDnsOption is parsed from udp_check_dns and the
+		// dialer never sees the upstream list. They therefore match a tcp://
+		// upstream exactly only when it names the same host, and they say
+		// nothing about a DoH upstream on another host or port.
+		//
+		// They are registered as advisory rather than as health probes. The
+		// comment above Index() argues TCP DNS and plain TCP should share one
+		// collection because both are just TCP. The transport half of that is
+		// right; the destination half is not, and that is the part that
+		// matters here: nodes that were passing their HTTP health probe still
+		// failed a DNS query to a particular resolver over the same transport,
+		// so a dead leg is evidence about one destination, not about TCP in
+		// general. One collection also assumes exactly one probe per cycle
+		// (see the single-failure TCP threshold in markUnavailableInternal),
+		// so a second probe writing into it would decide the node's alive
+		// state by finishing order and fire NotifyHealthCheckResult on its
+		// dead edge, invalidating the sticky-IP cache for the whole group.
+		// Promoting these legs to real health probes needs a TCP DNS health
+		// domain of their own, which in turn needs a slot in the kernel alive
+		// map.
+		tcp4CheckDnsOpt := &CheckOption{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_TCP,
+				IpVersion: consts.IpVersionStr_4,
+				IsDns:     true,
+			},
+			CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip4 }, &tcpNetwork),
+			Advisory:  true,
+		}
+		tcp6CheckDnsOpt := &CheckOption{
+			networkType: &NetworkType{
+				L4Proto:   consts.L4ProtoStr_TCP,
+				IpVersion: consts.IpVersionStr_6,
+				IsDns:     true,
+			},
+			CheckFunc: makeDnsCheckFunc(func(o *CheckDnsOption) netip.Addr { return o.Ip6 }, &tcpNetwork),
+			Advisory:  true,
+		}
+		CheckOpts = append(CheckOpts, tcp4CheckDnsOpt, tcp6CheckDnsOpt)
+	}
 
 	var unusedOnce bool
 	checkUnused := func() bool {
@@ -947,6 +1019,14 @@ func (d *Dialer) submitCheckTasks(workerPool *ants.Pool, wg *sync.WaitGroup, opt
 	for _, opt := range opts {
 		// No need to test if there is no dialer selection policy using its latency.
 		if !d.hasAliveDialerSets(opt.networkType) {
+			continue
+		}
+		// Advisory probes cannot influence selection, so they have no part in
+		// resuscitation. Emergency probes match on L4Proto only, so without
+		// this guard a recovering node submits four TCP-family probes instead
+		// of two, each queued behind the 0-2s stagger that exists to prevent
+		// exactly that thundering herd.
+		if isResuscitation && opt.Advisory {
 			continue
 		}
 
@@ -1376,6 +1456,10 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 		}
 		// Retry on actual error.
 	}
+	if opts.Advisory {
+		d.logAdvisoryProbeResult(opts, ok, err, bestLatency)
+		return ok, err
+	}
 	switch {
 	case ok && err == nil:
 		d.collectionFineMu.Lock()
@@ -1458,6 +1542,39 @@ func (d *Dialer) check(opts *CheckOption, isResuscitation bool, cycle *cycleResu
 	}
 	// Skip update when (ok=false, err=nil): preserve existing alive state.
 	return ok, err
+}
+
+// logAdvisoryProbeResult reports an advisory probe outcome without touching any
+// health state. Skips (no applicable IP, probe-infrastructure failure) and the
+// plain "no result" case carry no evidence about the path and stay at debug
+// level; only a change of verdict is logged loudly, so a path that stays broken
+// costs one warning rather than one per cycle.
+func (d *Dialer) logAdvisoryProbeResult(opt *CheckOption, ok bool, err error, latency time.Duration) {
+	fields := logrus.Fields{
+		"network": opt.networkType.String(),
+		"node":    d.property.Name,
+	}
+	if ok {
+		fields["last"] = latency.Truncate(time.Millisecond).String()
+	} else if err != nil {
+		fields["err"] = err.Error()
+	}
+	if !ok && (err == nil || stderrors.Is(err, ErrNoApplicableIP) || stderrors.Is(err, errCheckOptionUnavailable)) {
+		d.Log.WithFields(fields).Debugln("Advisory probe skipped")
+		return
+	}
+	first := !opt.advisorySeen.Swap(true)
+	wasOK := opt.advisoryOK.Swap(ok)
+	switch {
+	case ok && (first || wasOK):
+		d.Log.WithFields(fields).Debugln("Advisory probe")
+	case ok:
+		d.Log.WithFields(fields).Info("Advisory probe recovered")
+	case wasOK || first:
+		d.Log.WithFields(fields).Warn("Advisory probe failing; node health state is not affected")
+	default:
+		d.Log.WithFields(fields).Debugln("Advisory probe still failing")
+	}
 }
 
 func (d *Dialer) HttpCheck(ctx context.Context, networkIdx int, u *netutils.URL, ip netip.Addr, method string, soMark uint32, mptcp bool) (ok bool, err error) {

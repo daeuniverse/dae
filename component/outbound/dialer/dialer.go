@@ -205,9 +205,13 @@ type GlobalOption struct {
 	CheckDnsOptionRaw    CheckDnsOptionRaw // Lazy parse
 	CheckInterval        time.Duration
 	CheckTolerance       time.Duration
-	CheckDnsTcp          bool
-	SoMarkFromDae        uint32
-	Mptcp                bool
+	// CheckDnsTcp registers the advisory TCP-DNS legs (see aliveBackground).
+	// It is wired from global.check_dns_tcp, which defaults to true; a
+	// config.Global built literally rather than parsed takes the zero value
+	// and therefore skips them.
+	CheckDnsTcp   bool
+	SoMarkFromDae uint32
+	Mptcp         bool
 	// TransportCacheNamespace isolates process-global transport caches
 	// across reload generations so a replacement control plane never reuses
 	// transports bound to the previous generation's dialer lifecycle.
@@ -269,7 +273,7 @@ func NewGlobalOption(global *config.Global, log *logrus.Logger) *GlobalOption {
 		CheckDnsOptionRaw:       CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", soMarkFromDae, global.Mptcp), Somark: soMarkFromDae},
 		CheckInterval:           global.CheckInterval,
 		CheckTolerance:          global.CheckTolerance,
-		CheckDnsTcp:             true,
+		CheckDnsTcp:             global.CheckDnsTcp,
 		SoMarkFromDae:           soMarkFromDae,
 		Mptcp:                   global.Mptcp,
 		TransportCacheNamespace: newTransportCacheNamespace(),

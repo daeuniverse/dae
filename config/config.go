@@ -24,9 +24,15 @@ type Global struct {
 	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	// DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
-	TcpCheckUrl           []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
-	TcpCheckHttpMethod    string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
-	UdpCheckDns           []string      `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
+	TcpCheckUrl        []string `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
+	TcpCheckHttpMethod string   `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
+	UdpCheckDns        []string `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
+	// CheckDnsTcp also probes udp_check_dns' host over TCP, for deployments
+	// whose dns.upstream uses the tcp scheme. The probe is advisory: it never
+	// feeds node selection. Set it false to skip the two extra probes per
+	// check_interval, which is the right choice when dns.upstream is DoH or
+	// udp:// and the legs would only consume quota.
+	CheckDnsTcp           bool          `mapstructure:"check_dns_tcp" default:"true"`
 	CheckInterval         time.Duration `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance        time.Duration `mapstructure:"check_tolerance" default:"0"`
 	LanInterface          []string      `mapstructure:"lan_interface"`
