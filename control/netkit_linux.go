@@ -76,19 +76,77 @@ func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int, scrubNone boo
 	}
 
 	// If scrub configuration was requested and failed, try without it.
-	out := string(output)
-	if scrubNone && (strings.Contains(out, "Unknown parameter") ||
-		strings.Contains(out, "Error: argument of \"scrub\"") ||
-		strings.Contains(out, "Garbage instead of arguments")) {
+	if scrubNone && scrubRejected(string(output)) {
 		return createNetkitDeviceViaIpCmd(name, peerName, txQLen, false)
 	}
 
 	return fmt.Errorf("failed to create Netkit device: %w: %s", err, string(output))
 }
 
+// scrubRejected reports whether an `ip link add` failure output indicates the
+// installed iproute2 build rejects the peer-side `scrub` token — the signal to
+// retry once without scrub options.
+func scrubRejected(out string) bool {
+	return strings.Contains(out, "Unknown parameter") ||
+		strings.Contains(out, "Error: argument of \"scrub\"") ||
+		strings.Contains(out, "Garbage instead of arguments")
+}
+
 // iproute2MinNetkitVersion is the first iproute2 release that understands the
 // "type netkit" link kind (iproute2 6.7.0).
 var iproute2MinNetkitVersion = [2]int{6, 7}
+
+// netkitIpLinkAddArgsInNetns returns the `ip link add` arguments for a netkit
+// pair whose peer end is born directly inside the named network namespace.
+// The trailing `netns <name>` is a generic peer attribute parsed by
+// iplink_parse() — the same mechanism veth uses — so it must come after the
+// peer name emitted by netkitIpLinkAddArgs.
+func netkitIpLinkAddArgsInNetns(name, peerName string, scrubNone bool, nsName string) []string {
+	return append(netkitIpLinkAddArgs(name, peerName, scrubNone), "netns", nsName)
+}
+
+// createNetkitDeviceInNetns creates a Netkit pair whose peer end is born
+// directly inside the named network namespace, so the host namespace never
+// sees the peer link (no RTM_NEWLINK broadcast for it — transient-interface
+// watchers such as libvirtd's ethtool probes never race a disappearing peer).
+//
+// This goes through iproute2 instead of the netlink library because
+// vishvananda/netlink has no PeerNamespace support for the Netkit link type
+// (only for Veth); the kernel side (netkit_new_link's peer_net) handles the
+// IFLA_NET_NS_FD peer attribute natively.
+//
+// The primary end is created in the caller's namespace; the peer end lands in
+// nsName with its final name already assigned.
+func createNetkitDeviceInNetns(log *logrus.Logger, name, peerName string, txQLen int, scrubNone bool, nsName string) error {
+	if !checkIpNetkitSupport() {
+		return fmt.Errorf("iproute2 netkit support (6.7.0+) is required for peer-in-netns creation")
+	}
+	args := netkitIpLinkAddArgsInNetns(name, peerName, scrubNone, nsName)
+	cmd := exec.Command("ip", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Mirror the scrub-tolerance downgrade of createNetkitDeviceViaIpCmd:
+		// an iproute2 build that rejects the peer-side `scrub` token must not
+		// permanently lose the in-netns path to the legacy sequence.
+		if scrubNone && scrubRejected(string(output)) {
+			args = netkitIpLinkAddArgsInNetns(name, peerName, false, nsName)
+			cmd = exec.Command("ip", args...)
+			output, err = cmd.CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("failed to create Netkit device with peer in netns: %w: %s", err, string(output))
+		}
+	}
+	// Success, set TX queue length on the primary (host-side) end.
+	if txQLen > 0 {
+		cmd = exec.Command("ip", "link", "set", name, "txqlen", fmt.Sprintf("%d", txQLen))
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to set txqlen: %w: %s", err, string(output))
+		}
+	}
+	log.Infof("Created Netkit device pair %s <-> %s with peer in netns %s via ip command", name, peerName, nsName)
+	return nil
+}
 
 // parseIproute2Version extracts the (major, minor) version from "ip -V"
 // output. Standard output looks like "ip utility, iproute2-6.10.0, libbpf

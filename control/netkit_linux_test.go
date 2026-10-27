@@ -56,6 +56,26 @@ func TestNetkitIpLinkAddArgsScrubNoneUsesNamedValues(t *testing.T) {
 	}
 }
 
+func TestNetkitIpLinkAddArgsInNetnsAppendsNetnsAfterPeerName(t *testing.T) {
+	tests := []struct {
+		name      string
+		scrubNone bool
+	}{
+		{name: "scrub none", scrubNone: true},
+		{name: "no scrub", scrubNone: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			args := netkitIpLinkAddArgsInNetns("dae0", "dae0peer", test.scrubNone, "daens")
+			peerNameIdx := slices.Index(args, "dae0peer")
+			netnsIdx := slices.Index(args, "netns")
+			if peerNameIdx < 0 || netnsIdx != peerNameIdx+1 || netnsIdx+1 >= len(args) || args[netnsIdx+1] != "daens" {
+				t.Fatalf("`netns NAME` must directly follow the peer name so iplink_parse() reads it as a peer attribute: %v", args)
+			}
+		})
+	}
+}
+
 func TestNetkitScrubNoneRequiresAttributesOnBothEnds(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -195,4 +215,26 @@ func TestCheckIpNetkitSupportLive(t *testing.T) {
 	// host's actual iproute2; correctness of the version gate is covered by
 	// TestParseIproute2Version above.
 	_ = checkIpNetkitSupport()
+}
+
+func TestScrubRejected(t *testing.T) {
+	rejected := []string{
+		`ip: Garbage instead of arguments "scrub".`,
+		`Error: argument of "scrub" is unknown`,
+		`Unknown parameter (scrub)`,
+	}
+	for _, out := range rejected {
+		if !scrubRejected(out) {
+			t.Errorf("scrubRejected(%q) = false, want true", out)
+		}
+	}
+	accepted := []string{
+		`RTNETLINK answers: File exists`,
+		`ip: Failed to find netns daens`,
+	}
+	for _, out := range accepted {
+		if scrubRejected(out) {
+			t.Errorf("scrubRejected(%q) = true, want false", out)
+		}
+	}
 }
