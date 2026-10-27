@@ -803,20 +803,27 @@ func (d *Dialer) aliveBackground() {
 		// nodes" in that case -- but only the UDP legs were ever registered, so
 		// such an upstream could fail forever while every probe stayed green.
 		//
+		// What they test is udp_check_dns' host over TCP, not the configured
+		// dns.upstream: CheckDnsOption is parsed from udp_check_dns and the
+		// dialer never sees the upstream list. They therefore match a tcp://
+		// upstream exactly only when it names the same host, and they say
+		// nothing about a DoH upstream on another host or port.
+		//
 		// They are registered as advisory rather than as health probes. The
 		// comment above Index() argues TCP DNS and plain TCP should share one
-		// collection because both are just TCP; the part that does not hold is
-		// the destination. The HTTP probe opens tcp/80 to the check URL, while
-		// a tcp:// upstream opens tcp/53 to the resolver, and an exit that
-		// filters port 53 looks perfectly healthy to the former. Sharing the
-		// collection is what makes these legs advisory: one collection assumes
-		// exactly one probe per cycle (see the TCP threshold of a single
-		// failure in markUnavailableInternal), so a second probe writing into
-		// it would decide the node's alive state by finishing order and fire
-		// NotifyHealthCheckResult on its dead edge, invalidating the sticky-IP
-		// cache for the whole group. Promoting these legs to real health
-		// probes needs a TCP DNS health domain of their own, which in turn
-		// needs a slot in the kernel alive map.
+		// collection because both are just TCP. The transport half of that is
+		// right; the destination half is not, and that is the part that
+		// matters here: nodes that were passing their HTTP health probe still
+		// failed a DNS query to a particular resolver over the same transport,
+		// so a dead leg is evidence about one destination, not about TCP in
+		// general. One collection also assumes exactly one probe per cycle
+		// (see the single-failure TCP threshold in markUnavailableInternal),
+		// so a second probe writing into it would decide the node's alive
+		// state by finishing order and fire NotifyHealthCheckResult on its
+		// dead edge, invalidating the sticky-IP cache for the whole group.
+		// Promoting these legs to real health probes needs a TCP DNS health
+		// domain of their own, which in turn needs a slot in the kernel alive
+		// map.
 		tcp4CheckDnsOpt := &CheckOption{
 			networkType: &NetworkType{
 				L4Proto:   consts.L4ProtoStr_TCP,
