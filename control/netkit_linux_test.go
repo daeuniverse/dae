@@ -216,3 +216,25 @@ func TestCheckIpNetkitSupportLive(t *testing.T) {
 	// TestParseIproute2Version above.
 	_ = checkIpNetkitSupport()
 }
+
+func TestScrubRejected(t *testing.T) {
+	rejected := []string{
+		`ip: either "dev" is duplicate, or "scrub" is a garbage instead of "dev"`,
+		`Error: argument of "scrub" is unknown`,
+		`Unknown parameter (scrub)`,
+	}
+	for _, out := range rejected {
+		if !scrubRejected(out) {
+			t.Errorf("scrubRejected(%q) = false, want true", out)
+		}
+	}
+	accepted := []string{
+		`RTNETLINK answers: File exists`,
+		`ip: Failed to find netns daens`,
+	}
+	for _, out := range accepted {
+		if scrubRejected(out) {
+			t.Errorf("scrubRejected(%q) = true, want false", out)
+		}
+	}
+}

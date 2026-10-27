@@ -536,8 +536,9 @@ func (ns *DaeNetns) setupVethInNetns() (err error) {
 
 // setupPeerInNetns brings up the peer end inside daens and re-fetches its link
 // (for the latest MAC address). For netkit pairs it also enforces
-// requireNetkitL2WithMAC; on violation the pair is deleted so the caller can
-// retry via the legacy path.
+// requireNetkitL2WithMAC; on violation it returns an error and the caller's
+// host-namespace cleanup path deletes the pair so it can retry via the legacy
+// path.
 func (ns *DaeNetns) setupPeerInNetns() (err error) {
 	if err = setNetnsFunc(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %w", err)
@@ -550,7 +551,6 @@ func (ns *DaeNetns) setupPeerInNetns() (err error) {
 	if ns.useNetkit {
 		if err = requireNetkitL2WithMAC(ns.dae0, ns.dae0peer); err != nil {
 			ns.log.Warnf("Rejecting Netkit pair: %v", err)
-			_ = DeleteLink(HostVethName)
 			ns.dae0 = nil
 			ns.dae0peer = nil
 			return fmt.Errorf("netkit pair rejected: %w", err)

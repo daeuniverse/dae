@@ -76,14 +76,20 @@ func createNetkitDeviceViaIpCmd(name, peerName string, txQLen int, scrubNone boo
 	}
 
 	// If scrub configuration was requested and failed, try without it.
-	out := string(output)
-	if scrubNone && (strings.Contains(out, "Unknown parameter") ||
-		strings.Contains(out, "Error: argument of \"scrub\"") ||
-		strings.Contains(out, "Garbage instead of arguments")) {
+	if scrubNone && scrubRejected(string(output)) {
 		return createNetkitDeviceViaIpCmd(name, peerName, txQLen, false)
 	}
 
 	return fmt.Errorf("failed to create Netkit device: %w: %s", err, string(output))
+}
+
+// scrubRejected reports whether an `ip link add` failure output indicates the
+// installed iproute2 build rejects the peer-side `scrub` token — the signal to
+// retry once without scrub options.
+func scrubRejected(out string) bool {
+	return strings.Contains(out, "Unknown parameter") ||
+		strings.Contains(out, "Error: argument of \"scrub\"") ||
+		strings.Contains(out, "Garbage instead of arguments")
 }
 
 // iproute2MinNetkitVersion is the first iproute2 release that understands the
@@ -119,7 +125,17 @@ func createNetkitDeviceInNetns(log *logrus.Logger, name, peerName string, txQLen
 	cmd := exec.Command("ip", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create Netkit device with peer in netns: %w: %s", err, string(output))
+		// Mirror the scrub-tolerance downgrade of createNetkitDeviceViaIpCmd:
+		// an iproute2 build that rejects the peer-side `scrub` token must not
+		// permanently lose the in-netns path to the legacy sequence.
+		if scrubNone && scrubRejected(string(output)) {
+			args = netkitIpLinkAddArgsInNetns(name, peerName, false, nsName)
+			cmd = exec.Command("ip", args...)
+			output, err = cmd.CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("failed to create Netkit device with peer in netns: %w: %s", err, string(output))
+		}
 	}
 	// Success, set TX queue length on the primary (host-side) end.
 	if txQLen > 0 {
