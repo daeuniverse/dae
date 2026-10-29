@@ -548,7 +548,7 @@ enum bpf_stats_key {
 	// key=4: reply binding kept because a different publisher raced a fresh
 	// entry (see publish_redirect_track_for_packet).
 	BPF_STATS_REDIRECT_REBIND_REJECTED = 4,
-	// key=5: pure SYN refused to rewrite an ACTIVE flow's routing metadata.
+	// key=5: pure SYN with conflicting routing refused on an ACTIVE flow.
 	BPF_STATS_SYN_REBIND_REJECTED = 5,
 	// key=6: established TCP forwarded without any cached routing decision
 	// (e.g. flows that predate a restart). Visibility only, no policy change.
@@ -2573,13 +2573,14 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 	 * not inherit stale routing metadata.
 	 *
 	 * Exception: an ACTIVE entry that carries a routing decision
-	 * belongs to a live flow, and a same-tuple pure SYN is then an illegal
-	 * mid-stream SYN that the kernel answers with a challenge ACK instead of
-	 * opening a connection. Deleting the entry there let a single spoofed SYN
+	 * may belong to either an opening handshake or an established flow. A
+	 * same-tuple pure SYN can therefore be a retransmission, not just an
+	 * illegal mid-stream SYN. Deleting the entry let a single spoofed SYN
 	 * re-route everything the flow sends afterwards — including its reply
 	 * binding — for the rest of the flow's life, because an ACTIVE entry with
 	 * routing metadata has no TTL to heal it. Refuse the rewrite instead:
-	 * keep the entry, lock the rebind, count it and emit a rate-limited event.
+	 * keep the entry and lock the rebind. Only count and report a conflicting
+	 * routing decision; an unchanged decision does not attempt a rewrite.
 	 *
 	 * That protection is bound to the generation it was decided under. A
 	 * connection that outlives a reload — the staged handoff let it drain
@@ -2597,10 +2598,19 @@ __mark_tcp_seen(struct tuples_key *key, bool is_wan_ingress_direction,
 		    routing_generation_matches(state, args)) {
 			/* Same generation: the flow keeps its routing. */
 			args->flags |= CT_ARGS_REBIND_LOCKED;
-			bump_stat(BPF_STATS_SYN_REBIND_REJECTED);
-			send_anomaly_event(EVENT_RATE.syn_rebind_key,
-					   DAE_EVENT_SYN_REBIND_REJECTED,
-					   key->l4proto, key);
+			/* ACTIVE also includes the opening handshake. A SYN
+			 * retransmission with the same routing is not a rewrite.
+			 * Keep the lock (including side fields and reply binding),
+			 * but only report a conflicting routing decision. */
+			union routing_meta proposed = build_routing_meta(
+				args->outbound, args->mark, args->must, args->dscp);
+			if ((args->flags & CT_ARGS_HAS_ROUTING) &&
+			    proposed.raw != state->meta.raw) {
+				bump_stat(BPF_STATS_SYN_REBIND_REJECTED);
+				send_anomaly_event(EVENT_RATE.syn_rebind_key,
+						   DAE_EVENT_SYN_REBIND_REJECTED,
+						   key->l4proto, key);
+			}
 		} else {
 			/* Either the entry carries no routing decision to
 			 * inherit, or it carries one from another generation:
