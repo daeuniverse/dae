@@ -114,6 +114,7 @@ jobs:
               # Cgroup2 mount-point probe cache (concurrent consistency of the
               # sync.OnceValues singleton; reads /proc/mounts, no BPF map needed).
               TestDetectCgroupPathCaching
+              TestProductionProgramsLoad
             )
             printf '%s\n' "${whitelist[@]}" | sort -u > /tmp/datapath-whitelist.txt
 
@@ -154,6 +155,17 @@ jobs:
       # (and a control architecture must really succeed, so a missing compiler
       # cannot make the gate pass vacuously). Guarded to one matrix leg: it
       # compiles trace once per checked architecture.
+      # clang 19 already runs this test with the datapath whitelist above.
+      - name: Load the production object
+        if: matrix.env.VERSION != 19
+        env: ${{ matrix.env }}
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED CLANG=clang-$VERSION make ebpf
+          sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED go test -c ./control -o /tmp/dae-control-load.test
+          sudo /tmp/dae-control-load.test -test.run '^TestProductionProgramsLoad$' -test.count=1 -test.v | tee /tmp/load.log
+          grep -qE -- '--- PASS: TestProductionProgramsLoad([[:space:]]|$)' /tmp/load.log
+
       - name: Trace architecture ledger
         if: matrix.env.VERSION == 19
         env: ${{ matrix.env }}
