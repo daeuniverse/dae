@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -214,6 +215,16 @@ const (
 func bindTestUDP(t *testing.T, addr string) {
 	t.Helper()
 
+	pc, err := listenTestUDP(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+}
+
+// listenTestUDP is bindTestUDP without the test plumbing, for callers that bind
+// on a thread of their own.
+func listenTestUDP(addr string) (net.PacketConn, error) {
 	network, freebindLevel, freebindOpt := "udp4", syscall.IPPROTO_IP, syscall.IP_FREEBIND
 	if strings.HasPrefix(addr, "[") { // the IPv6 spelling is bracketed
 		network, freebindLevel, freebindOpt = "udp6", syscall.IPPROTO_IPV6, ipv6Freebind
@@ -222,9 +233,9 @@ func bindTestUDP(t *testing.T, addr string) {
 	lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
 		var soErr error
 		if err := c.Control(func(fd uintptr) {
-			// SO_REUSEADDR lets the test place a wildcard :53 listener next
-			// to the host's loopback-only stub resolver; the freebind option
-			// lets it bind a documentation address.
+			// SO_REUSEADDR lets the listener share its port with sockets
+			// bound to other addresses; the freebind option lets it bind a
+			// documentation address.
 			soErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
 			if soErr != nil {
 				return
@@ -237,9 +248,27 @@ func bindTestUDP(t *testing.T, addr string) {
 	}}
 	pc, err := lc.ListenPacket(context.Background(), network, addr)
 	if err != nil {
-		t.Fatalf("bind host-netns UDP listener on %s: %v", addr, err)
+		return nil, fmt.Errorf("bind host-netns UDP listener on %s: %w", addr, err)
 	}
-	t.Cleanup(func() { _ = pc.Close() })
+	return pc, nil
+}
+
+// inFreshNetns runs fn on an OS thread moved into a new network namespace. A
+// socket fn binds cannot collide with the host's own listeners, such as a
+// resolver some CI hosts run on an IPv4 :53, and a BPF test run started from
+// that thread looks sockets up in the same namespace. The thread is never
+// unlocked, so it exits with the goroutine instead of returning to the pool.
+func inFreshNetns(fn func() error) error {
+	errc := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
+			errc <- fmt.Errorf("unshare network namespace: %w", err)
+			return
+		}
+		errc <- fn()
+	}()
+	return <-errc
 }
 
 // TestABLanIngressLocalServiceBypass pins which host-netns UDP sockets may
@@ -350,23 +379,36 @@ func TestABLanIngressLocalServiceBypass(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if c.bind != "" {
-				bindTestUDP(t, c.bind)
-			}
-
-			status, data, ctx, err := runBpfProgram(c.program, make([]byte, 4096-256-320), make([]byte, 256))
-			if err != nil || status != 0 {
-				t.Fatalf("packet generation: status=%d err=%v", status, err)
-			}
-
 			runner := c.runner
 			if runner == nil {
 				runner = obj.TestAbLanIngressUdpLocalServiceRunner
 			}
 
-			status, _, _, err = runBpfProgram(runner, data, ctx)
+			// The listener and both test runs share one fresh namespace, so the
+			// host's sockets on the same ports neither block the bind nor stand
+			// in for the listener under test.
+			var status uint32
+			err := inFreshNetns(func() error {
+				if c.bind != "" {
+					pc, err := listenTestUDP(c.bind)
+					if err != nil {
+						return err
+					}
+					defer pc.Close()
+				}
+
+				genStatus, data, ctx, err := runBpfProgram(c.program, make([]byte, 4096-256-320), make([]byte, 256))
+				if err != nil || genStatus != 0 {
+					return fmt.Errorf("packet generation: status=%d err=%v", genStatus, err)
+				}
+				status, _, _, err = runBpfProgram(runner, data, ctx)
+				if err != nil {
+					return fmt.Errorf("LAN ingress program: %w", err)
+				}
+				return nil
+			})
 			if err != nil {
-				t.Fatalf("LAN ingress program: %v", err)
+				t.Fatal(err)
 			}
 			t.Logf("LAN ingress status = %d (want %d)", status, c.wantStatus)
 			if status != c.wantStatus {
