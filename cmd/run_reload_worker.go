@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -46,6 +47,16 @@ type reloadWorker struct {
 	pprofServer *http.Server
 }
 
+// currentRuntimeGeneration returns the supervisor's active generation when it
+// still describes the given control plane, so a reload does not mint a new
+// runtime identity before the candidate is published.
+func (w *reloadWorker) currentRuntimeGeneration(controlPlane *control.ControlPlane, listener *control.Listener, cancel context.CancelFunc, conf *config.Config) *runtimeGeneration {
+	if active := w.runtimeSupervisor.activeSnapshot(); active != nil && active.controlPlane == controlPlane {
+		return active
+	}
+	return newRuntimeGeneration(controlPlane, listener, cancel, conf)
+}
+
 // attachPreparedSessionManager attaches the process-owned session manager to a
 // newly built control plane. A prior construction error is returned unchanged
 // so callers can keep their existing failure tails. An attach failure closes
@@ -69,6 +80,7 @@ func (w *reloadWorker) run() {
 	for req := range w.reloadManager.reloadReqs {
 		w.reloadManager.reloadActive.Store(true)
 		req = w.reloadManager.coalesceReloadRequest(req)
+		w.reloadManager.beginRuntimeReload(req)
 		reloadStartedAt := req.requestedAt
 		reloadStartedAtMono := req.requestedAtMono
 
@@ -100,6 +112,9 @@ func (w *reloadWorker) run() {
 			newConf.Global.WanInterface = nil
 			newConf.Global.LanInterface = nil
 			newConf.Global.LogLevel = "warning"
+			// Suspend must not look like an API configuration change. The
+			// listener is process-owned and keeps its startup configuration.
+			newConf.Api = w.conf.Api
 		} else {
 			var includes []string
 			newConf, includes, err = readConfig(cfgFile)
@@ -111,6 +126,22 @@ func (w *reloadWorker) run() {
 				continue
 			}
 			w.log.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+		}
+		if !req.isSuspend {
+			if apiErr := newConf.Api.Validate(); apiErr != nil {
+				reloadErr := fmt.Errorf("invalid api config: %w", apiErr)
+				w.reloadManager.setReloadError(reloadErr)
+				w.log.WithError(reloadErr).Errorln("[Reload] Refusing reload with invalid api config")
+				w.reloadManager.failReloadAttempt(reloadErr)
+				continue
+			}
+			if (newConf.Api.Enabled || w.conf.Api.Enabled) && !reflect.DeepEqual(newConf.Api, w.conf.Api) {
+				reloadErr := fmt.Errorf("api settings changed; restart dae to apply the new listener")
+				w.reloadManager.setReloadError(reloadErr)
+				w.log.WithError(reloadErr).Warnln("[Reload] Refusing reload that changes api settings")
+				w.reloadManager.failReloadAttempt(reloadErr)
+				continue
+			}
 		}
 		// Re-apply the new log level/formatter in place instead of swapping the
 		// w.log pointer: the signal loop and the fast-exit path read w.log
@@ -140,6 +171,7 @@ func (w *reloadWorker) run() {
 			w.log.WithError(reloadErr).Warnln("[Reload] Ignoring reload while shutdown is in progress")
 			w.reloadManager.reloadActive.Store(false)
 			clearReloadPending(&w.reloadManager.reloadPending)
+			w.reloadManager.finishRuntimeReload(false)
 			continue
 		}
 		transitionHeld := true
@@ -259,18 +291,8 @@ func (w *reloadWorker) run() {
 			}
 			newC.InheritDialerHealthFrom(oldC)
 			configureTransparentHugePages(w.log, newConf.Global.DisableTHP)
-			activeGeneration := &runtimeGeneration{
-				controlPlane: oldC,
-				listener:     oldListener,
-				cancel:       oldCancel,
-				conf:         oldConf,
-			}
-			candidateGeneration := &runtimeGeneration{
-				controlPlane: newC,
-				listener:     stagedListener,
-				cancel:       cancel,
-				conf:         newConf,
-			}
+			activeGeneration := w.currentRuntimeGeneration(oldC, oldListener, oldCancel, oldConf)
+			candidateGeneration := newRuntimeGeneration(newC, stagedListener, cancel, newConf)
 			if err := w.runtimeSupervisor.replaceActive(activeGeneration); err != nil {
 				failSupervisorStep(err, "record active generation for staged reload", candidateGeneration, nil, nil)
 				continue
@@ -328,18 +350,8 @@ func (w *reloadWorker) run() {
 
 			newC.InheritDialerHealthFrom(oldC)
 			configureTransparentHugePages(w.log, newConf.Global.DisableTHP)
-			activeGeneration := &runtimeGeneration{
-				controlPlane: oldC,
-				listener:     oldListener,
-				cancel:       oldCancel,
-				conf:         oldConf,
-			}
-			candidateGeneration := &runtimeGeneration{
-				controlPlane: newC,
-				listener:     stagedListener,
-				cancel:       cancel,
-				conf:         newConf,
-			}
+			activeGeneration := w.currentRuntimeGeneration(oldC, oldListener, oldCancel, oldConf)
+			candidateGeneration := newRuntimeGeneration(newC, stagedListener, cancel, newConf)
 			if err := w.runtimeSupervisor.replaceActive(activeGeneration); err != nil {
 				failSupervisorStep(err, "record active generation for fresh datapath reload", candidateGeneration, nil, nil)
 				continue
@@ -446,18 +458,8 @@ func (w *reloadWorker) run() {
 
 		newC.InheritDialerHealthFrom(oldC)
 		configureTransparentHugePages(w.log, newConf.Global.DisableTHP)
-		activeGeneration := &runtimeGeneration{
-			controlPlane: oldC,
-			listener:     oldListener,
-			cancel:       oldCancel,
-			conf:         oldConf,
-		}
-		candidateGeneration := &runtimeGeneration{
-			controlPlane: newC,
-			listener:     stagedListener,
-			cancel:       newCancel,
-			conf:         newConf,
-		}
+		activeGeneration := w.currentRuntimeGeneration(oldC, oldListener, oldCancel, oldConf)
+		candidateGeneration := newRuntimeGeneration(newC, stagedListener, newCancel, newConf)
 		// The legacy path moved its shared BPF object above; on supervisor
 		// failure the ownership must return before candidate teardown, and the
 		// old DNS listener restarts after it.
