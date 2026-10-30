@@ -106,8 +106,18 @@ group {
         filter: name(node1, node2)
         policy: fixed(0)
     }
+
+    manual_group {
+        filter: subtag(my_sub)
+        policy: select
+    }
 }
 ```
+
+`select` 保留一个可在运行时切换的成员，TCP 与 UDP 分别保存选择。`select(n)`
+表示初始选择第 n 个成员。运行时选择只存在内存中：不会写回配置文件，reload
+或重启后回到配置的索引。可通过原生 API 的
+`PUT /api/v1/groups/{group_id}/selection` 切换（见[原生 API](./api.md)）。
 
 ```jsonc
 # route.dae

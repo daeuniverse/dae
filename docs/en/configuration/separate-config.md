@@ -101,8 +101,20 @@ group {
         filter: name(node1, node2)
         policy: fixed(0)
     }
+
+    manual_group {
+        filter: subtag(my_sub)
+        policy: select
+    }
 }
 ```
+
+`select` keeps one member switchable at runtime, per transport (TCP and UDP
+separately). `select(n)` starts at the n-th member of the group. The runtime
+choice stays in memory only: it is never written back to the configuration and
+a reload or restart returns to the configured index. Switch it through the
+native API with `PUT /api/v1/groups/{group_id}/selection` (see
+[Native API](./api.md)).
 
 ```jsonc
 # route.dae

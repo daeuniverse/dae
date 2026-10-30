@@ -460,7 +460,22 @@ group {
     #filter: name(keyword: HK, keyword: SG)
     policy: min_moving_avg
   }
+  # 保留一个可在运行时通过原生 API 切换的成员。
+  # select(n) 表示初始选择第 n 个成员；reload 后回到该索引。
+  #manual {
+  #  policy: select
+  #}
 }
+
+# 可选：原生 HTTP 控制面 API，默认关闭。
+# 见 https://github.com/daeuniverse/dae/blob/main/docs/zh/configuration/api.md
+#api {
+#  enabled: true
+#  listen: '127.0.0.1:9527'
+#  secret: 'replace-with-a-long-random-token'
+#  # 可选：在 <listen>/ui/ 提供已构建的前端（例如 doona）。
+#  #ui: '/usr/share/doona'
+#}
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
