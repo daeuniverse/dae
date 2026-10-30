@@ -2,7 +2,7 @@
 set -euo pipefail
 
 OUTDIR="${1:-${TMPDIR:-/tmp}/dae-control-memory}"
-IMAGE="${GO_IMAGE:-golang:1.26}"
+IMAGE="${GO_IMAGE:-golang:1.27}"
 BENCH_REGEX='BenchmarkDnsCache_COW_GetPackedResponse$|BenchmarkDnsCache_COW_Update$|BenchmarkDnsController_UpdateDnsCacheTtl_Replace$|BenchmarkDnsController_OnDnsCacheEvicted_Spill$|BenchmarkStaleDnsSideEffects_SharedIp$|BenchmarkDnsController_EvictLRUIfFull$'
 PROFILE_BENCH='BenchmarkDnsController_UpdateDnsCacheTtl_Replace$'
 

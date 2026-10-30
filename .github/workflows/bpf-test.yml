@@ -41,18 +41,22 @@ permissions:
 
 jobs:
   bpf_tests:
-    name: BPF Unit Test
-    runs-on: ubuntu-latest
+    name: BPF Unit Test (${{ matrix.env.VERSION }})
+    # Each clang comes from the archive of the image that still ships it: Ubuntu 26.04 dropped 15 to 19.
+    runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: 0
     strategy:
       matrix:
-        env:
-        - VERSION: 15
-        - VERSION: 16
-        - VERSION: 17
-        - VERSION: 18
-        - VERSION: 19
+        include:
+        - {os: ubuntu-24.04, env: {VERSION: 15}}
+        - {os: ubuntu-24.04, env: {VERSION: 16}}
+        - {os: ubuntu-24.04, env: {VERSION: 17}}
+        - {os: ubuntu-24.04, env: {VERSION: 18}}
+        - {os: ubuntu-24.04, env: {VERSION: 19}}
+        - {os: ubuntu-26.04, env: {VERSION: 20}}
+        - {os: ubuntu-26.04, env: {VERSION: 21}}
+        - {os: ubuntu-26.04, env: {VERSION: 22}}
 
     steps:
       - name: Checkout code
@@ -62,10 +66,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.ref }}
 
-      - name: Set up Go 1.26
+      - name: Set up Go 1.27
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: 1.26
+          go-version: 1.27
 
       - name: Apply the canonical build experiments
         run: make -s print-goexperiment-env >> "$GITHUB_ENV"
@@ -110,6 +114,7 @@ jobs:
               # Cgroup2 mount-point probe cache (concurrent consistency of the
               # sync.OnceValues singleton; reads /proc/mounts, no BPF map needed).
               TestDetectCgroupPathCaching
+              TestProductionProgramsLoad
             )
             printf '%s\n' "${whitelist[@]}" | sort -u > /tmp/datapath-whitelist.txt
 
@@ -150,6 +155,17 @@ jobs:
       # (and a control architecture must really succeed, so a missing compiler
       # cannot make the gate pass vacuously). Guarded to one matrix leg: it
       # compiles trace once per checked architecture.
+      # clang 19 already runs this test with the datapath whitelist above.
+      - name: Load the production object
+        if: matrix.env.VERSION != 19
+        env: ${{ matrix.env }}
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED CLANG=clang-$VERSION make ebpf
+          sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED go test -c ./control -o /tmp/dae-control-load.test
+          sudo /tmp/dae-control-load.test -test.run '^TestProductionProgramsLoad$' -test.count=1 -test.v | tee /tmp/load.log
+          grep -qE -- '--- PASS: TestProductionProgramsLoad([[:space:]]|$)' /tmp/load.log
+
       - name: Trace architecture ledger
         if: matrix.env.VERSION == 19
         env: ${{ matrix.env }}
@@ -166,7 +182,8 @@ jobs:
 
   bpf_abi_big_endian:
     name: BPF ABI (s390x)
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 has no qemu-user-static package.
+    runs-on: ubuntu-24.04
     env:
       CGO_ENABLED: 0
 
@@ -177,10 +194,10 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.ref }}
 
-      - name: Set up Go 1.26
+      - name: Set up Go 1.27
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: 1.26
+          go-version: 1.27
 
       - name: Apply the canonical build experiments
         run: make -s print-goexperiment-env >> "$GITHUB_ENV"

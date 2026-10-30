@@ -150,27 +150,27 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
-      - name: Set up Go 1.26
+      - name: Set up Go 1.27
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: 1.26
+          go-version: 1.27
           cache: false
 
       - name: Cache Go modules
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-mod-1.26-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-mod-1.27-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-mod-1.26-
+            ${{ runner.os }}-go-mod-1.27-
 
       - name: Cache Go build artifacts
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-1.26-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-${{ hashFiles('go.sum', 'Makefile') }}
+          key: ${{ runner.os }}-go-build-1.27-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-${{ hashFiles('go.sum', 'Makefile') }}
           restore-keys: |
-            ${{ runner.os }}-go-build-1.26-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-
+            ${{ runner.os }}-go-build-1.27-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.goarm }}-${{ matrix.goamd64 }}-${{ matrix.goriscv64 }}-
 
       - name: Install Dependencies
         run: |
