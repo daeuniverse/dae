@@ -1,42 +1,68 @@
-name: Feature Request
-description: feature request related to dae
-title: '[Feature Request] <title>'
-labels: ['topic/feature']
+name: Feature Request / 功能请求
+description: Explain an unmet need in dae / 请说明 dae 尚未满足的需求
+title: '[Feature Request] <title / 标题>'
+labels: [topic/feature]
 body:
-  - type: textarea
+  - type: markdown
     attributes:
-      label: Greetings
-      description: general greetings
-      placeholder: |
-        Thanks for supporting the @daeuniverse community! If you have a good idea that wishes us to integrate to the current dae project, feel free to elaborate here.
+      value: |-
+        AI may help you write this; unverified content may not be submitted.
 
-        You may also post your idea on the [Discussions](https://github.com/daeuniverse/dae/discussions) or the daeuniverse Telegram channel (https://t.me/daeuniverse)
+        可以用 AI 辅助撰写，但提交前须自行核实全部内容。
 
-        Prior to opening a feature request, please search for existing requests.
+        State each fact once; do not restate the title, diff or template.
+        同一件事只写一次，不要重复标题、代码改动或模板内容。
+        No filler, praise, summaries of your own work or emoji.
+        不写客套话、夸赞和自我总结，不用表情符号。
+        Paste only relevant log lines; link or collapse long output.
+        日志只贴相关的几行；较长的输出请附链接或折叠。
+        Say what you could not verify.
+        没有验证过的地方请注明。
 
-        If you find an existing feature that matches your needs, use the 👍 emoji to show your support for it. If the specifics of your use case are not covered in the existing feature request but the idea seems similar enough, please take the time to *add new conversation* which helps the feature's design evolve.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and use case / 问题与使用场景
+      description: Explain your unmet need and why existing features do not meet it. For related ideas, use Discussions (https://github.com/daeuniverse/dae/discussions) or Telegram (https://t.me/daeuniverse). / 请说明你的需求，以及现有功能为什么无法满足。还不成熟的想法请到 Discussions 或 Telegram 讨论。
+    validations:
+      required: true
 
-        If you do not find any other existing requests for the feature you desire, you should open a new feature request. Please take the time to help us understand your use-case as precisely as possible. Be sure to demonstrate that you've evaluated existing features and found them unsuitable.
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed feature / 建议功能
+      description: Describe the behavior you want and how it would address the problem. / 请说明你希望的行为，以及它如何解决问题。
     validations:
       required: false
 
   - type: textarea
+    id: alternatives
     attributes:
-      label: Feature Request
-      description: What feature you would like us to integrate into the dae project.
+      label: Alternatives and context / 替代方案与背景
+      description: Explain workarounds you tried or add supporting examples and links. / 请说明已经试过的变通做法，或补充相关的例子和链接。
+    validations:
+      required: false
+
+  - type: input
+    id: owner
+    attributes:
+      label: Human responsible / 负责人
+      description: Enter your GitHub username; you verified the content and will answer follow-up questions. / 请填写你的 GitHub 用户名。填写即表示你已核实内容，并会回复后续提问。
+      placeholder: '@your-name'
     validations:
       required: true
 
-  - type: textarea
+  - type: checkboxes
+    id: confirm
     attributes:
-      label: Use Cases
-      description: Share with us what use cases the proposed new feature is categorized to.
-    validations:
-      required: true
-
-  - type: textarea
-    attributes:
-      label: Potential Benefits
-      description: Why is this needed.
-    validations:
-      required: true
+      label: Confirm / 确认
+      description: Check only true claims; a false claim closes the issue. / 只勾选属实的选项，勾选的内容不属实时 issue 会被关闭。
+      options:
+        - label: I searched existing issues / 我已搜索过现有 issue
+          required: true
+        - label: This describes what I need / 以上是我的实际需求
+          required: true
+        - label: I checked the boxes above without reading them / 我没有阅读上面的选项就直接勾选了
+          required: false
+        - label: I am an AI agent, and this content was submitted without human review / 我是 AI 代理，这些内容没有经过人工审核
+          required: false

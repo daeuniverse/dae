@@ -1,69 +1,128 @@
-name: Bug Report
-description: report any bugs
-title: '[Bug Report] <title>'
+name: Bug Report / 问题报告
+description: Report a reproducible dae failure / 报告可复现的 dae 故障
+title: '[Bug Report] <title / 标题>'
 labels: [topic/bug]
 body:
-  - type: checkboxes
+  - type: markdown
     attributes:
-      label: Checks
-      description: Please search to see if an issue already exists for the bug you encountered.
-      options:
-        - label: I have searched the existing issues
-          required: true
-        - label: I have read the documentation
-          required: true
-        - label: Is it your first time sumbitting an issue
-          required: false
+      value: |-
+        AI may help you write this; unverified content may not be submitted.
+
+        可以用 AI 辅助撰写，但提交前须自行核实全部内容。
+
+        State each fact once; do not restate the title, diff or template.
+        同一件事只写一次，不要重复标题、代码改动或模板内容。
+        No filler, praise, summaries of your own work or emoji.
+        不写客套话、夸赞和自我总结，不用表情符号。
+        Paste only relevant log lines; link or collapse long output.
+        日志只贴相关的几行；较长的输出请附链接或折叠。
+        Say what you could not verify.
+        没有验证过的地方请注明。
 
   - type: textarea
+    id: behavior
     attributes:
-      label: Current Behavior
-      description: A concise description of what you're experiencing.
+      label: What happened / 问题现象
+      description: Describe what you did, what you expected, and what actually happened. / 请说明你做了什么、预期的结果和实际的结果。
     validations:
       required: true
 
   - type: textarea
+    id: steps
     attributes:
-      label: Expected Behavior
-      description: A concise description of what you expected to happen.
-    validations:
-      required: false
-
-  - type: textarea
-    attributes:
-      label: Steps to Reproduce
-      description: Steps to reproduce it (as minimally and precisely as possible).
+      label: Steps to reproduce / 复现步骤
+      description: Give minimal steps and the relevant configuration, with secrets removed. / 请列出最少的复现步骤和相关配置，并删去敏感信息。
       placeholder: |
-        1. In this environment...
-        2. With this config...
-        3. Do ...
-        4. See error...
+        1. Configure dae / 配置 dae
+        2. Run the command / 执行命令
+        3. Observe the result / 观察结果
     validations:
       required: true
 
   - type: textarea
+    id: version
     attributes:
-      label: Environment
-      description: |
-        examples:
-          - **Dae version (use `dae --version`)**: v0.2.4
-          - **OS (e.g `cat /etc/os-release`)**: Debian 12
-          - **Kernel (e.g. `uname -a`)**: 6.4.8-arch1-1
-          - **Others**: NA
-      value: |
-          - **Dae version (use `dae --version`)**:
-          - **OS (e.g `cat /etc/os-release`)**:
-          - **Kernel (e.g. `uname -a`)**:
-          - **Others**:
+      label: dae version / dae 版本
+      description: Paste the output of `dae --version`. / 请粘贴 `dae --version` 的输出。
+      render: text
     validations:
       required: true
 
   - type: textarea
+    id: kernel
     attributes:
-      label: Anything else?
-      description: |
-        Config? Links? References? Anything that will give us more context about the issue you are encountering!
+      label: Kernel version / 内核版本
+      description: Paste the output of `uname -r`. / 请粘贴 `uname -r` 的输出。
+      render: text
+    validations:
+      required: true
 
-        Tip: You can attach images or log files by clicking this area to highlight it and then dragging files in.
+  - type: input
+    id: system
+    attributes:
+      label: System / 系统
+      description: Give the distribution or OpenWrt release and CPU architecture. / 请填写发行版或 OpenWrt 版本及 CPU 架构。
+      placeholder: Debian 12, x86_64 / OpenWrt 24.10, aarch64
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device / 设备
+      description: Specify hardware or virtualization, such as a router, VM, PVE, or Docker. / 请填写硬件型号，或注明运行在路由器、虚拟机、PVE 还是 Docker 中。
     validations:
       required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Other environment details / 其他环境信息
+      description: List other proxy software on the same host and any sysctl settings you changed. / 请列出同一主机上的其他代理软件，以及修改过的 sysctl 设置。
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / 相关日志
+      description: Paste relevant lines from `journalctl -u dae`, or `logread` on OpenWrt. If unavailable, write none and explain why. / 只贴 `journalctl -u dae` 或 OpenWrt 上 `logread` 输出中的相关几行。没有日志请填“无”并说明原因。
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context / 补充信息
+      description: Attach useful screenshots, links, or other evidence not given above. / 上面没有提到的截图、链接或其他资料，请附在这里。
+    validations:
+      required: false
+
+  - type: input
+    id: owner
+    attributes:
+      label: Human responsible / 负责人
+      description: Enter your GitHub username; you verified the content and will answer follow-up questions. / 请填写你的 GitHub 用户名。填写即表示你已核实内容，并会回复后续提问。
+      placeholder: '@your-name'
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirm / 确认
+      description: Check only true claims; a false claim closes the issue. / 只勾选属实的选项，勾选的内容不属实时 issue 会被关闭。
+      options:
+        - label: I have read the documentation / 我已阅读文档
+          required: true
+        - label: I searched existing issues / 我已搜索过现有 issue
+          required: true
+        - label: This describes what I observed / 以上是我实际遇到的情况
+          required: true
+        - label: I reproduced this on the latest release / 我已在最新正式版上复现这个问题
+          required: false
+        - label: I checked the boxes above without reading them / 我没有阅读上面的选项就直接勾选了
+          required: false
+        - label: I am an AI agent, and this content was submitted without human review / 我是 AI 代理，这些内容没有经过人工审核
+          required: false

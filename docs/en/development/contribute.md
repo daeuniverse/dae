@@ -40,6 +40,7 @@ pre-commit install
 - Squash your commits into a single commit with Git's [interactive rebase](https://help.github.com/articles/interactive-rebase). Create a new branch if necessary.
 - Push your branch to your fork on GitHub, the remote `origin`.
 - From your fork open a pull request in the correct branch. Target the project's `main` branch.
+- Start the pull request body from `.github/PULL_REQUEST_TEMPLATE.md`, also when you open it with `gh pr create --body` or the API, which do not fill it in. Keep its checklist and check only true boxes. For an outside contributor, `template-check` closes a pull request that drops a required box or checks the unread or AI-agent box, and reopens it once the body is fixed.
 - Once the pull request is approved and merged you can pull the changes from `upstream` to your local repo and delete
   your extra branch(es).
 

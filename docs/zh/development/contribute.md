@@ -40,6 +40,7 @@ pre-commit install
 - 使用 Git 的[交互式 rebase](https://help.github.com/articles/interactive-rebase) 将多次提交合并为一次提交。必要时创建一个新分支。
 - 将分支推送到你在 GitHub 上的 fork，即远程仓库 `origin`。
 - 从你的 fork 向正确的分支创建 Pull Request。目标分支为项目的 `main`。
+- Pull Request 正文须以 `.github/PULL_REQUEST_TEMPLATE.md` 为基础填写。用 `gh pr create --body` 或 API 创建时不会自动带入模板，也须照此填写。请保留勾选清单，只勾选属实的选项。外部贡献者的 Pull Request 如果删掉必选项，或勾选了“未阅读”或“AI 代理”选项，`template-check` 会将其关闭；正文改好后会自动重新打开。
 - Pull Request 获批并合并后，可以将 `upstream` 的改动拉取到本地仓库，并删除多余的分支。
 
 最后还有同样重要的一点：始终使用现在时编写提交信息。提交信息应描述这次提交应用后会对代码产生什么作用，而不是你对代码做了什么。
