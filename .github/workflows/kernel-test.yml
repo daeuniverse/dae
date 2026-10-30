@@ -38,10 +38,10 @@ jobs:
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-    - name: Set up Go 1.26
+    - name: Set up Go 1.27
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
       with:
-        go-version: 1.26
+        go-version: 1.27
         cache: false
 
     - name: Apply the canonical build experiments
@@ -53,9 +53,9 @@ jobs:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: ${{ runner.os }}-go-kernel-1.26-${{ hashFiles('**/go.sum', 'Makefile') }}
+        key: ${{ runner.os }}-go-kernel-1.27-${{ hashFiles('**/go.sum', 'Makefile') }}
         restore-keys: |
-          ${{ runner.os }}-go-kernel-1.26-
+          ${{ runner.os }}-go-kernel-1.27-
 
     - name: Validate semantic-refactor scripts
       run: |

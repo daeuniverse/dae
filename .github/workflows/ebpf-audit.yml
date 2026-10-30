@@ -49,10 +49,10 @@ jobs:
           target="${GITHUB_ENV:?GITHUB_ENV is only set inside GitHub Actions}"
           make -s print-goexperiment-env | tee -a "$target"
 
-      - name: Set up Go 1.26
+      - name: Set up Go 1.27
         uses: actions/setup-go@v6
         with:
-          go-version: 1.26
+          go-version: 1.27
 
       - name: Install Dependencies
         run: |
