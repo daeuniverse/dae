@@ -51,6 +51,8 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### Unreleased
 
+- Fix false SYN rebind diagnostics for unchanged routing decisions, including handshake retransmissions, while preserving the live-flow routing lock.
+
 #### Build and release
 
 - Add a 20:00 UTC+8 nightly build for days with new commits, publishing only to `nightly`.

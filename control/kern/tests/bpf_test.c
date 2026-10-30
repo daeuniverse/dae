@@ -989,7 +989,7 @@ int testsetup_tcp_pure_syn_preserves_live_state(struct __sk_buff *skb)
 	struct conn_state live_state = {};
 	struct conn_state *cur_state;
 	struct tcphdr tcph = {};
-	__u8 outbound = OUTBOUND_USER_DEFINED_MIN;
+	__u8 outbound = OUTBOUND_USER_DEFINED_MIN + 1;
 	__u32 mark = 0;
 	__u8 must = 0;
 	__u64 now, before, rerouted_before;
@@ -3114,6 +3114,57 @@ int test_ab_syn_rebind_lock(struct __sk_buff *skb)
 	    !state->meta.data.has_routing ||
 	    state->meta.data.outbound != OUTBOUND_USER_DEFINED_MIN)
 		return 2;
+
+	/* Identical SYN retransmissions preserve the decision without counting
+	 * a rejected rewrite. ACTIVE does not imply a completed handshake. */
+	before = ab_read_stat(BPF_STATS_SYN_REBIND_REJECTED);
+	if (ab_mark_syn(&key, true, OUTBOUND_USER_DEFINED_MIN, 0x11,
+			routing_epoch_slot_encode(0)))
+		return 16;
+	state = bpf_map_lookup_elem(&conn_state_map, &key);
+	if (!state || state->meta.data.outbound != OUTBOUND_USER_DEFINED_MIN ||
+	    state->meta.data.mark != 0x11)
+		return 17;
+	if (ab_read_stat(BPF_STATS_SYN_REBIND_REJECTED) != before)
+		return 18;
+
+	/* Equal routing must still lock side fields. Each individual routing
+	 * field must also be sufficient to report a conflicting decision. */
+	state->pid = 7;
+	state->mac[0] = 2;
+	state->pname[0] = 'a';
+	for (__u32 field = 0; field < 5; field++) {
+		struct conntrack_args args = {
+			.flags = CT_ARGS_HAS_ROUTING | CT_ARGS_HAS_MAC |
+				 CT_ARGS_HAS_PNAME,
+			.outbound = OUTBOUND_USER_DEFINED_MIN,
+			.mark = 0x11,
+			.pid = 8,
+			.mac = { 4 },
+			.pname = { 'b' },
+			.routing_epoch_slot = routing_epoch_slot_encode(0),
+		};
+
+		if (field == 1)
+			args.outbound++;
+		if (field == 2)
+			args.mark++;
+		if (field == 3)
+			args.must = 1;
+		if (field == 4)
+			args.dscp = 1;
+		state = __mark_tcp_seen(&key, false, 1, &args);
+		if (!state || !(args.flags & CT_ARGS_REBIND_LOCKED))
+			return 19;
+		if (state->meta.raw !=
+		    build_routing_meta(OUTBOUND_USER_DEFINED_MIN, 0x11, 0, 0).raw)
+			return 20;
+		if (state->pid != 7 || state->mac[0] != 2 ||
+		    state->pname[0] != 'a')
+			return 21;
+		if (ab_read_stat(BPF_STATS_SYN_REBIND_REJECTED) != before + field)
+			return 22;
+	}
 
 	state->last_seen_ns = bpf_ktime_get_ns() - 10000000000ULL;
 	before = ab_read_stat(BPF_STATS_SYN_REBIND_REJECTED);
