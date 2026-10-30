@@ -22,6 +22,16 @@ import (
 
 var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
 
+// SelectionNetwork identifies the transport a runtime selector applies to.
+// UDP selection also covers DNS UDP, matching how dae treats transport-level
+// policy.
+type SelectionNetwork string
+
+const (
+	SelectionNetworkTCP SelectionNetwork = "tcp"
+	SelectionNetworkUDP SelectionNetwork = "udp"
+)
+
 type DialerGroup struct {
 	netproxy.Dialer
 
@@ -32,6 +42,16 @@ type DialerGroup struct {
 
 	selectionState   atomic.Pointer[dialerGroupSelectionState]
 	selectionStateMu sync.Mutex
+
+	// selectionIndexes holds the runtime-selected member per transport for
+	// `select` groups. Index 0 is TCP and 1 is UDP. The values start at the
+	// configured default index of a fresh generation, so a reload resets them.
+	selectionIndexes  [2]atomic.Int64
+	selectionRevision atomic.Uint64
+	// overrideIndexes holds a pinned member per transport for the automatic
+	// policies that accept an override. -1 means "no pin", so the policy keeps
+	// choosing. A fresh generation starts unpinned.
+	overrideIndexes [2]atomic.Int64
 
 	dialersAnnotations  []*dialer.Annotation
 	checkTolerance      time.Duration
@@ -82,6 +102,18 @@ func NewDialerGroup(
 	group.selectionState.Store(state)
 	group.cachedMinCheckInterval = group.MinCheckInterval()
 
+	// Selectors and fixed groups both hold a configured member index, so the
+	// reported selection matches the configuration before any runtime switch.
+	defaultIndex := int64(0)
+	switch p.Policy {
+	case consts.DialerSelectionPolicy_Select, consts.DialerSelectionPolicy_Fixed:
+		defaultIndex = int64(p.FixedIndex)
+	}
+	group.selectionIndexes[0].Store(defaultIndex)
+	group.selectionIndexes[1].Store(defaultIndex)
+	group.overrideIndexes[0].Store(-1)
+	group.overrideIndexes[1].Store(-1)
+
 	for _, nt := range standardSelectionNetworkTypes() {
 		group.publishAliveChange(true, nt, true)
 	}
@@ -114,6 +146,11 @@ func (g *DialerGroup) SnapshotForEstablishedFlow(selected *dialer.Dialer) *Diale
 	view.selectionState.Store(&dialerGroupSelectionState{
 		policy: g.currentSelectionState().policy,
 	})
+	view.selectionIndexes[0].Store(g.selectionIndexes[0].Load())
+	view.selectionIndexes[1].Store(g.selectionIndexes[1].Load())
+	view.overrideIndexes[0].Store(g.overrideIndexes[0].Load())
+	view.overrideIndexes[1].Store(g.overrideIndexes[1].Load())
+	view.selectionRevision.Store(g.selectionRevision.Load())
 	return view
 }
 
@@ -158,6 +195,129 @@ func (g *DialerGroup) SetSelectionPolicy(policy DialerSelectionPolicy) {
 
 func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy) {
 	return g.currentSelectionState().policy.Policy
+}
+
+// IsSelector reports whether the group keeps a runtime-switchable member.
+func (g *DialerGroup) IsSelector() bool {
+	return g != nil && g.GetSelectionPolicy() == consts.DialerSelectionPolicy_Select
+}
+
+// Selection returns the member index currently selected for a transport.
+func (g *DialerGroup) Selection(network SelectionNetwork) (index int, ok bool) {
+	if g == nil {
+		return 0, false
+	}
+	slot := selectionSlot(network)
+	if slot < 0 {
+		return 0, false
+	}
+	return int(g.selectionIndexes[slot].Load()), true
+}
+
+// SelectionRevision counts runtime selection changes within this generation.
+// It is not persisted: a new generation starts at zero.
+func (g *DialerGroup) SelectionRevision() uint64 {
+	if g == nil {
+		return 0
+	}
+	return g.selectionRevision.Load()
+}
+
+// SetSelection switches the runtime selection of one transport and returns the
+// new revision. The choice stays in memory only; reload rebuilds the group from
+// the configured index.
+func (g *DialerGroup) SetSelection(network SelectionNetwork, index int) (uint64, error) {
+	if g == nil {
+		return 0, fmt.Errorf("nil dialer group")
+	}
+	slot := selectionSlot(network)
+	if slot < 0 {
+		return 0, fmt.Errorf("unsupported selection network %q", network)
+	}
+	if index < 0 || index >= len(g.Dialers) {
+		return 0, fmt.Errorf("selected dialer index is out of range")
+	}
+	g.selectionIndexes[slot].Store(int64(index))
+	return g.selectionRevision.Add(1), nil
+}
+
+// Override returns the pinned member index for a transport, if one is set.
+func (g *DialerGroup) Override(network SelectionNetwork) (index int, pinned bool) {
+	if g == nil {
+		return 0, false
+	}
+	slot := selectionSlot(network)
+	if slot < 0 {
+		return 0, false
+	}
+	index = int(g.overrideIndexes[slot].Load())
+	return index, index >= 0 && index < len(g.Dialers)
+}
+
+// PinsSelection reports whether the group currently pins this transport, so
+// admission must follow the user's explicit choice instead of probe health.
+// It deliberately ignores the dialer count: an established-flow snapshot keeps
+// the parent's pin state but only the selected dialer, and admission must not
+// change just because the snapshot was shortened.
+func (g *DialerGroup) PinsSelection(network SelectionNetwork) bool {
+	if g == nil {
+		return false
+	}
+	slot := selectionSlot(network)
+	if slot < 0 {
+		return false
+	}
+	return g.overrideIndexes[slot].Load() >= 0
+}
+
+// SetOverride pins a member for one transport so an automatic policy stops
+// choosing. The pin lives in memory only: reload rebuilds the group unpinned.
+func (g *DialerGroup) SetOverride(network SelectionNetwork, index int) (uint64, error) {
+	if g == nil {
+		return 0, fmt.Errorf("nil dialer group")
+	}
+	slot := selectionSlot(network)
+	if slot < 0 {
+		return 0, fmt.Errorf("unsupported selection network %q", network)
+	}
+	if index < 0 || index >= len(g.Dialers) {
+		return 0, fmt.Errorf("selected dialer index is out of range")
+	}
+	g.overrideIndexes[slot].Store(int64(index))
+	return g.selectionRevision.Add(1), nil
+}
+
+// ClearOverride drops the pin for one transport and reports the new revision.
+// Clearing an unpinned transport still bumps the revision so the caller can
+// observe that the state was re-read.
+func (g *DialerGroup) ClearOverride(network SelectionNetwork) (uint64, error) {
+	if g == nil {
+		return 0, fmt.Errorf("nil dialer group")
+	}
+	slot := selectionSlot(network)
+	if slot < 0 {
+		return 0, fmt.Errorf("unsupported selection network %q", network)
+	}
+	g.overrideIndexes[slot].Store(-1)
+	return g.selectionRevision.Add(1), nil
+}
+
+func selectionSlot(network SelectionNetwork) int {
+	switch network {
+	case SelectionNetworkTCP:
+		return 0
+	case SelectionNetworkUDP:
+		return 1
+	default:
+		return -1
+	}
+}
+
+func selectionSlotIndex(l4Proto consts.L4ProtoStr) int {
+	if l4Proto == consts.L4ProtoStr_UDP {
+		return 1
+	}
+	return 0
 }
 
 func (g *DialerGroup) MinCheckInterval() time.Duration {
@@ -366,6 +526,13 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 	if len(g.Dialers) == 0 {
 		return nil, 0, nil, fmt.Errorf("no dialer in this group")
 	}
+	if index := g.pinnedIndex(networkType, policy); index >= 0 {
+		// A pin outranks the automatic policy for this transport, exactly like
+		// a selector's choice: it ignores 'excluded' and per-dialer health.
+		d := g.Dialers[index]
+		selected := preferAlternateSelectionNetworkType(d, networkType)
+		return d, 0, selected, nil
+	}
 	switch policy.Policy {
 	case consts.DialerSelectionPolicy_Random:
 		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
@@ -390,6 +557,18 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 		selected := preferAlternateSelectionNetworkType(g.Dialers[policy.FixedIndex], networkType)
 		return g.Dialers[policy.FixedIndex], 0, selected, nil
 
+	case consts.DialerSelectionPolicy_Select:
+		// A selector holds an explicit runtime choice per transport. Like
+		// Fixed, it ignores 'excluded': the user's choice outranks automatic
+		// failover, and the kernel admits the group optimistically.
+		index := int(g.selectionIndexes[selectionSlotIndex(networkType.L4Proto)].Load())
+		if index < 0 || index >= len(g.Dialers) {
+			return nil, 0, nil, fmt.Errorf("selected dialer index is out of range")
+		}
+		d := g.Dialers[index]
+		selected := preferAlternateSelectionNetworkType(d, networkType)
+		return d, 0, selected, nil
+
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
@@ -409,11 +588,25 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 	}
 }
 
+// pinnedIndex reports the pinned member for the request's transport, or -1
+// when the policy owns its choice or no pin is set.
+func (g *DialerGroup) pinnedIndex(networkType *dialer.NetworkType, policy DialerSelectionPolicy) int {
+	if !policy.Policy.SupportsOverride() {
+		return -1
+	}
+	index := int(g.overrideIndexes[selectionSlotIndex(networkType.L4Proto)].Load())
+	if index < 0 || index >= len(g.Dialers) {
+		return -1
+	}
+	return index
+}
+
 func (g *DialerGroup) selectionNetworkTypes(networkType *dialer.NetworkType, policy DialerSelectionPolicy) (networkTypes [3]dialer.NetworkType, count int) {
 	networkTypes[0] = *networkType
 	count = 1
 
 	if policy.Policy == consts.DialerSelectionPolicy_Fixed ||
+		policy.Policy == consts.DialerSelectionPolicy_Select ||
 		networkType.L4Proto != consts.L4ProtoStr_UDP ||
 		networkType.EffectiveUdpHealthDomain() != dialer.UdpHealthDomainData {
 		return networkTypes, count
@@ -546,11 +739,13 @@ func (g *DialerGroup) publishAliveChange(alive bool, networkType *dialer.Network
 
 // groupPublishesOptimisticAlive reports whether the group's selection policy
 // keeps the kernel outbound-connectivity slot open regardless of per-dialer
-// health. Fixed and Random pick in userspace, so the kernel must always admit
-// flows for the group (mirrors resumeOutboundConnectivityUpdates).
+// health. Fixed, Select and Random pick in userspace, so the kernel must
+// always admit flows for the group (mirrors resumeOutboundConnectivityUpdates).
 func groupPublishesOptimisticAlive(policy consts.DialerSelectionPolicy) bool {
 	switch policy {
-	case consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Random:
+	case consts.DialerSelectionPolicy_Fixed,
+		consts.DialerSelectionPolicy_Select,
+		consts.DialerSelectionPolicy_Random:
 		return true
 	default:
 		return false
@@ -596,7 +791,7 @@ func policyNeedsAliveState(policy consts.DialerSelectionPolicy) bool {
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
 		return true
-	case consts.DialerSelectionPolicy_Fixed:
+	case consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Select:
 		return false
 	default:
 		panic(fmt.Sprintf("unexpected dialer selection policy: %v", policy))
