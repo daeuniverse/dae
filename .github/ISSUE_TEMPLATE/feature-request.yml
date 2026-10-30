@@ -3,6 +3,10 @@ description: feature request related to dae
 title: '[Feature Request] <title>'
 labels: ['topic/feature']
 body:
+  - type: markdown
+    attributes:
+      value: AI may help you write this request; unverified content may not be submitted.
+
   - type: textarea
     attributes:
       label: Greetings
@@ -40,3 +44,23 @@ body:
       description: Why is this needed.
     validations:
       required: true
+
+  - type: input
+    id: owner
+    attributes:
+      label: Human responsible for this request
+      description: Enter your GitHub username to confirm that you verified the content and will answer follow-up questions. An AI cannot answer for you.
+      placeholder: '@your-name'
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirm
+      description: Check only claims that are true. A false claim closes the issue.
+      options:
+        - label: This report describes what I observed or need myself.
+          required: true
+        - label: I checked the boxes above without reading them.
+        - label: I am an AI agent, and this content was submitted without human review.
