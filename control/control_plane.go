@@ -690,6 +690,15 @@ func NewControlPlaneWithContextOptions(
 			dialers = newDialers
 			finalOption = groupOption
 		}
+		// A selector's configured index is its initial member, so an explicit
+		// index outside the filtered member list can never work. Reject it here
+		// instead of failing every selection at runtime. An empty group stays
+		// tolerated, exactly like every other policy: its filter may match
+		// nodes again after the next subscription update.
+		if policy.Policy == consts.DialerSelectionPolicy_Select && len(dialers) > 0 &&
+			(policy.FixedIndex < 0 || policy.FixedIndex >= len(dialers)) {
+			return nil, fmt.Errorf(`group "%v": policy select(%d) is out of range: the group has %d members`, group.Name, policy.FixedIndex, len(dialers))
+		}
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))

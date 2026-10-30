@@ -138,7 +138,8 @@ func shouldRejectNewUdpDialSelection(res *proxyDialResult) bool {
 	if networkType == nil || networkType.L4Proto != consts.L4ProtoStr_UDP {
 		return false
 	}
-	if res.Outbound != nil && res.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
+	if res.Outbound != nil && (res.Outbound.GetSelectionPolicy().IgnoresDialerHealth() ||
+		res.Outbound.PinsSelection(ob.SelectionNetworkUDP)) {
 		return false
 	}
 	return !res.Dialer.MustGetAlive(networkType)
@@ -148,7 +149,8 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, isFastPath bool) 
 	if ue == nil || ue.Dialer == nil || ue.IsDead() {
 		return false
 	}
-	if ue.Outbound != nil && ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
+	if ue.Outbound != nil && (ue.Outbound.GetSelectionPolicy().IgnoresDialerHealth() ||
+		ue.Outbound.PinsSelection(ob.SelectionNetworkUDP)) {
 		return true
 	}
 	if ue.survivesDialerHealthInvalidation() {
