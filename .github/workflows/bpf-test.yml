@@ -41,18 +41,22 @@ permissions:
 
 jobs:
   bpf_tests:
-    name: BPF Unit Test
-    runs-on: ubuntu-latest
+    name: BPF Unit Test (${{ matrix.env.VERSION }})
+    # Each clang comes from the archive of the image that still ships it: Ubuntu 26.04 dropped 15 to 19.
+    runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: 0
     strategy:
       matrix:
-        env:
-        - VERSION: 15
-        - VERSION: 16
-        - VERSION: 17
-        - VERSION: 18
-        - VERSION: 19
+        include:
+        - {os: ubuntu-24.04, env: {VERSION: 15}}
+        - {os: ubuntu-24.04, env: {VERSION: 16}}
+        - {os: ubuntu-24.04, env: {VERSION: 17}}
+        - {os: ubuntu-24.04, env: {VERSION: 18}}
+        - {os: ubuntu-24.04, env: {VERSION: 19}}
+        - {os: ubuntu-26.04, env: {VERSION: 20}}
+        - {os: ubuntu-26.04, env: {VERSION: 21}}
+        - {os: ubuntu-26.04, env: {VERSION: 22}}
 
     steps:
       - name: Checkout code
@@ -166,7 +170,8 @@ jobs:
 
   bpf_abi_big_endian:
     name: BPF ABI (s390x)
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 has no qemu-user-static package.
+    runs-on: ubuntu-24.04
     env:
       CGO_ENABLED: 0
 
