@@ -5,7 +5,13 @@
 
 package control
 
-import "github.com/daeuniverse/dae/component/routing"
+import (
+	"strconv"
+
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/routing"
+)
 
 // PolicyIdentity returns routing metadata without retaining the normalized rule tree.
 func (c *ControlPlane) PolicyIdentity() routing.PolicyIdentity {
@@ -18,6 +24,38 @@ func (c *ControlPlane) PolicyIdentity() routing.PolicyIdentity {
 // PolicyEpoch returns the immutable routing generation identifier.
 func (c *ControlPlane) PolicyEpoch() routing.PolicyEpoch {
 	return c.PolicyIdentity().Epoch()
+}
+
+// DatapathGenerationID reports the attached eBPF datapath generation as a
+// decimal string, or an empty string when this generation has no datapath.
+func (c *ControlPlane) DatapathGenerationID() string {
+	if c == nil || c.core == nil {
+		return ""
+	}
+	generation := c.core.datapathGeneration.Load()
+	if generation == 0 {
+		return ""
+	}
+	return strconv.FormatUint(uint64(generation), 10)
+}
+
+// EgressDialers returns every node dialer this generation manages, including
+// nodes no group currently selects, in a stable order.
+func (c *ControlPlane) EgressDialers() []*dialer.Dialer {
+	if c == nil || c.egressRuntime == nil {
+		return nil
+	}
+	return c.egressRuntime.dialers()
+}
+
+// OutboundGroups returns this generation's outbounds in outbound-ID order,
+// including the builtin direct and block groups. The slice is immutable once
+// the generation is published, so callers must not modify it.
+func (c *ControlPlane) OutboundGroups() []*outbound.DialerGroup {
+	if c == nil {
+		return nil
+	}
+	return c.outbounds
 }
 
 // RollbackPreparedRoutingEpoch restores the previously active kernel plan
