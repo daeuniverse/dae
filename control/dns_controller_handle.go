@@ -272,6 +272,11 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	c.requireStore()
+	started := time.Now()
+	var loggedQuestion dnsmessage.Question
+	if len(dnsMessage.Question) > 0 {
+		loggedQuestion = dnsMessage.Question[0]
+	}
 	if responseWriter != nil && !dnsResponseWriterUsesTCP(responseWriter) {
 		responseWriter = &dnsUDPResponseWriter{ResponseWriter: responseWriter, limit: dnsUDPResponseSizeLimit(dnsMessage)}
 	}
@@ -283,6 +288,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		case c.concurrencyLimiter <- struct{}{}:
 			defer func() { <-c.concurrencyLimiter }()
 		default:
+			c.recordDnsLog(loggedQuestion, req, "REFUSED", false, "", nil, time.Since(started))
 			if responseWriter != nil || (req != nil && req.lConn != nil) {
 				if sendErr := c.sendRefusedWithResponseWriter_(dnsMessage, req, responseWriter); sendErr != nil {
 					return errors.Join(ErrDNSQueryConcurrencyLimitExceeded, sendErr)
@@ -316,6 +322,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		var err error
 		upstreamIndex, upstream, err = rt.routing.RequestSelect(ctx, qname, qtype)
 		if err != nil {
+			c.recordDnsLog(loggedQuestion, req, "ERROR", false, "", nil, time.Since(started))
 			return err
 		}
 		responseCacheKey = c.responseCacheKey(baseCacheKey, req, upstreamIndex, upstream)
@@ -346,11 +353,27 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		})
 
 		if err != nil {
+			status := "ERROR"
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
+				status = "TIMEOUT"
+			}
+			c.recordDnsLog(loggedQuestion, req, status, false, "", nil, time.Since(started))
 			return err
 		}
 
 		// res is the *dnsmessage.Msg
 		respMsg := res.(*dnsmessage.Msg)
+		upstreamName := ""
+		if upstreamIndex == consts.DnsRequestOutboundIndex_AsIs {
+			upstreamName = "asis"
+		} else if upstream != nil {
+			upstreamName = upstream.String()
+		}
+		status := dnsmessage.RcodeToString[respMsg.Rcode]
+		if status == "" {
+			status = "NOERROR"
+		}
+		c.recordDnsLog(loggedQuestion, req, status, false, upstreamName, respMsg.Answer, time.Since(started))
 
 		// RFC 8305 resolution delay runs here, outside the singleflight leader:
 		// the shared resolution is complete, so waiting for the preferred
@@ -456,6 +479,11 @@ func (c *DnsController) serveRejectWithWriter_(dnsMessage *dnsmessage.Msg, req *
 		return false, nil
 	}
 	c.RemoveDnsRespCacheFamily(baseCacheKey)
+	var question dnsmessage.Question
+	if len(dnsMessage.Question) > 0 {
+		question = dnsMessage.Question[0]
+	}
+	c.recordDnsLog(question, req, "NOERROR", false, "", nil, 0)
 	return true, c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 }
 

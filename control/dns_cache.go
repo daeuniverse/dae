@@ -39,6 +39,10 @@ type dnsPackedResponse struct {
 }
 
 type DnsCache struct {
+	// Domain/QType identify the cache entry for the control-plane API. The
+	// sync.Map key is an internal encoding that also carries an upstream scope.
+	Domain               string
+	QType                uint16
 	RouteOwnerKey        string
 	RouteProjectionEpoch uint64
 	DomainBitmap         []uint32

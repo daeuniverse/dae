@@ -13,8 +13,10 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	commonerrors "github.com/daeuniverse/dae/common/errors"
+	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
@@ -164,6 +166,10 @@ type SessionManager struct {
 	tcpCount atomic.Int64
 	udpCount atomic.Int64
 
+	// outboundCounters is process-level state: it outlives every control
+	// plane generation, so outbound counters survive reloads.
+	outboundCounters *ob.CounterRegistry
+
 	// generationsMu only guards the small epoch-count table plus flows whose
 	// PolicyEpoch migrates mid-reload. The per-packet data plane never takes it.
 	generationsMu sync.Mutex
@@ -180,6 +186,12 @@ type SessionManager struct {
 	udpStateMu sync.RWMutex
 	udpBPF     atomic.Pointer[bpfObjects]
 	pinnedUDP  map[bpfTuplesKey]int
+
+	flowHistoryMu       sync.Mutex
+	flowHistory         []SessionFlowHistoryEntry
+	flowHistoryStart    int
+	flowHistoryLen      int
+	flowHistoryRevision uint64
 
 	closeOnce sync.Once
 	closeErr  error
@@ -198,7 +210,21 @@ type FlowRuntime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	egressLease    *egressRuntimeLease
+	egressLease *egressRuntimeLease
+	// counters is resolved once at adoption so the finish path never looks up
+	// the registry and always decrements the counter it incremented.
+	counters       *ob.Counters
+	id             string
+	network        string
+	src            netip.AddrPort
+	dst            netip.AddrPort
+	pname          string
+	pid            uint32
+	dscp           uint32
+	mark           uint32
+	startedAt      time.Time
+	uploadBytes    atomic.Uint64
+	downloadBytes  atomic.Uint64
 	pinKeys        [2]bpfTuplesKey
 	pinKeyCount    uint8
 	redirectKey    bpfRedirectTuple
@@ -219,6 +245,11 @@ type UDPFlowRuntime struct {
 	cancel context.CancelFunc
 
 	egressLease *egressRuntimeLease
+	counters    *ob.Counters
+	id          string
+	src         netip.AddrPort
+	dst         netip.AddrPort
+	startedAt   time.Time
 
 	finishOnce sync.Once
 	abortOnce  sync.Once
@@ -232,10 +263,11 @@ func NewSessionManager(parent context.Context) *SessionManager {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	m := &SessionManager{
-		ctx:         ctx,
-		cancel:      cancel,
-		generations: make(map[routing.PolicyEpoch]*sessionGenerationState),
-		pinnedUDP:   make(map[bpfTuplesKey]int),
+		ctx:              ctx,
+		cancel:           cancel,
+		generations:      make(map[routing.PolicyEpoch]*sessionGenerationState),
+		pinnedUDP:        make(map[bpfTuplesKey]int),
+		outboundCounters: ob.NewCounterRegistry(),
 	}
 	for i := range m.pinnedShards {
 		m.pinnedShards[i].keys = make(map[bpfTuplesKey]int)
@@ -286,6 +318,7 @@ func (c *ControlPlane) AttachSessionManager(manager *SessionManager) error {
 	c.ownsSessionManager = false
 	c.sessionManagerBinding.Store(&controlPlaneSessionManagerBinding{manager: manager})
 	c.sessionManagerMu.Unlock()
+	c.attachOutboundCounters(manager.OutboundCounterRegistry())
 	if previousOwned && previous != nil && previous != manager {
 		return previous.Close()
 	}
@@ -323,6 +356,7 @@ func (c *ControlPlane) sessionManagerForFlow(parent context.Context) *SessionMan
 		manager: c.sessionManager,
 		owned:   c.ownsSessionManager,
 	})
+	c.attachOutboundCounters(c.sessionManager.OutboundCounterRegistry())
 	return c.sessionManager
 }
 
@@ -407,6 +441,13 @@ func (c *ControlPlane) adoptTCPFlow(
 	if failedEgress != nil {
 		_ = failedEgress.Close()
 	}
+	if err == nil && flow != nil {
+		flow.src = src
+		flow.dst = dst
+		flow.network = "tcp"
+		flow.startedAt = time.Now()
+		flow.id = flowIDOf("tcp", src, dst, flow.startedAt)
+	}
 	return flow, err
 }
 
@@ -470,6 +511,7 @@ func (m *SessionManager) adoptTCP(
 		ctx:         ctx,
 		cancel:      cancel,
 		egressLease: lease,
+		counters:    binding.Egress.Outbound.Counters(),
 	}
 	if len(pinKeys) > len(flow.pinKeys) {
 		pinKeys = pinKeys[:len(flow.pinKeys)]
@@ -504,6 +546,10 @@ func (m *SessionManager) adoptTCP(
 		refShard := &m.refShards[redirectShardIndex(&flow.redirectKey)]
 		refShard.pin(flow.redirectKey)
 	}
+	// Publish the counter while the flow is still under the registration
+	// lock: a concurrent AbortGeneration can release it as soon as this
+	// critical section ends, and the gauge must never dip below zero.
+	flow.counters.ConnectionEstablished()
 	m.generationsMu.Unlock()
 	return flow, nil
 }
@@ -573,6 +619,10 @@ func (m *SessionManager) releaseFlow(flow *FlowRuntime) {
 		}
 	}
 	m.generationsMu.Unlock()
+	if loaded && current == flow {
+		flow.counters.ConnectionFinished()
+		m.appendFlowHistory(flow.snapshot(), time.Now())
+	}
 
 	if flow.cancel != nil {
 		flow.cancel()
@@ -650,6 +700,7 @@ func (m *SessionManager) adoptUDP(endpoint *UdpEndpoint, binding UdpFlowBinding,
 	endpoint.Outbound = retainedOutbound
 	endpoint.setFlowBinding(binding)
 	ctx, cancel := context.WithCancel(m.ctx)
+	startedAt := time.Now()
 	flow := &UDPFlowRuntime{
 		manager:     m,
 		endpoint:    endpoint,
@@ -657,6 +708,11 @@ func (m *SessionManager) adoptUDP(endpoint *UdpEndpoint, binding UdpFlowBinding,
 		ctx:         ctx,
 		cancel:      cancel,
 		egressLease: lease,
+		counters:    binding.Egress.Outbound.Counters(),
+		src:         endpoint.poolKey.Src,
+		dst:         endpoint.poolKey.Dst,
+		startedAt:   startedAt,
+		id:          flowIDOf("udp", endpoint.poolKey.Src, endpoint.poolKey.Dst, startedAt),
 	}
 
 	if m.closed.Load() {
@@ -674,6 +730,7 @@ func (m *SessionManager) adoptUDP(endpoint *UdpEndpoint, binding UdpFlowBinding,
 	m.udpCount.Add(1)
 	m.appendUDPFlowSourceLocked(endpoint.poolKey.Src, flow)
 	m.retainGenerationLocked(binding.Route.PolicyEpoch)
+	flow.counters.ConnectionEstablished()
 	m.generationsMu.Unlock()
 	endpoint.sessionRuntime = flow
 	return flow, nil
@@ -707,6 +764,10 @@ func (m *SessionManager) releaseUDPFlow(flow *UDPFlowRuntime) {
 		m.releaseGenerationLocked(flow.binding.Route.PolicyEpoch)
 	}
 	m.generationsMu.Unlock()
+	if loaded && current == flow {
+		flow.counters.ConnectionFinished()
+		m.appendFlowHistory(flow.snapshot(), time.Now())
+	}
 	if flow.cancel != nil {
 		flow.cancel()
 	}
@@ -864,6 +925,14 @@ func (m *SessionManager) ActiveConnections() int {
 		return 0
 	}
 	return int(m.tcpCount.Load() + m.udpCount.Load())
+}
+
+// OutboundCounterRegistry returns the process-level outbound counter registry.
+func (m *SessionManager) OutboundCounterRegistry() *ob.CounterRegistry {
+	if m == nil {
+		return nil
+	}
+	return m.outboundCounters
 }
 
 func (f *FlowRuntime) abort() error {

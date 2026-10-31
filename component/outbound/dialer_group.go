@@ -68,6 +68,28 @@ type DialerGroup struct {
 	alivePublishMissingSetCount atomic.Uint64
 
 	cachedMinCheckInterval time.Duration
+
+	// counters are the process-level lifetime counters for this outbound. The
+	// registry hands the same pointer to every generation built with this
+	// group name, so reloads keep accumulating.
+	counters atomic.Pointer[Counters]
+}
+
+// SetCounters attaches the process-level counters owned by this group name.
+func (g *DialerGroup) SetCounters(counters *Counters) {
+	if g == nil {
+		return
+	}
+	g.counters.Store(counters)
+}
+
+// Counters returns the process-level counters attached to this group, or nil
+// when the control plane has not attached a registry.
+func (g *DialerGroup) Counters() *Counters {
+	if g == nil {
+		return nil
+	}
+	return g.counters.Load()
 }
 
 type dialerGroupSelectionState struct {
@@ -151,6 +173,9 @@ func (g *DialerGroup) SnapshotForEstablishedFlow(selected *dialer.Dialer) *Diale
 	view.overrideIndexes[0].Store(g.overrideIndexes[0].Load())
 	view.overrideIndexes[1].Store(g.overrideIndexes[1].Load())
 	view.selectionRevision.Store(g.selectionRevision.Load())
+	// The view is what flows retain as their egress binding, so it must carry
+	// the same process-level counters as the group it was built from.
+	view.counters.Store(g.counters.Load())
 	return view
 }
 

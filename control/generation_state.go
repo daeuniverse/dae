@@ -15,6 +15,10 @@ import (
 
 type controlPlaneGenerationState struct {
 	outbounds           []*outbound.DialerGroup
+	routingRules        []RoutingRuleSnapshot
+	routingFallback     string
+	routingGeneration   string
+	dnsRules            DnsRulesSnapshot
 	referencedOutbounds map[string]struct{}
 	dialMode            consts.DialMode
 	policyIdentity      routing.PolicyIdentity

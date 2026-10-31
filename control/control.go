@@ -26,6 +26,15 @@ func (c *ControlPlane) PolicyEpoch() routing.PolicyEpoch {
 	return c.PolicyIdentity().Epoch()
 }
 
+// SoMarkFromDae reports the socket mark that keeps dae's own traffic out of
+// its own datapath.
+func (c *ControlPlane) SoMarkFromDae() uint32 {
+	if c == nil {
+		return 0
+	}
+	return c.soMarkFromDae
+}
+
 // DatapathGenerationID reports the attached eBPF datapath generation as a
 // decimal string, or an empty string when this generation has no datapath.
 func (c *ControlPlane) DatapathGenerationID() string {

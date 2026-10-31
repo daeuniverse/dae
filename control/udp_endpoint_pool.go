@@ -108,8 +108,12 @@ type UdpEndpoint struct {
 	pendingReplyPeerCount int
 	pendingReplyPeerNext  int
 
-	Dialer            *dialer.Dialer
-	Outbound          *outbound.DialerGroup
+	Dialer   *dialer.Dialer
+	Outbound *outbound.DialerGroup
+	// replyDownload is the plane-bound download recorder for this endpoint,
+	// built once so the per-datagram reply path allocates nothing.
+	replyDownloadOnce sync.Once
+	replyDownload     func(int64)
 	flowRouteBinding  UdpRouteBinding
 	flowNetwork       string
 	flowBindingSet    bool
@@ -664,7 +668,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 	}
 	udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
 	if err != nil {
-		reportUdpEndpointDialCreateFailure(key, dialOption, err)
+		reportUdpEndpointDialCreateFailure(key, dialOption, err, !shouldForceMarkUnavailableOnProxyDialError(err))
 		if shouldForceMarkUnavailableOnProxyDialError(err) {
 			// Use a fresh timeout context for the retry to avoid inheriting a
 			// nearly-expired deadline from the first dial attempt. When the first
@@ -681,7 +685,7 @@ func (p *UdpEndpointPool) createEndpointLocked(key UdpEndpointKey, createOption 
 				if err == nil {
 					goto dialSuccess
 				}
-				reportUdpEndpointDialCreateFailure(key, dialOption, err)
+				reportUdpEndpointDialCreateFailure(key, dialOption, err, true)
 			} else {
 				retryCancel()
 				err = retryErr
@@ -771,7 +775,7 @@ dialSuccess:
 	return ue, nil
 }
 
-func reportUdpEndpointDialCreateFailure(key UdpEndpointKey, dialOption *DialOption, err error) {
+func reportUdpEndpointDialCreateFailure(key UdpEndpointKey, dialOption *DialOption, err error, final bool) {
 	if err == nil || dialOption == nil || dialOption.Dialer == nil {
 		return
 	}
@@ -780,6 +784,9 @@ func reportUdpEndpointDialCreateFailure(key UdpEndpointKey, dialOption *DialOpti
 	}
 	if isTransientLocalUdpDialCreateError(err) {
 		return
+	}
+	if final && dialOption.Binding.Route.Outbound != consts.OutboundBlock {
+		dialOption.Outbound.Counters().AddError()
 	}
 
 	lifecycle, ok := newUdpDialOptionLifecycleContext(dialOption, key.Src)

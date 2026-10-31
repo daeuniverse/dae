@@ -236,3 +236,36 @@ func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstr
 	}
 	return upstreamIndex, upstream, nil
 }
+
+// UpstreamIndexFor returns the request-routing index of an already resolved
+// upstream.
+func (s *Dns) UpstreamIndexFor(upstream *Upstream) (consts.DnsRequestOutboundIndex, bool) {
+	if upstream == nil {
+		return 0, false
+	}
+	index, ok := s.upstream2Index.Load(upstream)
+	if !ok {
+		return 0, false
+	}
+	value, ok := index.(int)
+	if !ok {
+		return 0, false
+	}
+	return consts.DnsRequestOutboundIndex(value), true
+}
+
+// UpstreamByName resolves a configured upstream by its display name, for the
+// native API's forced-upstream DNS query. It returns ok=false when no
+// configured upstream matches.
+func (s *Dns) UpstreamByName(ctx context.Context, name string) (upstream *Upstream, ok bool, err error) {
+	for _, resolver := range s.upstream {
+		candidate, getErr := resolver.GetUpstream(ctx)
+		if getErr != nil {
+			continue
+		}
+		if candidate != nil && candidate.String() == name {
+			return candidate, true, nil
+		}
+	}
+	return nil, false, nil
+}

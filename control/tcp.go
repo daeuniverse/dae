@@ -302,11 +302,22 @@ func (c *ControlPlane) handleConnWithRoutingResultOwned(
 		return fmt.Errorf("adopt TCP flow runtime: %w", err)
 	}
 	defer closeEstablishedTCPFlow(rConn, flow)
+	flow.SetFlowRoutingMeta(routingResult)
+
+	// Bind the byte recorders to the selected outbound once, so the relay hot
+	// path pays one extra atomic add per record and never re-resolves it. The
+	// binding may carry no outbound, and *ob.Counters tolerates nil, so keep
+	// the lookup nil-safe.
+	var outboundCounters *ob.Counters
+	if res != nil && res.Outbound != nil {
+		outboundCounters = res.Outbound.Counters()
+	}
+	downloadRecord, uploadRecord := c.trafficRecordersForFlow(outboundCounters, flow)
 
 	// Attempt kernel-side splice via fast_sock/sk_skb before falling back to
 	// the user-space relay. A registered offload session blocks until both
 	// sockets close; any pre-registration failure falls through silently.
-	offloaded, offloadReason, offloadErr := c.tryOffloadTCPRelay(flow.Context(), lRelayConn, rConn, RecordDownloadTraffic, RecordUploadTraffic)
+	offloaded, offloadReason, offloadErr := c.tryOffloadTCPRelay(flow.Context(), lRelayConn, rConn, downloadRecord, uploadRecord)
 	if offloadErr != nil {
 		return fmt.Errorf("handleTCP offloaded relay error: %w", offloadErr)
 	}
@@ -325,7 +336,7 @@ func (c *ControlPlane) handleConnWithRoutingResultOwned(
 		return nil
 	}
 
-	return relayEstablishedTCPFlow(flow, lRelayConn, rConn, c.log, src, dst)
+	return relayEstablishedTCPFlow(flow, lRelayConn, rConn, c.log, src, dst, downloadRecord, uploadRecord)
 }
 
 func closeEstablishedTCPFlow(egress netproxy.Conn, flow *FlowRuntime) {
@@ -344,8 +355,10 @@ func relayEstablishedTCPFlow(
 	log *logrus.Logger,
 	src netip.AddrPort,
 	dst netip.AddrPort,
+	downloadRecord func(int64),
+	uploadRecord func(int64),
 ) error {
-	if err := RelayTCPContextWithRecords(flow.Context(), ingress, egress, RecordDownloadTraffic, RecordUploadTraffic); err != nil {
+	if err := RelayTCPContextWithRecords(flow.Context(), ingress, egress, downloadRecord, uploadRecord); err != nil {
 		if daerrors.IsIgnorableTCPRelayError(err) {
 			return nil // ignore normal connection closure errors
 		}
