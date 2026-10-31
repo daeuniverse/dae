@@ -95,19 +95,41 @@ dae 提供 plain HTTP，不负责 TLS 终止。监听非 loopback 地址时，�
   pin 一个成员
 - `DELETE /api/v1/groups/{group_id}/selection` — 取消 pin；`select` 组返回
   `409 state_conflict`，`fixed` 返回 `422 unsupported_value`
+- `GET /api/v1/runtime/outbounds` — 按出站统计，reload 后继续累计
+- `GET /api/v1/runtime/memory` — 进程、cgroup v2 与 eBPF 内存
+- `GET /api/v1/runtime/memory/history?window_seconds=&max_points=`
+- `GET /api/v1/datapath` — eBPF 挂载点、routing generation 与 map 占用
 - `GET /api/v1/nodes?group_id=&limit=&cursor=`
 - `GET /api/v1/nodes/{node_id}`
 - `POST /api/v1/operations/reload`
 - `POST /api/v1/operations/suspend`
 - `POST /api/v1/operations/resume`
 - `GET /api/v1/operations/{operation_id}`
+- `GET /api/v1/rules` — 当前 generation 生效的路由规则
+- `GET /api/v1/providers`、`GET /api/v1/providers/{provider_id}`
+- `GET /api/v1/geodata` — geoip/geosite 资源指纹
+- `GET /api/v1/dns/cache`、`DELETE /api/v1/dns/cache?name=`、
+  `DELETE /api/v1/dns/cache/{entry_id}`、`POST /api/v1/dns/cache/flush`
+- `GET /api/v1/dns/log`、`GET /api/v1/dns/rules`、`POST /api/v1/dns/query`
+- `GET /api/v1/connections`、`DELETE /api/v1/connections/{connection_id}`、
+  `DELETE /api/v1/connections?all=true`
+- `GET /api/v1/flows`、`GET /api/v1/flows/{flow_id}`
+- `GET /api/v1/events`、`GET /api/v1/logs` — SSE 事件流
+- `POST /api/v1/probes` — 启动节点/组探测，通过
+  `GET /api/v1/operations/{operation_id}` 轮询结果
 
-其他契约资源在实现前返回 `404 capability_not_supported`。已规划但尚未实现：`providers`、
-`geodata`、`rules`、`dns/*`、`connections`、`flows`、`events`、`logs`、`probes`、
-`runtime/memory*`、`runtime/outbounds`、`datapath`。
-`PATCH /api/v1/groups/{group_id}/config`、`POST /api/v1/nodes`、
-`DELETE /api/v1/nodes/{node_id}` 始终返回 `404 capability_not_supported`，因为
-dae 不通过 API 写入配置（`nodes.can_manage = false`）。
+`POST /api/v1/providers`（创建 inline provider）、
+`DELETE /api/v1/providers/{provider_id}`、
+`POST /api/v1/providers/{provider_id}/refresh`、`POST /api/v1/geodata/update`
+返回 `404 capability_not_supported`，与 `providers.can_refresh`、
+`providers.can_manage`、`geodata.can_update` 恒为 `false` 一致：dae 不通过 API 写配置
+或重新下载资源。`PATCH /api/v1/groups/{group_id}/config`、`POST /api/v1/nodes`、
+`DELETE /api/v1/nodes/{node_id}` 出于同样原因返回该错误码
+（`nodes.can_manage = false`）。
+
+`/api/v1/config*`、`/api/v1/runtime/settings`、`/api/v1/routing/trace`、
+`/api/v1/auth*` 仍未实现，因此需要就地编辑配置的前端页面（例如 lite 版 doona 的路由与
+DNS 编辑页）无法对 dae 使用；这里的规则与 DNS 规则是只读视图。
 
 ### 组与运行时选择
 
@@ -157,9 +179,97 @@ pin 在该 transport 上优先于自动策略，且与 `selector` 一样忽略�
 并把组成员关系与健康观测合并；组同样把它当作一个成员。
 
 `health` 与组报告的是同一套投影，按 transport / purpose / IP 版本区分。
-`subscription_tag` 为节点来源订阅，内联节点为 `null`；`provider_id` 恒为 `null`，因为 dae
-没有 providers 资源。节点管理（`POST`、`DELETE`）返回
+`subscription_tag` 为节点来源订阅，内联节点为 `null`；`provider_id` 指向该节点所属的
+provider（见下）。节点管理（`POST`、`DELETE`）返回
 `404 capability_not_supported`。
+
+### 规则、providers 与 geodata
+
+`GET /api/v1/rules` 返回当前 routing generation 的规则字典，按求值顺序排列并包含
+fallback。配置规则为 `traffic:<index>`，fallback 为 `traffic:fallback`，与
+`FlowSummary.rule_id` 和 routing trace 使用同一套 ID。关联规则只能靠 `generation_id`
+加 `rule_id`，不能用表达式或下标；`generation.changed` 之后要重新拉取。该资源不分页：
+`max_rules` 就是路由字典容量（1<<20），因此整个字典一定一次返回，也没有
+`410 snapshot_expired`。
+
+`GET /api/v1/providers` 按订阅 tag 归并节点。`node` 段与无 tag 的订阅合并为可编辑的
+`inline` provider（`p_inline`），其他 tag 为 `p_` 加 tag 哈希，因此只要 tag 不变，
+provider ID（以及节点的 `provider_id`）跨 reload 稳定。`node_count` 取自当前
+generation；订阅没有产出任何 dialer 时 `status` 为 `"stale"`，而不是编造更新时间。
+分页复用节点那套绑定 generation 的 cursor。`can_refresh`、`can_manage` 为 `false`，
+所以 `POST /api/v1/providers`、`DELETE /api/v1/providers/{provider_id}`、
+`POST /api/v1/providers/{provider_id}/refresh` 返回
+`404 capability_not_supported`。
+
+`GET /api/v1/geodata` 报告 dae 实际加载的 geoip/geosite 文件大小、mtime 与 SHA-256。
+摘要会缓存到文件变化为止，因此轮询开销很小。`can_update` 为 `false`：资源来自安装包，
+`POST /api/v1/geodata/update` 返回 `404 capability_not_supported`。
+
+### DNS 缓存、日志、规则与查询
+
+DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可用，否则返回
+`503 temporarily_unavailable`。
+
+`GET /api/v1/dns/cache` 列出运行时缓存，支持 `name`、`domain`、`type`、
+`include_expired`、`limit`（1–1000，默认 100）与不透明 `cursor`。条目 ID 为 `de_`
+加缓存键哈希，是唯一稳定句柄，可直接用于 `DELETE /api/v1/dns/cache/{entry_id}`。
+`DELETE /api/v1/dns/cache?name=` 可再用 `type` 收窄，`POST /api/v1/dns/cache/flush`
+清空缓存；两者都返回 `{matched, deleted}`，因为命中与删除之间条目可能已被替换或已消失。
+
+`GET /api/v1/dns/log` 返回有界环形的客户端解析记录，最新在前，支持 `name`、`type`、
+`src`、`limit`（默认 200，上限为 `dns_log.max_page_size`）与 cursor。诊断用的
+`/dns/query` 不写入该环。cursor 指向已被挤出环的记录时返回 `410 snapshot_expired`，
+客户端应丢弃 cursor 重新开始遍历。
+
+`GET /api/v1/dns/rules` 是当前 generation 的只读 DNS 规则字典（request 与 response 各自
+带 fallback）。`POST /api/v1/dns/query` 走与数据面相同的路由与缓存解析一个域名：
+`cache_mode` 为 `normal` 或 `bypass`，`upstream` 按名称强制指定某个已配置上游，答案带
+`cached`、`upstream`、`elapsed_ms` 与缓存条目 ID。查询限制为每个调用方每分钟 60 次
+（超出返回 `429 rate_limited` 并带 `Retry-After`），单次超时 5 秒。
+
+### 连接与 flows
+
+`GET /api/v1/connections` 列出运行中的用户态 flow；`visibility` 为 `partial`，因为
+内核旁路流量不进入用户态。`type`（tcp/udp/all）、`src`（IP 字面量，不是 host:port）与
+`limit`（默认 100）用于过滤，`total_tcp` / `total_udp` 是截断前的匹配数，
+`truncated` 表示 limit 是否隐藏了条目。`can_close` 为 `true`：
+`DELETE /api/v1/connections/{connection_id}` 关闭单条，`DELETE
+/api/v1/connections?type=…&src=…` 关闭一批。批量接口在没有任何过滤条件时拒绝执行，
+除非显式 `all=true`；单次最多关闭 `max_bulk_close`（1000）条。
+
+`GET /api/v1/flows` 读取已关闭 flow 的历史：2048 条、保留 900 秒的环形记录，最新在前，
+可按 `network`、`state`、`connection_id` 过滤，带 `limit`（默认 100）与不透明 cursor。
+`GET /api/v1/flows/{flow_id}` 返回单条，已过期返回 `410 flow_expired`。flow ID 为 `f_`
+加端点与开始时间的哈希，连接通过 `flow_id` 引用同一 ID。flow 详情里的 `trace` 在本
+引擎恒为 `disabled` 且 `missing: ["not_instrumented"]`：trace 所需证据未被记录。
+
+### 事件流与日志流
+
+`GET /api/v1/events` 与 `GET /api/v1/logs` 是 SSE 流。两者都以 `stream.ready` 开场，
+其 `id` 就是续传 cursor；客户端带 `Last-Event-ID` 重连会从该帧之后继续，未知或已淘汰的
+cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基线。慢客户端会被断开，
+而不是允许它阻塞引擎。
+
+事件流发布 `runtime.updated`、`operation.updated`、`generation.changed`，记录在有界环中
+保留 300 秒。日志流镜像 dae 自身日志，级别 `trace`–`error`，`target` 可收窄到单个 logger。
+字段名包含 `secret`、`token`、`authorization`、`password`、`cookie` 的日志字段会被丢弃，
+消息文本中的 bearer token 与 URL query 会被脱敏，因此该流不会变成凭据泄漏渠道。日志环
+保留 1024 条、300 秒。
+
+### 探测
+
+`POST /api/v1/probes` 启动异步探测，与 reload 操作一样返回 `202` 并带 `Location` 与
+`Retry-After: 1`，结果通过 `GET /api/v1/operations/{operation_id}` 获取。`kind` 为
+`tcp_connect`、`http` 或 `dns`，`transport` 为 `tcp`、`udp` 或两者（`tcp_connect` 与
+`http` 只支持 TCP，`dns` 两者皆可）。`node` 目标探测单个节点；`group` 目标探测组成员，
+可用 `members` 收窄（`direct` 与 `leaves` 表示组本身）。
+
+每条结果给出 `healthy` 或 `unavailable`、`latency_ms`、实际应答的 transport 与 IP 版本，
+以及 `member_id` 中的目标 ID。探测通过节点自己的 dialer 在用户态发起，因此测的是代理
+实际走的路径，而不是宿主机直连。工作量有上限：同时运行 4 个，最多排队 16 个（都满时返回
+`503 temporarily_unavailable` 并带 `Retry-After`），调用方限制为每分钟 120 次
+（`429 rate_limited`），单个任务最多展开 256 个成员、返回 512 条结果，并在 30 秒后停止，
+因此一个超大组不会永久占住队列。这些数字就是 `capabilities.probes.limits` 所声明的值。
 
 ### 流量历史
 

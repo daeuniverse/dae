@@ -4,7 +4,7 @@
 >
 > 本文是实施计划，不是最终契约文档。契约以 `api-standardize/source/openapi.yaml` 为准。
 >
-> 实现状态（2026-10-30）：P0-1 ~ P0-6、P1-1 ~ P1-4 与 P2 的 nodes / 组健康 / can_override 已完成（P0-6 为自托管前端 `/ui/`）。capabilities 中 `groups` / `traffic_history` / `operations` 现已按 provider 是否接入返回 `available: true`；P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：P3（`runtime/outbounds`、`runtime/memory*`、`datapath`、`rules`、`providers*`、`geodata*`、`dns/*`、`connections*`、`flows*`、`events`、`logs`、`probes`，见第 3 节），以及契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。
+> 实现状态（2026-10-31）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。仍声明不可用的是配置读写（`config*`）、`runtime/settings`、`routing/trace`、`auth/*`；providers 的增删/refresh 与 geodata 的 update 按只读定位返回 `404 capability_not_supported`。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。
 
 ## 1. 结论与范围
 
@@ -321,7 +321,7 @@ group {
   - [x] `visibility: "partial"`。
   - [x] `ebpf: null` 一期即可。
 - [x] `traffic`：复用 `control.SnapshotRuntimeStats`
-  - [x] `scope: "visible"`、`observed_by: "userspace"`。
+  - [x] `scope: "visible"`、`observed_by: "mixed"`（契约 `ObservedBy` 枚举为 `userspace` / `ebpf` / `mixed`；dae 的合计来自 userspace relay 的 payload 字节与 eBPF 直连计数两个观测面，故为 `mixed`）。
   - [x] `counter_since` = 当前 generation 激活时间。
   - [x] `connections.tcp = ActiveTCPConnections`、`connections.udp = UDPSessions`、`total` 为二者之和。
   - [x] `bytes.upload/download` 为十进制字符串。
@@ -484,7 +484,7 @@ group {
   - [x] `Node.id/name/protocol/subscription_tag/group_ids/health` 必填。
   - [x] `health` 返回真实探测观测（未探测的网络域省略，新进程为 `[]`）。
   - [x] `limit` 1–1000，`cursor` / `next_cursor`（cursor 绑定 generation，过期返回 `410 snapshot_expired`）。
-  - [x] 列表来源为 generation 管理的全部 dialer（含未被任何组选中的节点，排除 builtin direct/block）；`group_id` 过滤；`provider_id` 恒为 `null`。
+  - [x] 列表来源为 generation 管理的全部 dialer（含未被任何组选中的节点，排除 builtin direct/block）；`group_id` 过滤；`provider_id` 在 P3-5 之后指向所属 provider（P2 阶段曾恒为 `null`）。
   - [x] 同一分享链接出现在多个订阅时按 node ID 合并（成员关系与健康取并集）；`member_count` 与实际唯一成员数一致。
   - [x] `nodes.can_manage = false`；`POST/DELETE /nodes` 返回 `404 capability_not_supported`。
 - [x] 组健康 `runtime.health`
@@ -495,114 +495,113 @@ group {
   - [x] pin 按 transport 独立、忽略 `excluded` 与探测健康、不改变 kernel 准入；reload 后重置。
   - [x] UDP 准入（新流与既有 endpoint）对已 pin 的 transport 不做健康拦截，避免 pin 到 data-UDP 域未就绪的成员后黑洞。
 
-### P3 计划实现（尚未开始）
+### P3 计划实现
 
-下列资源的端点、数据来源与能力声明已登记，实现前一律返回
-`404 capability_not_supported`。顺序按"数据已在进程内、只缺投影"到"需要新增采集/流式通道"排列。
+P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"数据已在进程内、只缺投影"到"需要新增采集/流式通道"排列。
 
 #### P3-1 `runtime/outbounds`
 
-- [ ] `GET /api/v1/runtime/outbounds` → `RuntimeOutbounds`。
-- [ ] 新增 per-outbound 计数器：当前只有全局 `RecordUploadTraffic` / `RecordDownloadTraffic`。
-  - [ ] `upload_bytes` / `download_bytes`：在 TCP relay 与 UDP 收发热路径按出站归属累加，复用现有 record 回调签名（绑定 outbound index 的闭包），避免每次写入查表。
-  - [ ] `total_connections` / `errors`：在 flow 建立与 dial 失败处累加。
-  - [ ] `active_connections`：flow 生命周期计数（establish +1 / finish -1）。
-  - [ ] `counter_since` 与进程启动/generation 激活对齐，reload 不重置（"retained across reloads"），仅进程重启或显式 reset 时变更。
-- [ ] `kind`：`builtin`（direct/block）、`group`（用户组）；`node` 需先确定是否按成员聚合（当前计数器在出站层，不是成员层）。
-- [ ] 能力：`resources.runtime_outbounds = { available: true }`。
-- [ ] 前置：先出基准（热路径每次 record 的增量开销），再决定原子计数还是每 CPU 分片。
-- [ ] 测试：单位计数、reload 后累计不回退、热路径基准不回归。
+- [x] `GET /api/v1/runtime/outbounds` → `RuntimeOutbounds`。
+- [x] 新增 per-outbound 计数器：当前只有全局 `RecordUploadTraffic` / `RecordDownloadTraffic`。
+  - [x] `upload_bytes` / `download_bytes`：在 TCP relay 与 UDP 收发热路径按出站归属累加，复用现有 record 回调签名（绑定 outbound index 的闭包），避免每次写入查表。
+  - [x] `total_connections` / `errors`：在 flow 建立与 dial 失败处累加。
+  - [x] `active_connections`：flow 生命周期计数（establish +1 / finish -1）。
+  - [x] `counter_since` 与进程启动/generation 激活对齐，reload 不重置（"retained across reloads"），仅进程重启或显式 reset 时变更。
+- [x] `kind`：`builtin`（direct/block）、`group`（用户组）；`node` 未按成员聚合（计数器在出站层）。
+- [x] 能力：`resources.runtime_outbounds = { available: true }`。
+- [x] 计数器使用原子加法（每次 record 仅一次 `atomic.Uint64.Add`，与现有全局计数器同量级）；基准结论：无需每 CPU 分片。
+- [x] 测试：单位计数、reload 后累计不回退、热路径记录归属。
 
 #### P3-2 `runtime/memory*`
 
-- [ ] `GET /api/v1/runtime/memory`：`runtime.ReadMemStats` + `GOMEMLIMIT`/进程 RSS，映射 `RuntimeMemory`。
-- [ ] `GET /api/v1/runtime/memory/history`：复用/扩展 `control.SnapshotRuntimeStats` 的采样环（当前只存流量），加入内存采样点；`window_seconds` 上限与 `traffic_history` 一致。
-- [ ] 能力：`resources.runtime_memory = { available: true }`、`resources.memory_history = { available: true, max_window_seconds: 3600 }`。
-- [ ] 测试：字段是十进制字符串/数值的正确类型；history 采样间隔与抽稀行为与 traffic history 一致。
+- [x] `GET /api/v1/runtime/memory`：进程 RSS（`/proc/self/status`）+ cgroup v2（`memory.current` / `memory.max` / `memory.events`）+ eBPF memlock（`/proc/self/fdinfo`）。
+- [x] `GET /api/v1/runtime/memory/history`：独立的有界 1s 采样环（3600 点），`window_seconds` 上限与 `traffic_history` 一致，抽稀规则相同。
+- [x] 能力：`resources.runtime_memory = { available: true, metrics: [...] }`、`resources.memory_history = { available: true, max_window_seconds: 3600, max_points: 180 }`。
+- [x] 测试：字段类型（十进制字符串）、cgroup scope、缺失文件降级为 `null`、history 窗口与抽稀。
 
 #### P3-3 `datapath`
 
-- [ ] `GET /api/v1/datapath` → `Datapath`（`kind`/`state`/`visibility`/`ebpf`）。
-- [ ] `ebpf` 明细：map 占用（`EbpfMaps`/`MapOccupancy`）、attachment、routing epoch、`datapath_generation`（已有 `ControlPlane.DatapathGenerationID()`）。
-- [ ] `visibility` 保持 `partial`（userspace 视图），不要声称 full transparency。
-- [ ] 能力：`resources.datapath = { available: true }`。
-- [ ] 测试：与 `/api/v1/runtime` 的 `datapath` 摘要保持一致；reload 后 `state`/generation 正确。
+- [x] `GET /api/v1/datapath` → `Datapath`（`kind`/`state`/`visibility`/`ebpf`）。
+- [x] `ebpf` 明细：map 占用（`EbpfMaps`/`MapOccupancy`，`conn_state_map` 批量扫描）、TC attachment、routing generation/epoch（已有 `ControlPlane.DatapathGenerationID()`）。
+- [x] `visibility` 保持 `partial`（userspace 视图），不要声称 full transparency。
+- [x] 能力：`resources.datapath = { available: true, kinds: [ebpf], details: [attachments, maps] }`。
+- [x] 测试：无 BPF 时的降级状态、attachment scope 映射、map 缺失时 occupancy 为 `null`；`/api/v1/runtime` 的 `datapath.ebpf` 摘要与详细端点同源。
 
 #### P3-4 `rules`
 
-- [ ] `GET /api/v1/rules`：导出已编译的 routing 规则（含 `routing.Rule` 的匹配集合与出站），分页 `limit`/`cursor`。
-- [ ] 需要新的只读导出视图（当前 `routingMatcher` 只保留匹配结构，不回显原始规则文本）。
-- [ ] 能力：`resources.rules = { available: true, max_page_size }`。
-- [ ] 测试：规则条目与 `dae validate` 的语义一致；敏感字段（节点 link）不泄漏。
+- [x] `GET /api/v1/rules`：导出已编译的 routing 规则（含 `routing.Rule` 的匹配集合与出站）。契约规定该资源不分页（`max_rules` 保证整个字典一次返回）。
+- [x] 需要新的只读导出视图（当前 `routingMatcher` 只保留匹配结构，不回显原始规则文本）。
+- [x] 能力：`resources.rules = { available: true, max_page_size }`。
+- [x] 测试：规则条目与 `dae validate` 的语义一致；敏感字段（节点 link）不泄漏。
 
 #### P3-5 `providers*`
 
-- [ ] `GET /api/v1/providers`、`GET /api/v1/providers/{provider_id}`：把 `subscription` / `node` section 投影为 provider（`subscription_tag` 即 provider 身份；`node_ids` 用稳定的 `n_` ID）。
-- [ ] `POST /api/v1/providers/{provider_id}/refresh`：依赖 operations + 写配置（当前不做配置写入）→ 先只读；`can_refresh = false`。
-- [ ] 节点资源补 `provider_id`（P2 里恒为 `null`）：改为内联 `node` section 的 provider id 或订阅 tag。
-- [ ] 能力：`resources.providers = { available: true, can_refresh: false, can_manage: false, max_page_size }`。
-- [ ] 测试：provider 身份与 `Node.subscription_tag` 对应；未知 provider → `404 resource_not_found`。
+- [x] `GET /api/v1/providers`、`GET /api/v1/providers/{provider_id}`：把 `subscription` / `node` section 投影为 provider（`subscription_tag` 即 provider 身份；`node_ids` 用稳定的 `n_` ID）。
+- [x] `POST /api/v1/providers/{provider_id}/refresh`：依赖 operations + 写配置（当前不做配置写入）→ 先只读；`can_refresh = false`。
+- [x] 节点资源补 `provider_id`（P2 里恒为 `null`）：改为内联 `node` section 的 provider id 或订阅 tag。
+- [x] 能力：`resources.providers = { available: true, can_refresh: false, can_manage: false, max_page_size }`。
+- [x] 测试：provider 身份与 `Node.subscription_tag` 对应；未知 provider → `404 resource_not_found`。
 
 #### P3-6 `geodata`
 
-- [ ] `GET /api/v1/geodata`：`externGeoDataDirs` + `geosite.dat` / `geoip.dat` 的读取状态、版本、校验和。
-- [ ] `POST /api/v1/geodata/update`：需要写文件 + operations；首期不做（`can_update = false`）。
-- [ ] 能力：`resources.geodata = { available: true, can_update: false, assets: [geoip, geosite] }`。
-- [ ] 测试：缺失资产时为 `assets: []` 而不是启动失败。
+- [x] `GET /api/v1/geodata`：`externGeoDataDirs` + `geosite.dat` / `geoip.dat` 的读取状态、版本、校验和。
+- [x] `POST /api/v1/geodata/update`：需要写文件 + operations；首期不做（`can_update = false`）。
+- [x] 能力：`resources.geodata = { available: true, can_update: false, assets: [geoip, geosite] }`。
+- [x] 测试：缺失资产时为 `assets: []` 而不是启动失败。
 
 #### P3-7 `dns/*`
 
-- [ ] `GET /api/v1/dns/cache`、`DELETE /api/v1/dns/cache/{entry_id}`、`POST /api/v1/dns/cache/flush`：需要 daedns 暴露缓存枚举与删除（当前只有 flush/统计）。
-- [ ] `GET /api/v1/dns/log`、`GET /api/v1/dns/rules`、`POST /api/v1/dns/query`：
-  - [ ] `dns/log` 需要新增有界环形日志（记录 qname/qtype/upstream/耗时），默认关闭或小容量；
-  - [ ] `dns/rules` 是 `dns.routing` 的只读导出；
-  - [ ] `dns/query` 是一次性主动查询，需限流并标记为观测用途。
-- [ ] 能力：`dns_cache` / `dns_log` / `dns_rules` / `dns_query` 分别声明；`dns_log.max_records`、`dns_rules.max_rules` 取真实容量。
-- [ ] 测试：缓存条目 ID 稳定；flush 为幂等；日志不记录客户端 IP（隐私）。
+- [x] `GET /api/v1/dns/cache`、`DELETE /api/v1/dns/cache/{entry_id}`、`POST /api/v1/dns/cache/flush`：需要 daedns 暴露缓存枚举与删除（当前只有 flush/统计）。
+- [x] `GET /api/v1/dns/log`、`GET /api/v1/dns/rules`、`POST /api/v1/dns/query`：
+  - [x] `dns/log` 需要新增有界环形日志（记录 qname/qtype/upstream/耗时），默认关闭或小容量；
+  - [x] `dns/rules` 是 `dns.routing` 的只读导出；
+  - [x] `dns/query` 是一次性主动查询，需限流并标记为观测用途。
+- [x] 能力：`dns_cache` / `dns_log` / `dns_rules` / `dns_query` 分别声明；`dns_log.max_records`、`dns_rules.max_rules` 取真实容量。
+- [x] 测试：缓存条目 ID 稳定；flush 为幂等；`dns/log` 不记录诊断 `/dns/query` 调用。
 
 #### P3-8 `connections*`
 
-- [ ] `GET /api/v1/connections`：从 `SessionManager` 导出活跃 flow（`ConnectionId`、五元组、outbound、sniffed domain、耗时、字节）。
-- [ ] `DELETE /api/v1/connections/{connection_id}`：关闭单条 flow（`force`/`interrupt` 语义），需要 session manager 支持按 ID 定位与关闭。
-- [ ] 能力：`resources.connections = { available: true, can_close: true, max_page_size }`。
-- [ ] 测试：分页/游标与 events 游标语义一致；关闭后 events 有对应终态。
+- [x] `GET /api/v1/connections`：从 `SessionManager` 导出活跃 flow（`ConnectionId`、五元组、outbound、sniffed domain、耗时、字节）。
+- [x] `DELETE /api/v1/connections/{connection_id}`：关闭单条 flow（`force`/`interrupt` 语义），需要 session manager 支持按 ID 定位与关闭。
+- [x] 能力：`resources.connections = { available: true, can_close: true, max_page_size }`。
+- [x] 测试：`limit` 截断时报 `truncated` 且 `total_*` 仍为截断前匹配数；`src` 必须是 IP 字面量。
 
 #### P3-9 `flows*`
 
-- [ ] `GET /api/v1/flows`、`GET /api/v1/flows/{flow_id}`：flow 需要有界历史存储（当前只有活跃 session），字段含 outbound、规则命中路径 `selection_path`、字节数。
-- [ ] 与 `connections` 的分工：`flows` 是短期历史（含已关闭），`connections` 是当前快照。
-- [ ] 能力：`resources.flows = { available: true, max_page_size, retention_seconds }`。
-- [ ] 测试：终态 flow 仍可查询；过期返回 `410 flow_expired`。
+- [x] `GET /api/v1/flows`、`GET /api/v1/flows/{flow_id}`：flow 需要有界历史存储（当前只有活跃 session），字段含 outbound 与字节数。规则命中路径依赖逐 flow trace，当前 `trace` 报 `disabled` + `missing: [not_instrumented]`。
+- [x] 与 `connections` 的分工：`flows` 是短期历史（含已关闭），`connections` 是当前快照。
+- [x] 能力：`resources.flows = { available: true, max_page_size, retention_seconds }`。
+- [x] 测试：终态 flow 仍可查询；过期返回 `410 flow_expired`。
 
 #### P3-10 `events`
 
-- [ ] `GET /api/v1/events`：事件流（SSE 或长轮询），`Last-Event-ID` 恢复，事件类型覆盖 `generation.changed`、flow/connection 终态、operation 完成。
-- [ ] 需要新的进程内事件总线 + 有界 replay（`event_cursor_expired` 语义）。
-- [ ] 与 operations 复用同一事件源，避免两套状态机。
-- [ ] 能力：`resources.events = { available: true, retention_seconds, max_replay_keys }`。
-- [ ] 测试：断线重连不丢事件、不重复；未知 event id → `410 event_cursor_expired`。
+- [x] `GET /api/v1/events`：事件流（SSE 或长轮询），`Last-Event-ID` 恢复，事件类型覆盖 `generation.changed`、flow/connection 终态、operation 完成。
+- [x] 需要新的进程内事件总线 + 有界 replay（`event_cursor_expired` 语义）。
+- [x] 与 operations 复用同一事件源，避免两套状态机。
+- [x] 能力：`resources.events = { available: true, kinds, retention_seconds, max_buffered_events, max_clients, heartbeat_seconds }`。
+- [x] 测试：断线重连不丢事件、不重复；未知/过期 Last-Event-ID → `409 event_cursor_expired`（契约用 409，不是 410，避免与分页游标混淆）。
 
 #### P3-11 `logs`
 
-- [ ] `GET /api/v1/logs`：把 logrus 输出接入有界 ring / 流式通道，支持 `level`、`limit`、`cursor`。
-- [ ] 安全：沿用 P0 规则，不记录 `Authorization`、secret 与查询串；日志条目需结构化字段而非自由文本。
-- [ ] 能力：`resources.logs = { available: true, max_page_size, retention_seconds }`。
-- [ ] 测试：ring 满时不阻塞业务线程；跨 reload 保留；日志内容不含凭证。
+- [x] `GET /api/v1/logs`：把 logrus 输出接入有界 ring / SSE 流，支持 `level`、`target` 过滤与 `Last-Event-ID` 续传。
+- [x] 安全：沿用 P0 规则，不记录 `Authorization`、secret 与查询串；日志条目需结构化字段而非自由文本。
+- [x] 能力：`resources.logs = { available: true, max_page_size, retention_seconds }`。
+- [x] 测试：ring 满时不阻塞业务线程；跨 reload 保留；日志内容不含凭证。
 
 #### P3-12 `probes`
 
-- [ ] `POST /api/v1/probes`：对 node / group 发起一次受控探测，返回 `202` + operation（复用 P1-3 的 operation store）。
-- [ ] 需要探测执行器（复用 dialer 的 health check，支持 tcp/udp、ip_version、超时上限）与每目标限流。
-- [ ] `result` 映射 `ProbeResult`（`results[]` 含 `member_id`、`transport`、`latency_ms`、`state`、`error`）。
-- [ ] 能力：`resources.probes = { available: true, targets: [node, group], kinds, transports, ip_versions, limits }`。
-- [ ] 测试：并发探测限流；探测不改变 selection（除显式 `selection_changed`）；超时返回结构化错误。
+- [x] `POST /api/v1/probes`：对 node / group 发起一次受控探测，返回 `202` + operation（复用 P1-3 的 operation store）。
+- [x] 需要探测执行器（通过节点自己的 dialer 发起用户态拨号，支持 tcp/udp、ip_version、超时上限）与并发/速率限制。
+- [x] `result` 映射 `ProbeResult`（`results[]` 含 `member_id`、`transport`、`latency_ms`、`state`、`error`）。
+- [x] 能力：`resources.probes = { available: true, targets: [node, group], kinds, transports, ip_versions, limits }`。
+- [x] 测试：并发探测限流；探测不改变 selection（除显式 `selection_changed`）；超时返回结构化错误。
 
 #### P3 通用约束
 
-- [ ] 每个资源先加 provider 接口 + `capabilities` 声明，再接实现：`available: false` 时端点必须返回 `404 capability_not_supported`（不能只暴露端点不实现）。
-- [ ] 分页/游标统一语义（`limit` 1–1000、cursor 绑定快照、过期 `410 snapshot_expired`）。
-- [ ] 所有新增写路径（flush/close/refresh/update/query）都要幂等键或明确非幂等说明，并评估是否需要 operation。
-- [ ] 隐私与体积：`logs` / `dns/log` / `flows` 需要容量上限与脱敏规则后再开放。
+- [x] 每个资源先加 provider 接口 + `capabilities` 声明，再接实现：`available: false` 时端点必须返回 `404 capability_not_supported`（不能只暴露端点不实现）。
+- [x] 分页/游标统一语义（`limit` 1–1000、cursor 绑定快照、过期 `410 snapshot_expired`）。
+- [x] 所有新增写路径（flush/close/refresh/update/query）都要幂等键或明确非幂等说明，并评估是否需要 operation。
+- [x] 隐私与体积：`logs` / `dns/log` / `flows` 需要容量上限与脱敏规则后再开放。
 
 ## 4. 端点清单
 
@@ -626,21 +625,21 @@ group {
 | GET | `/api/v1/operations/{operation_id}` | operation 状态 |
 | GET | `/api/v1/nodes` | 节点列表（`group_id` / `limit` / `cursor`） |
 | GET | `/api/v1/nodes/{node_id}` | 节点详情 |
+| GET | `/api/v1/runtime/outbounds` | 按出站累计计数器（reload 保留） |
+| GET | `/api/v1/runtime/memory` | 进程 / cgroup / eBPF 内存 |
+| GET | `/api/v1/runtime/memory/history` | 内存历史 |
+| GET | `/api/v1/datapath` | eBPF datapath 明细 |
 | GET | `/ui` / `/ui/*` | 自托管前端（配置 `api.ui` 时）：静态、公开，无需认证 |
 | GET | 其他任意路径（含 `/`） | 配置 `api.ui` 时 302 → `/ui/`；未配置时 404。**不会返回 401** |
 
 > 路由边界：只有 `/api` 与 `/api/v1/...` 属于控制面并参与认证；其余路径一律视为页面访问。
 
-### P3 计划（当前返回 `404 capability_not_supported`）
+### P3 已实现
 
-已登记实现计划，见第 3 节 P3；资源接通前端点一律返回 `404 capability_not_supported`。
+以下端点均已接入；仅明确标注的子能力（providers 增删/refresh、geodata update）仍返回 `404 capability_not_supported`。
 
 | Method | Path | 计划 | 依赖 |
 |---|---|---|---|
-| GET | `/api/v1/runtime/outbounds` | P3-1 | per-outbound 计数器（热路径） |
-| GET | `/api/v1/runtime/memory` | P3-2 | `runtime.ReadMemStats` 投影 |
-| GET | `/api/v1/runtime/memory/history` | P3-2 | 采样环加入内存维度 |
-| GET | `/api/v1/datapath` | P3-3 | eBPF map/attachment 明细 |
 | GET | `/api/v1/rules` | P3-4 | routing 规则只读导出 |
 | GET | `/api/v1/providers` | P3-5 | `subscription`/`node` section 投影 |
 | GET | `/api/v1/providers/{provider_id}` | P3-5 | 同上 |
@@ -662,6 +661,13 @@ group {
 | POST | `/api/v1/probes` | P3-12 | 探测执行器 + operations |
 
 > `/api/v1/routing/trace` 未列入 P3（需要按 flow 记录规则命中路径），当前返回 `404 capability_not_supported`，归入下方的"不在路线图内"。
+
+实现要点（契约对齐）：
+
+- 分页：`nodes` / `providers` 的 cursor 绑定 generation，reload 后旧 cursor 返回 `410 snapshot_expired`；`dns/cache`、`dns/log`、`flows` 使用不透明 cursor（base64 JSON，含 walk 类型、过滤条件指纹、limit、5 分钟有效期），过滤条件或 limit 不一致同样返回 `410 snapshot_expired`。
+- 限额：`limit` 统一 1–1000（默认 100，`dns/log` 默认 200 且上限为 `dns_log.max_page_size`），越界返回 `400 invalid_request`；`connections` 按 limit 截断并置 `truncated`，`total_tcp` / `total_udp` 保持截断前的匹配数。
+- 限流：`dns/query` 60 次/分钟；`probes` 同时运行 4 个、排队 16 个、120 次/分钟。超限分别返回 `429 rate_limited` / `503 temporarily_unavailable`，并带 `Retry-After`。
+- 只读定位：`providers` 的增删/refresh、`geodata/update`、`config*`、`nodes` 写操作全部 `404 capability_not_supported`。
 
 ### 声明不可用（不在路线图内）
 
