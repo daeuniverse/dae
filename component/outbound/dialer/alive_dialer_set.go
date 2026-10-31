@@ -188,6 +188,24 @@ type latencySnapshot struct {
 	entries []latencySnapshotEntry
 }
 
+// Selected reports the dialer this set currently dials with and the sorting
+// latency that won, which is the one an automatic policy uses. ok is false when
+// no dialer is alive or the policy ignores health state.
+//
+// Selection() on the group only reports a selector's runtime switch, so without
+// this accessor an automatic group had no way to say which member was in use.
+func (a *AliveDialerSet) Selected() (d *Dialer, sorting time.Duration, ok bool) {
+	if a == nil {
+		return nil, 0, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.minLatency.dialer == nil {
+		return nil, 0, false
+	}
+	return a.minLatency.dialer, a.minLatency.sortingLatency, true
+}
+
 // snapshotLatenciesLocked copies the per-dialer display state while a.mu is
 // held. It must be called with a.mu held (read or write); it performs no I/O
 // and no logging.

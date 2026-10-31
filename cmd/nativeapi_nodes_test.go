@@ -162,7 +162,8 @@ func TestOverrideSelectionIsReported(t *testing.T) {
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
 	}, properties...)
 
-	require.Nil(t, selectionPair(item).TCP, "an automatic group has no stable selection")
+	// Without a pin the group reports the member its alive sets picked.
+	require.Equal(t, "runtime", selectionPair(item).TCP.Source)
 
 	_, err := item.group.SetOverride(outbound.SelectionNetworkTCP, 1)
 	require.NoError(t, err)
@@ -170,11 +171,13 @@ func TestOverrideSelectionIsReported(t *testing.T) {
 	require.NotNil(t, selection.TCP)
 	require.Equal(t, "override", selection.TCP.Source)
 	require.Equal(t, nodeIDOf(properties[1]), selection.TCP.MemberID)
-	require.Nil(t, selection.UDP)
+	// The UDP slot was never pinned, so it keeps reporting the engine's choice.
+	require.Equal(t, "runtime", selection.UDP.Source)
 
 	_, err = item.group.ClearOverride(outbound.SelectionNetworkTCP)
 	require.NoError(t, err)
-	require.Nil(t, selectionPair(item).TCP)
+	// Clearing the pin falls back to the engine's own choice, not to null.
+	require.Equal(t, "runtime", selectionPair(item).TCP.Source)
 }
 
 func TestNodeCursorRoundTrip(t *testing.T) {

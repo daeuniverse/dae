@@ -192,8 +192,10 @@ func memberIDAt(group *outbound.DialerGroup, index int) *string {
 }
 
 // selectionPair reports the runtime selection of a group. A selector reports
-// the runtime choice, a fixed group reports its configured member, and the
-// automatic policies report nothing because they have no stable selection.
+// the runtime choice, a fixed group reports its configured member, and an
+// automatic policy reports the member the alive sets currently rank first - the
+// same decision the group logs and dials with. Only `random` stays empty,
+// because it re-rolls per connection and has no member to report.
 func selectionPair(item userGroup) nativeapi.GroupSelectionPair {
 	switch item.policy.Policy {
 	case consts.DialerSelectionPolicy_Select:
@@ -208,11 +210,34 @@ func selectionPair(item userGroup) nativeapi.GroupSelectionPair {
 		if !item.policy.Policy.SupportsOverride() {
 			return nativeapi.GroupSelectionPair{}
 		}
-		return nativeapi.GroupSelectionPair{
-			TCP: overrideSelectionAt(item.group, outbound.SelectionNetworkTCP),
-			UDP: overrideSelectionAt(item.group, outbound.SelectionNetworkUDP),
+		tcp := overrideSelectionAt(item.group, outbound.SelectionNetworkTCP)
+		udp := overrideSelectionAt(item.group, outbound.SelectionNetworkUDP)
+		if item.policy.Policy != consts.DialerSelectionPolicy_Random {
+			// A pin wins over the policy's own choice, so only fill the slots the
+			// override left empty.
+			if tcp == nil {
+				tcp = autoSelectionAt(item.group, outbound.SelectionNetworkTCP)
+			}
+			if udp == nil {
+				udp = autoSelectionAt(item.group, outbound.SelectionNetworkUDP)
+			}
+		}
+		return nativeapi.GroupSelectionPair{TCP: tcp, UDP: udp}
+	}
+}
+
+// autoSelectionAt reports the member the alive sets rank first for a transport.
+func autoSelectionAt(group *outbound.DialerGroup, network outbound.SelectionNetwork) *nativeapi.GroupSelection {
+	selected := group.AutoSelected(network)
+	if selected == nil {
+		return nil
+	}
+	for index, d := range group.Dialers {
+		if d == selected {
+			return selectionForMember(group, index, "runtime")
 		}
 	}
+	return nil
 }
 
 func overrideSelectionAt(group *outbound.DialerGroup, network outbound.SelectionNetwork) *nativeapi.GroupSelection {

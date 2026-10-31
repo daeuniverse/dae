@@ -169,10 +169,29 @@ func TestFixedGroupReportsConfiguredMember(t *testing.T) {
 	require.Equal(t, "policy", selection.TCP.Source)
 }
 
-func TestAutomaticGroupHasNoSelection(t *testing.T) {
+// TestAutomaticGroupReportsEngineSelection pins the fix for an empty /policies
+// selection: the alive sets do pick a member (the log says so, and the group
+// dials through it), so the API must report it instead of null.
+func TestAutomaticGroupReportsEngineSelection(t *testing.T) {
 	properties := testNodeProperties()
 	item := newMappedGroup(t, "auto", outbound.DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
+	}, properties...)
+
+	selection := selectionPair(item)
+	require.NotNil(t, selection.TCP, "an automatic group must report the member it dials with")
+	require.Equal(t, "runtime", selection.TCP.Source)
+	require.Equal(t, nodeIDOf(item.group.AutoSelected(outbound.SelectionNetworkTCP).Property()), selection.TCP.MemberID)
+	require.NotNil(t, selection.UDP)
+	require.Equal(t, "runtime", selection.UDP.Source)
+}
+
+// TestRandomGroupHasNoSelection keeps the one policy that genuinely has no
+// stable member empty.
+func TestRandomGroupHasNoSelection(t *testing.T) {
+	properties := testNodeProperties()
+	item := newMappedGroup(t, "rand", outbound.DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_Random,
 	}, properties...)
 
 	selection := selectionPair(item)

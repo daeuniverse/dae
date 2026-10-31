@@ -239,6 +239,54 @@ func (g *DialerGroup) Selection(network SelectionNetwork) (index int, ok bool) {
 	return int(g.selectionIndexes[slot].Load()), true
 }
 
+// AutoSelected reports the dialer an automatic policy currently prefers for one
+// transport, or nil when the policy has no stable choice (random), ignores
+// health (fixed/select keep their own accessor), or nothing is alive yet.
+//
+// The alive sets are keyed per health domain, so this walks the domains that
+// transport can dial with, in preference order. That order is what makes the
+// dashboard show one member instead of the six network keys the engine ranks.
+func (g *DialerGroup) AutoSelected(network SelectionNetwork) *dialer.Dialer {
+	if g == nil {
+		return nil
+	}
+	var keys []dialer.HealthKey
+	switch network {
+	case SelectionNetworkTCP:
+		keys = []dialer.HealthKey{
+			{Domain: dialer.HealthDomainTCP, IpVersion: consts.IpVersionStr_4},
+			{Domain: dialer.HealthDomainTCP, IpVersion: consts.IpVersionStr_6},
+		}
+	case SelectionNetworkUDP:
+		keys = []dialer.HealthKey{
+			{Domain: dialer.HealthDomainDataUDP, IpVersion: consts.IpVersionStr_4},
+			{Domain: dialer.HealthDomainDataUDP, IpVersion: consts.IpVersionStr_6},
+			{Domain: dialer.HealthDomainDnsUDP, IpVersion: consts.IpVersionStr_4},
+			{Domain: dialer.HealthDomainDnsUDP, IpVersion: consts.IpVersionStr_6},
+		}
+	default:
+		return nil
+	}
+	// The engine ranks each health domain (and therefore each IP family)
+	// independently, but the API has one slot per transport. Report the winner
+	// with the best sorting latency, so the single slot names the member the
+	// group currently prefers instead of whichever family happens to be first.
+	var (
+		best        *dialer.Dialer
+		bestSorting time.Duration
+	)
+	for _, key := range keys {
+		selected, sorting, ok := g.MustGetAliveDialerSet(key.NetworkType()).Selected()
+		if !ok || selected == nil {
+			continue
+		}
+		if best == nil || sorting < bestSorting {
+			best, bestSorting = selected, sorting
+		}
+	}
+	return best
+}
+
 // SelectionRevision counts runtime selection changes within this generation.
 // It is not persisted: a new generation starts at zero.
 func (g *DialerGroup) SelectionRevision() uint64 {
