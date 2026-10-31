@@ -49,6 +49,11 @@ func (c *ControlPlane) attachOutboundCounters(registry *ob.CounterRegistry) {
 		}
 		counters := registry.Acquire(group.Name)
 		group.SetCounters(counters)
+		if consts.OutboundIndex(i) == consts.OutboundDirect {
+			// The datapath counts pass-through bytes that never reach the relay;
+			// binding the direct row here is what lets that row report them.
+			setDirectTrafficCounters(counters)
+		}
 		byIndex[uint8(i)] = counters
 	}
 	c.outboundCounters = registry
@@ -73,6 +78,21 @@ func outboundKind(index consts.OutboundIndex) string {
 		return "builtin"
 	}
 	return "group"
+}
+
+// OutboundCountersSince reports the process-level boundary that
+// runtime/outbounds and runtime.traffic share, so both resources answer
+// "since when" with the same instant.
+func (c *ControlPlane) OutboundCountersSince() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	c.outboundCountersMu.RLock()
+	defer c.outboundCountersMu.RUnlock()
+	if c.outboundCounters == nil {
+		return time.Time{}
+	}
+	return c.outboundCounters.Since()
 }
 
 // SnapshotOutboundCounters projects the per-outbound counters of this

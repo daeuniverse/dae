@@ -31,14 +31,22 @@ type RuntimeTrafficSample struct {
 
 // RuntimeStatsSnapshot preserves the traffic-latency branch's exported API.
 type RuntimeStatsSnapshot struct {
-	UpdatedAt         time.Time
-	UploadRate        uint64
-	DownloadRate      uint64
-	UploadTotal       uint64
-	DownloadTotal     uint64
-	ActiveConnections int
-	UDPSessions       int
-	Samples           []RuntimeTrafficSample
+	UpdatedAt     time.Time
+	UploadRate    uint64
+	DownloadRate  uint64
+	UploadTotal   uint64
+	DownloadTotal uint64
+	// UserspaceUploadTotal/UserspaceDownloadTotal are the relay and DNS bytes.
+	// DirectUploadTotal/DirectDownloadTotal are the kernel pass-through bytes
+	// that never reach userspace. Their sum is UploadTotal/DownloadTotal, so the
+	// two planes stay separable without changing the total.
+	UserspaceUploadTotal   uint64
+	UserspaceDownloadTotal uint64
+	DirectUploadTotal      uint64
+	DirectDownloadTotal    uint64
+	ActiveConnections      int
+	UDPSessions            int
+	Samples                []RuntimeTrafficSample
 }
 
 type runtimeBucket struct {
@@ -61,14 +69,25 @@ type runtimeStats struct {
 
 	uploadTotal   atomic.Uint64
 	downloadTotal atomic.Uint64
-	history       []runtimeBucket
-	historyStart  int
-	historyLen    int
+
+	// Per-plane splits of the lifetime totals. Every byte lands in exactly one
+	// plane, so userspace+direct always equals uploadTotal/downloadTotal.
+	userspaceUploadBytes   atomic.Uint64
+	userspaceDownloadBytes atomic.Uint64
+	directUploadBytes      atomic.Uint64
+	directDownloadBytes    atomic.Uint64
+
+	history      []runtimeBucket
+	historyStart int
+	historyLen   int
 }
 
 var (
 	globalRuntimeStats = newRuntimeStats()
 	activeRuntimeStats atomic.Pointer[runtimeStats]
+	// lastPublishedRuntimeStats keeps the previous generation's store reachable
+	// for the totals handoff even while no store is active (a reload gap).
+	lastPublishedRuntimeStats atomic.Pointer[runtimeStats]
 )
 
 func newRuntimeStats() *runtimeStats {
@@ -97,7 +116,30 @@ func publishRuntimeStatsStore(s *runtimeStats) {
 	if s == nil {
 		return
 	}
+	if prev := lastPublishedRuntimeStats.Load(); prev != nil {
+		s.inheritTotalsFrom(prev)
+	}
 	activeRuntimeStats.Store(s)
+	lastPublishedRuntimeStats.Store(s)
+}
+
+// inheritTotalsFrom carries the process-lifetime byte totals across a
+// generation handoff.
+//
+// A reload builds a fresh generation-local store. Without this the reported
+// totals dropped to zero on every reload while runtime/outbounds kept counting
+// in its process-level registry, so the two resources disagreed by the whole
+// process history - which reads as "the API numbers are wrong".
+func (s *runtimeStats) inheritTotalsFrom(prev *runtimeStats) {
+	if s == nil || prev == nil || s == prev {
+		return
+	}
+	s.uploadTotal.Add(prev.uploadTotal.Load())
+	s.downloadTotal.Add(prev.downloadTotal.Load())
+	s.userspaceUploadBytes.Add(prev.userspaceUploadBytes.Load())
+	s.userspaceDownloadBytes.Add(prev.userspaceDownloadBytes.Load())
+	s.directUploadBytes.Add(prev.directUploadBytes.Load())
+	s.directDownloadBytes.Add(prev.directDownloadBytes.Load())
 }
 
 func unpublishRuntimeStatsStore(s *runtimeStats) {
@@ -142,6 +184,18 @@ func (c *ControlPlane) unpublishRuntimeStats() {
 }
 
 func (s *runtimeStats) record(upload uint64, download uint64) {
+	s.recordForPlane(upload, download, true)
+}
+
+// recordDirect folds kernel pass-through bytes into the same history and totals
+// as the relay while keeping them attributable under traffic.planes.
+func (s *runtimeStats) recordDirect(upload uint64, download uint64) {
+	s.recordForPlane(upload, download, false)
+}
+
+// recordForPlane is the single writer of the bucket, the lifetime totals and
+// the plane split, so the three can never drift apart.
+func (s *runtimeStats) recordForPlane(upload uint64, download uint64, userspace bool) {
 	if s == nil || (upload == 0 && download == 0) {
 		return
 	}
@@ -154,10 +208,20 @@ func (s *runtimeStats) record(upload uint64, download uint64) {
 	if upload > 0 {
 		s.currentUploadBytes.Add(upload)
 		s.uploadTotal.Add(upload)
+		if userspace {
+			s.userspaceUploadBytes.Add(upload)
+		} else {
+			s.directUploadBytes.Add(upload)
+		}
 	}
 	if download > 0 {
 		s.currentDownloadBytes.Add(download)
 		s.downloadTotal.Add(download)
+		if userspace {
+			s.userspaceDownloadBytes.Add(download)
+		} else {
+			s.directDownloadBytes.Add(download)
+		}
 	}
 }
 
@@ -235,14 +299,18 @@ func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSe
 	uploadRate, downloadRate := ratesFromBuckets(buckets, now, runtimeRateWindow)
 
 	return RuntimeStatsSnapshot{
-		UpdatedAt:         now,
-		UploadRate:        uploadRate,
-		DownloadRate:      downloadRate,
-		UploadTotal:       s.uploadTotal.Load(),
-		DownloadTotal:     s.downloadTotal.Load(),
-		ActiveConnections: activeConnections,
-		UDPSessions:       udpSessions,
-		Samples:           thinRuntimeSamples(samplesFromBuckets(buckets[:completedBuckets]), maxPoints),
+		UpdatedAt:              now,
+		UploadRate:             uploadRate,
+		DownloadRate:           downloadRate,
+		UploadTotal:            s.uploadTotal.Load(),
+		DownloadTotal:          s.downloadTotal.Load(),
+		UserspaceUploadTotal:   s.userspaceUploadBytes.Load(),
+		UserspaceDownloadTotal: s.userspaceDownloadBytes.Load(),
+		DirectUploadTotal:      s.directUploadBytes.Load(),
+		DirectDownloadTotal:    s.directDownloadBytes.Load(),
+		ActiveConnections:      activeConnections,
+		UDPSessions:            udpSessions,
+		Samples:                thinRuntimeSamples(samplesFromBuckets(buckets[:completedBuckets]), maxPoints),
 	}
 }
 

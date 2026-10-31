@@ -14,13 +14,19 @@ package control
 // absolute per-CPU totals into interval deltas that feed the same runtime stats
 // store the relay uses, so rate and total share one calculation.
 //
-// The bytes land in runtime.traffic only. They are deliberately NOT added to the
-// per-outbound counters behind /api/v1/runtime/outbounds: that resource is
-// documented as covering "visible traffic only, not all kernel-direct or
-// blocked traffic" (api-standardize, runtime-status.md), and putting
-// pass-through bytes there would make the direct row mean something the
-// contract does not define. /api/v1/runtime therefore reports
-// traffic.observed_by = "mixed": one total built from two observation planes.
+// The bytes land in runtime.traffic and, through directTrafficCounters, in the
+// builtin "direct" row of /api/v1/runtime/outbounds. Without that attribution
+// the direct row was always zero and sum(runtime/outbounds) could never match
+// runtime.traffic.bytes, which is what made the totals look wrong next to the
+// per-group breakdown. This is a deliberate extension of the contract's
+// "visible traffic only" note (api-standardize, runtime-status.md): the row
+// now reports userspace payload bytes for must_direct flows plus kernel link
+// bytes for pass-through flows, and the two units are never summed into one
+// figure inside a single flow.
+//
+// /api/v1/runtime still reports traffic.observed_by = "mixed" and additionally
+// splits the total under traffic.planes.{userspace,kernel_direct}, so a reader
+// that needs one coherent unit can pick a plane instead of trusting the sum.
 //
 // Deliberate omissions, all documented rather than papered over:
 //   - the figures are link bytes (L2 header included on *_l2 attachments),
@@ -56,6 +62,22 @@ package control
 //     by also requiring a DIRECT routing shape, but a republish that keeps a
 //     DIRECT outbound while sending the flow to userspace (a non-zero direct
 //     mark on a local socket) is not representable there.
+
+import (
+	"sync/atomic"
+
+	ob "github.com/daeuniverse/dae/component/outbound"
+)
+
+// directTrafficCounters is the process-level counter set behind the builtin
+// "direct" row of runtime/outbounds. attachOutboundCounters binds it from the
+// process-lifetime registry, so the row survives reloads exactly like the
+// configured groups do.
+var directTrafficCounters atomic.Pointer[ob.Counters]
+
+func setDirectTrafficCounters(counters *ob.Counters) {
+	directTrafficCounters.Store(counters)
+}
 
 // Direct traffic counter keys. Mirror enum direct_traffic_key in
 // control/kern/tproxy.c; TestDirectTrafficKeysParityWithKernelSource pins the
@@ -140,10 +162,21 @@ func (a *directTrafficAccountant) advance(snap directTrafficSnapshot) (upload, d
 // silently whenever that generation was no longer the maintenance target: the
 // bytes kept accumulating in the map while nothing published them.
 func (a *directTrafficAccountant) record(bpf *bpfObjects) {
-	snap := readDirectTrafficCounters(bpf)
-	upload, download := a.advance(snap)
+	a.publish(a.advance(readDirectTrafficCounters(bpf)))
+}
+
+// publish attributes one interval of pass-through bytes to the builtin direct
+// row and to the process-lifetime totals.
+func (a *directTrafficAccountant) publish(upload, download uint64) {
 	if upload == 0 && download == 0 {
 		return
 	}
-	currentRuntimeStatsStore().record(upload, download)
+	// Attribute the bytes to the builtin "direct" outbound so the per-group
+	// breakdown adds up to the total, then add them to the process-lifetime
+	// totals with their own plane tag.
+	if counters := directTrafficCounters.Load(); counters != nil {
+		counters.AddUpload(upload)
+		counters.AddDownload(download)
+	}
+	currentRuntimeStatsStore().recordDirect(upload, download)
 }

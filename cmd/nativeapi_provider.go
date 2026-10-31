@@ -68,6 +68,15 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 	now := time.Now()
 	stats := active.controlPlane.SnapshotRuntimeStats(3600, 180)
 
+	// Report the same counter boundary as runtime/outbounds: the traffic totals
+	// are inherited across reloads from the process-level accumulator, so the
+	// generation's activation time would be a boundary the numbers no longer
+	// respect.
+	counterSince := active.controlPlane.OutboundCountersSince()
+	if counterSince.IsZero() {
+		counterSince = active.activatedAt
+	}
+
 	state := status.State
 	if state == "" {
 		state = string(runtimeStateRunning)
@@ -113,9 +122,9 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 			// (payload bytes) and the eBPF pass-through counters (link bytes for
 			// direct flows that never reach userspace). The contract's
 			// traffic.observed_by enum is userspace/ebpf/mixed, so a mixed total
-			// must say so.
+			// must say so, and Planes keeps the two separable.
 			ObservedBy:   "mixed",
-			CounterSince: formatTime(active.activatedAt),
+			CounterSince: formatTime(counterSince),
 			SampledAt:    formatTime(stats.UpdatedAt),
 			Connections: nativeapi.Connections{
 				TCP:   uint64Pointer(uint64(stats.ActiveConnections)),
@@ -130,6 +139,16 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 				WindowSeconds:          1,
 				UploadBytesPerSecond:   stringPointer(strconv.FormatUint(stats.UploadRate, 10)),
 				DownloadBytesPerSecond: stringPointer(strconv.FormatUint(stats.DownloadRate, 10)),
+			},
+			Planes: &nativeapi.TrafficPlanes{
+				Userspace: nativeapi.Bytes{
+					Upload:   stringPointer(strconv.FormatUint(stats.UserspaceUploadTotal, 10)),
+					Download: stringPointer(strconv.FormatUint(stats.UserspaceDownloadTotal, 10)),
+				},
+				KernelDirect: nativeapi.Bytes{
+					Upload:   stringPointer(strconv.FormatUint(stats.DirectUploadTotal, 10)),
+					Download: stringPointer(strconv.FormatUint(stats.DirectDownloadTotal, 10)),
+				},
 			},
 		},
 		Process: nativeapi.Process{

@@ -125,6 +125,18 @@ type TrafficSummary struct {
 	Connections  Connections `json:"connections"`
 	Bytes        Bytes       `json:"bytes"`
 	Rates        *Rates      `json:"rates"`
+	// Planes splits Bytes into the two observation planes it is built from.
+	// Bytes is their sum, so a reader that needs one coherent unit (payload or
+	// link bytes) can use a plane instead of the mixed total.
+	Planes *TrafficPlanes `json:"planes,omitempty"`
+}
+
+// TrafficPlanes attributes the mixed traffic total to the plane that observed
+// it. Neither plane is a subset of the other: userspace counts relay payload
+// bytes, kernel_direct counts link bytes for pass-through flows.
+type TrafficPlanes struct {
+	Userspace    Bytes `json:"userspace"`
+	KernelDirect Bytes `json:"kernel_direct"`
 }
 
 type Connections struct {
