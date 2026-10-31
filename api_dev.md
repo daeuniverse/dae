@@ -4,7 +4,7 @@
 >
 > 本文是实施计划，不是最终契约文档。契约以 `api-standardize/source/openapi.yaml` 为准。
 >
-> 实现状态（2026-10-31）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。仍声明不可用的是配置读写（`config*`）、`runtime/settings`、`routing/trace`、`auth/*`；providers 的增删/refresh 与 geodata 的 update 按只读定位返回 `404 capability_not_supported`。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。
+> 实现状态（2026-10-31）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。仍声明不可用的是配置读写（`config*`）、`runtime/settings`、`routing/trace`、`auth/*`；providers 的增删/refresh 与 geodata 的 update 按只读定位返回 `404 capability_not_supported`。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。**2026-10-31 的线上联调修复（直连流量归属、节点延迟、`/rules` 体积、`/policies` 选区、`purpose` 取值、内存 cgroup）见「10. 联调问题修复纪要」。**
 
 ## 1. 结论与范围
 
@@ -322,7 +322,8 @@ group {
   - [x] `ebpf: null` 一期即可。
 - [x] `traffic`：复用 `control.SnapshotRuntimeStats`
   - [x] `scope: "visible"`、`observed_by: "mixed"`（契约 `ObservedBy` 枚举为 `userspace` / `ebpf` / `mixed`；dae 的合计来自 userspace relay 的 payload 字节与 eBPF 直连计数两个观测面，故为 `mixed`）。
-  - [x] `counter_since` = 当前 generation 激活时间。
+  - [x] `planes.userspace` / `planes.kernel_direct`（2026-10-31 新增）：把 `bytes` 拆回两个观测面。两者相加等于 `bytes`，需要单一口径的读者取 plane，不要用混合合计。`kernel_direct` 为链路字节（含 L2 头、重传重复计），`userspace` 为 relay + DNS payload 字节。
+  - [x] `counter_since` = 进程级计数器起点（与 `runtime/outbounds.counter_since` 同一来源）。2026-10-31 修正：此前取 generation 激活时间，而 reload 后 totals 归零、`runtime/outbounds` 却继续累计，两个资源的"自何时起"和数字互相矛盾。
   - [x] `connections.tcp = ActiveTCPConnections`、`connections.udp = UDPSessions`、`total` 为二者之和。
   - [x] `bytes.upload/download` 为十进制字符串。
   - [x] `rates.window_seconds = 1`，速率为字符串。（2026-10-30 修正：bucket 仅在记录流量时轮转，1s 速率在任何轮询节奏下都准确；此前只在 snapshot 时轮转，面板 5s 轮询下会读到 `0 B/s`）
@@ -416,10 +417,14 @@ group {
   - [x] `supports_nested_groups: false`
   - [x] `mutable_config: []`
   - [x] `probe_transports: []`
+- [x] `runtime/memory` 的 cgroup 部分依赖系统是否委派 memory 控制器（2026-10-31 补充）：cgroup v2 只有在父级 `cgroup.subtree_control` 里写了 `+memory` 时，子 cgroup 才会出现 `memory.current/max/events`。没委派时 dae 如实返回 `cgroup: null`（不是解析失败），capabilities 的 `runtime_memory.metrics` 也只列出真正读到的指标。
+  - [x] `memory.max` 为字面量 `max`（无限制）与"文件不存在"区分开：前者 `limit_bytes: null` 但照常声明 `cgroup.limit_bytes` 指标，前端据此渲染"无限制"而不是"未知"。
 - [x] `Group.runtime.selection` 同时包含 `tcp` 和 `udp`：
   - [x] `select`：当前成员，`source: "runtime"`。
   - [x] `fixed`：固定成员，`source: "policy"`。
-  - [x] `random` / `urltest`：一期 `null`。
+  - [x] `min` / `min_avg10` / `min_moving_avg`（2026-10-31 修正）：报告引擎当前实际选中的成员，`source: "runtime"`。取值来自 `DialerGroup.AutoSelected` → `AliveDialerSet.Selected()`（即 `minLatency.dialer`，含"首个存活 dialer"的乐观初选），与日志 `Group selects dialer` 同源。此前一律返回 `null`，导致前端 `/policies` 明明有选中节点却显示为空。
+  - [x] 被 override pin 住时 `source: "override"`，清除 pin 后回落到 `source: "runtime"`，不再回到 `null`。
+  - [x] `random`：仍为 `null`（每连接重掷，没有稳定成员）。
 - [x] `Group.runtime.health`
   - [x] 一期返回 `[]`。
 - [x] `Group.icon`
@@ -482,14 +487,17 @@ group {
 
 - [x] `GET /api/v1/nodes`、`GET /nodes/{id}`
   - [x] `Node.id/name/protocol/subscription_tag/group_ids/health` 必填。
-  - [x] `health` 返回真实探测观测（未探测的网络域省略，新进程为 `[]`）。
+  - [x] `health` 返回真实探测观测（未探测的网络域省略，新进程为 `[]`；data-UDP 例外：镜像同 IP 版本的 DNS 样本）。
   - [x] `limit` 1–1000，`cursor` / `next_cursor`（cursor 绑定 generation，过期返回 `410 snapshot_expired`）。
   - [x] 列表来源为 generation 管理的全部 dialer（含未被任何组选中的节点，排除 builtin direct/block）；`group_id` 过滤；`provider_id` 在 P3-5 之后指向所属 provider（P2 阶段曾恒为 `null`）。
   - [x] 同一分享链接出现在多个订阅时按 node ID 合并（成员关系与健康取并集）；`member_count` 与实际唯一成员数一致。
   - [x] `nodes.can_manage = false`；`POST/DELETE /nodes` 返回 `404 capability_not_supported`。
 - [x] 组健康 `runtime.health`
   - [x] 导出 dialer alive / latency / avg10 / movingAvg / observedAt。
-  - [x] 映射 `HealthObservation`、`sorting_latency_ms`、`ranking`（`ranking` 恒为 `null`，dae 无评分模型）。
+  - [x] `sorting_latency_ms` 取**引擎实际排序值**（2026-10-31 修正）：`AliveDialerSet.SortingSnapshot()` 返回的 `latency + offset`，其中 `latency` 已含恢复/退避惩罚。此前是在投影层用策略指标重新算一遍，既漏了惩罚也漏了 `add_latency`，与日志 `latencyString(latency, offset)` 打印的 `471ms(+150ms=621ms)` 对不上。
+  - [x] `ranking` 不再恒为 `null`（2026-10-31）：填 `metric` / `score`(=引擎排序值) / `group_offset_ms` / `recovery_penalty_ms` / `rank`(1-based 名次) / `delta_to_best_ms`(落后最优多少) / `reason`。数据来自同一份 `SortingSnapshot()`，与日志的排序表同源。
+- [x] `purpose` 取值改为 `data` / `dns`（2026-10-31 修正）：TCP 此前导出 `purpose: "shared"`，而契约/前端约定的语义是"这段延迟用于什么流量"——TCP 与 data-UDP 都是 `data`，只有 DNS 是 `dns`（与 `/probes` 的结果一致）。前端 `/policies` 用 `transport=tcp && purpose=data` 取主延迟，取不到就把**所有节点都当成"未测试"**，显示"0 个可用"。
+- [x] data-UDP（`udp4`/`udp6`）健康样本（2026-10-31 新增）：data-UDP 没有自己的探针（真实 UDP 流量只翻 alive 标志、不记录延迟），引擎排序时借用同 dialer 的 DNS-UDP 样本（`snapshotLatencyForPolicy`）。API 此前直接跳过该 key，导致每个节点只有 4 条样本、而 alive set 日志里有 6 个网络。现在按同样规则镜像 DNS 样本，`sample_source` 仍为 `probe`，`measurement` 为 `dns_round_trip`。
 - [x] `can_override`（自动策略 pin 成员）
   - [x] `random` / `min` / `min_avg10` / `min_moving_avg` 的 `can_override = true`；`PUT` 设置 pin（`source: "override"`），`DELETE` 清除。
   - [x] pin 按 transport 独立、忽略 `excluded` 与探测健康、不改变 kernel 准入；reload 后重置。
@@ -508,6 +516,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
   - [x] `active_connections`：flow 生命周期计数（establish +1 / finish -1）。
   - [x] `counter_since` 与进程启动/generation 激活对齐，reload 不重置（"retained across reloads"），仅进程重启或显式 reset 时变更。
 - [x] `kind`：`builtin`（direct/block）、`group`（用户组）；`node` 未按成员聚合（计数器在出站层）。
+- [x] builtin `direct` 行计的是**内核直连字节**（`direct_traffic_map`，链路字节）+ 走 userspace 的 `must_direct` payload 字节（2026-10-31 新增）。此前该行恒为 0，导致 `sum(outbounds)` 与 `runtime.traffic.bytes` 永久对不上（实测差 472 MB / 18%）。契约里 "visible traffic only" 的说明已按此扩展，见 `control/direct_traffic.go` 头注释。
 - [x] 能力：`resources.runtime_outbounds = { available: true }`。
 - [x] 计数器使用原子加法（每次 record 仅一次 `atomic.Uint64.Add`，与现有全局计数器同量级）；基准结论：无需每 CPU 分片。
 - [x] 测试：单位计数、reload 后累计不回退、热路径记录归属。
@@ -532,7 +541,8 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 - [x] `GET /api/v1/rules`：导出已编译的 routing 规则（含 `routing.Rule` 的匹配集合与出站）。契约规定该资源不分页（`max_rules` 保证整个字典一次返回）。
 - [x] 需要新的只读导出视图（当前 `routingMatcher` 只保留匹配结构，不回显原始规则文本）。
 - [x] 能力：`resources.rules = { available: true, max_page_size }`。
-- [x] 测试：规则条目与 `dae validate` 的语义一致；敏感字段（节点 link）不泄漏。
+- [x] `expression` 用 `RoutingRule.DisplayString`（2026-10-31 修正）：运行期的规则树是 geosite **展开后**的，单条 `domain(geosite:...)` 会变成上万条 `suffix:`。此前用无损的 `String()` 渲染，实测响应 **8.5 MB**，前端光是下载+解析就卡住。现在每个函数最多渲染 `DisplayParamLimit`(8) 个参数并附 `+N more`，响应降到 KB 级，规则下标与运行期规则仍一一对应（flows 的 `rule_id` 语义不变）。无损形式 `String()`/`MarshalString()` 未改动，仍用于 reload 指纹与 policy hash。
+- [x] 测试：规则条目与 `dae validate` 的语义一致；敏感字段（节点 link）不泄漏；`DisplayString` 折叠大参数表、`String` 保持无损。
 
 #### P3-5 `providers*`
 
@@ -778,3 +788,219 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 - [x] `traffic_history` 校验 `window_seconds` / `max_points` 上限，非法值返回 400。
 - [x] 所有错误响应包含 `error.code`、`error.message`、`request_id`。（应用层错误均带；>12288B 头部由 net/http 直接回 431 纯文本）
 - [x] 所有响应带 `Cache-Control: no-store` 和 `X-Content-Type-Options: nosniff`。
+
+## 10. 2026-10-31 联调问题修复纪要
+
+本轮以**远端真实路由器**（OpenWrt 25.12 / x86_64 / kernel 6.12.112，dae 由本仓 `make` 编译后替换 `/usr/bin/dae`）实测为准，逐条定位并修复。所有结论都带实测数字，不是推断。
+
+约束：只替换 dae 服务本体，其余系统项不动；诊断日志一律落 `/tmp`。
+
+### 10.1 总览
+
+| # | 症状 | 根因 | 性质 |
+|---|---|---|---|
+| R1 | `/runtime/outbounds` 的 `direct` 行恒为 0；`Σ(outbounds)` 与 `runtime.traffic` 差 18% | 直连字节只进混合总量，没有任何归属；且 `runtime` 总量是 generation 级，reload 归零 | 投影层缺陷 |
+| R2 | 节点延迟：API 只有 4 条、`sorting_latency_ms` 与日志对不上、`ranking` 恒 null | data-UDP 被丢弃；排序值在投影层重算；ranking 未实现 | 投影层缺陷 |
+| R3 | 前端取 `/rules` 极慢 | 响应体 **8.5 MB**（geosite 展开后按无损形式渲染） | 序列化缺陷 |
+| R4 | `/policies` 不显示选中节点 | 自动策略一律返回 `selection: null` | 投影层缺陷 |
+| R5 | `/policies` 显示「0 个可用 / 4 个未测试」 | TCP 样本的 `purpose` 用了 `shared`，前端按 `tcp + data` 取主延迟 | 契约字段值错误 |
+| R6 | `/overview` 内存卡片 7 项全为「—」 | 系统未委派 cgroup memory 控制器，整棵树没有 `memory.*` | 环境 + 少量代码 |
+
+### 10.2 逐条记录
+
+#### R1 直连流量没有归属，且 reload 后总量归零
+
+**取证**
+
+- 内核 `direct_traffic_map`（percpu_array，map id 1698）真实在涨；
+- 受控测试：从 LAN 主机下载 `mirrors.aliyun.com` 51,301,092 字节（routing → direct）：
+  `direct_traffic_map` download `+52,389,589`，`/runtime` download `+52,038,366`，proxy 分项 `+1,933`；
+- 同时刻 `Σ(outbounds)=2.14 GB` vs `runtime.traffic=2.62 GB`，**差 472 MB（18%）**；
+- `dae reload` 后 `runtime.traffic` 归零（`counter_since` 变为新 generation 激活时间），而 `/runtime/outbounds` 继续累计。
+
+**根因**
+
+- `control/direct_traffic.go` 注释写明直连字节"只进 runtime.traffic，故意不进 per-outbound"；
+- `ControlPlane.runtimeStats` 是 generation 级（`newRuntimeStats()` 在构造时创建），reload 重建即归零，而出站计数器是**进程级** registry。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `control/direct_traffic.go` | 新增进程级 `directTrafficCounters`；直连增量同时写入 builtin `direct` 行与总量；新增 `recordDirect`；`record()` 拆出可测的 `publish()` |
+| `control/outbound_counters.go` | `attachOutboundCounters` 绑定 direct 计数器；新增 `OutboundCountersSince()` 作为两个资源共用的 `counter_since` |
+| `control/runtime_stats.go` | 新增 userspace / kernel_direct 两条平面累计；`publishRuntimeStatsStore` 在 generation 交接时**继承总量** |
+| `cmd/nativeapi_provider.go` | `counter_since` 改用进程级边界；输出 `traffic.planes` |
+| `component/nativeapi/types.go` | 新增 `TrafficPlanes` |
+| `control/direct_traffic_attribution_test.go` | 新增：直连归属 + reload 继承 |
+
+**验证**（51.3 MB 直连下载后）
+
+```json
+"bytes":  {"upload":"96035","download":"52376513"},
+"planes": {"userspace":{"upload":"35916","download":"36823"},
+           "kernel_direct":{"upload":"60119","download":"52339690"}}
+"direct": {"upload_bytes":"60119","download_bytes":"52339690"}
+```
+
+- `direct` 行 == `kernel_direct` 平面；
+- `userspace + kernel_direct == bytes`，精确闭合；
+- `Σ(outbounds)` 与总量只差 DNS 字节（DNS 不属于任何出站）；
+- `dae reload` 后 `counter_since` 不变、总量继续累加（122,181 → 175,005）。
+
+**未采纳的设想**：曾计划把 `direct_traffic_map` 改为 `LIBBPF_PIN_BY_NAME`，实测**不需要**——reload 走 BPF object 交接，map id 与数值都原样保留（452,170,343 → 454,944,592）。冷启动反而要清理旧 pin，加 pin 会带进陈旧计数。
+
+#### R2 节点延迟：data-UDP 缺失、排序值口径错误、ranking 未实现
+
+**取证**
+
+- 引擎日志按 6 个网络输出选路：`tcp4 / tcp6 / udp4(DNS) / udp6(DNS) / udp4 / udp6`；
+- API 每个节点只有 4 条健康样本，**没有 data-UDP**；
+- 日志 `min_moving_avg=689ms network=tcp6`，而 API 的 `sorting_latency_ms` 只等于原始指标（不含恢复惩罚与 `add_latency`）；
+- `ranking` 字段声明了但恒为 `null`。
+
+**根因**
+
+- data-UDP 没有自己的探针（真实 UDP 流量只翻 alive 标志），引擎排序时**借用**同 dialer 的 DNS 样本（`snapshotLatencyForPolicy`）；而投影层遇到 `LastProbe.CheckedAt` 为零就 `continue`，把该 key 丢掉了；
+- 引擎排序用 `rawLatency + offset`（`rawLatency` 含恢复/退避惩罚），投影层的 `sortingLatency()` 只重取策略指标；
+- 日志的延迟表只在 `debug` 级别构建，天然不能当数据源。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `component/outbound/dialer/alive_dialer_set.go` | 新增 `SortingSnapshot()`：返回每个 dialer 的 `latency / offset / sorting(=latency+offset) / rank`，排序规则与选择决策一致、不受 log level 影响 |
+| `cmd/nativeapi_nodes.go` | 按引擎同一规则镜像 DNS 样本生成 data-UDP 样本；`sorting_latency_ms` 改用引擎值；填充 `ranking` |
+| `component/nativeapi/types.go` | `GroupRanking` 新增 `rank`、`delta_to_best_ms` |
+| 测试 | `TestSortingSnapshotReportsEngineOrder`、`TestBuildRankingUsesEngineSortingValue` |
+
+**验证**
+
+```
+日志 08:14:01  min_moving_avg=689ms  network=tcp6
+API  (tcp6, US01_IPv4) sorting_latency_ms=689.354861
+      ranking={"metric":"min_moving_avg","score":689.354861,"rank":1,"delta_to_best_ms":0}
+    (tcp6, US01_IPv6) sorting_latency_ms=884.483085
+      ranking={...,"rank":2,"delta_to_best_ms":195.128}
+```
+
+每个节点由 4 条样本变为 **6 条**（含 2 条 data-UDP 镜像）。
+
+#### R3 `/rules` 响应 8.5 MB
+
+**取证**：`GET /api/v1/rules` → `8,517,179 bytes`，服务端耗时仅 30–70 ms（不是慢查询，是体积）。
+
+**根因**：运行期规则树是 **geosite 展开后**的——一条 `domain(geosite:category-ads-all)` 变成带 **194,282** 个 `suffix:` 参数的函数；`snapshotRoutingProgram` 用**无损**的 `RoutingRule.String()` 渲染。`config_parser.Function.String()` 本来自带 5 参数截断，但 `RoutingRule.String()` 自己手写参数循环，绕过了它。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `pkg/config_parser/section.go` | 新增 `RoutingRule.DisplayString()`：每函数最多 `DisplayParamLimit(8)` 个参数，其余折叠为 `+N more` |
+| `control/routing_rules.go` | `expression` 改用 `DisplayString` |
+| 测试 | `TestDisplayStringCollapsesExpandedParams`（同时断言 `String()` 仍无损） |
+
+**关键安全点**：`String()` / `MarshalString()` **一字未改**。它们被 reload 指纹（`cmd/reload_manager.go`）与 policy hash 使用，截断会导致两份不同配置算出同一指纹、reload 静默跳过真实变更。
+
+**验证**：`8,517,179 → 3,284 bytes`（≈2600 倍），10 条规则与 `index`/`rule_id` 不变：
+
+```json
+"domain(suffix: 0.avmarket.rs, ..., suffix: 0017c6c37c.com, +194274 more) -> block"
+"ip(0.0.0.0/8, ..., 1.1.2.0/23, +10034 more) -> direct"
+```
+
+#### R4 `/policies` 不显示当前选中节点
+
+**取证**：`/groups` 与 `/groups/{id}` 的 `selection` 对自动策略恒为 `{"tcp":null,"udp":null}`；而日志一直在打印 `Group selects dialer dialer=US02_IPv4_Juicity network=udp6`。
+
+**根因**：`selectionPair` 认为"自动策略没有稳定成员"，直接返回空；`DialerGroup.Selection()` 只反映 selector 的运行时切换，不包含自动策略的选择结果。引擎侧的选择存在 `AliveDialerSet.minLatency.dialer`，从未对外暴露。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `component/outbound/dialer/alive_dialer_set.go` | 新增 `Selected()`：返回 `minLatency.dialer` 及其排序延迟 |
+| `component/outbound/dialer_group.go` | 新增 `AutoSelected(network)`：按传输遍历健康域（TCP: tcp4/tcp6；UDP: data4/data6/dns4/dns6），取排序延迟最优者 |
+| `cmd/nativeapi_groups.go` | 自动策略：override pin 优先（`source:"override"`），否则报引擎实选（`source:"runtime"`）；`random` 仍为 null |
+
+**验证**：`selection.udp = US02_IPv4_Juicity`，与同一时刻日志 `udp6 → US02_IPv4_Juicity` 一致；清除 pin 后回落到 `source:"runtime"` 而非 `null`。
+
+**已知语义差**（非 bug）：`ranking.rank == 1` 是**瞬时**排序第一名，`selection` 是带 `check_tolerance`（本机 150 ms）滞回的 `minLatency`，两者可能指向不同节点——后者才是引擎真正要去拨的。
+
+#### R5 「0 个可用 / 4 个未测试」
+
+**根因**：前端取"主延迟"的条件是 `transport === "tcp" && purpose === "data"`；dae 给 TCP 样本填的是 `purpose: "shared"`。filter 结果为空 → 每个成员的 `health` 为 `undefined` → `healthy=false`、`unavailable=false` → 全部落进兜底桶计为"未测试"。
+
+契约语义是"这段延迟用于什么流量"：TCP 与 data-UDP 都是 `data`，只有 DNS 是 `dns`（与 `/probes` 的结果口径一致，`cmd/nativeapi_probes.go` 一直是 `data`/`dns`）。
+
+**修改**：`cmd/nativeapi_nodes.go` 的 `healthDomainOf(HealthDomainTCP)` 改为 `("tcp","data")`；测试改为按 `transport/purpose` 建索引（`tcp/data` 与 `udp/data` 同 purpose）。
+
+**验证**：`/nodes` 的 purpose 分布变为 `tcp/data`、`udp/dns`、`udp/data`；按前端逻辑复算 → `{'healthy': 4}`。
+
+#### R6 内存卡片 7 项全为「—」
+
+**取证**
+
+```
+/proc/<dae>/cgroup        → 0::/services/dae/dae
+该目录 memory.* 文件数     → 0
+/sys/fs/cgroup/cgroup.subtree_control → 空
+/sys/fs/cgroup/ 只有      → memory.stat、memory.reclaim
+```
+
+**根因**：cgroup v2 只有在父级 `cgroup.subtree_control` 写入 `+memory` 时，子 cgroup 才会生成 `memory.current / memory.max / memory.events`。本系统整棵树都没有，dae 如实返回 `cgroup: null`。
+
+**处理**
+
+1. **系统侧**（一次性、无持久化、可回滚）：
+
+   ```sh
+   echo +memory > /sys/fs/cgroup/cgroup.subtree_control
+   echo +memory > /sys/fs/cgroup/services/cgroup.subtree_control
+   echo +memory > /sys/fs/cgroup/services/dae/cgroup.subtree_control
+   ```
+
+   必须在开启后**重启 dae**：memcg 只对启用后新分配的页计费，重启前 `memory.current` 仅 405 KB，重启后立即约 100 MB。
+
+2. **dae 侧**（`control/memory_stats.go`）：区分 `memory.max` 的字面量 `max`（无限制）与"文件不存在"（系统不支持）。前者 `limit_bytes: null` 但**照常声明** `cgroup.limit_bytes` 指标，前端据此渲染「未设上限」。
+
+**验证**
+
+```json
+"cgroup": {"scope":"service","current_bytes":"101404672","limit_bytes":null,
+           "events":{"high":"0","oom":"0","oom_kill":"0"}}
+"kernel": {"ebpf_bytes":"22763288"}
+capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
+  cgroup.limit_bytes, cgroup.events.high, cgroup.events.oom, cgroup.events.oom_kill, kernel.ebpf_bytes]
+```
+
+### 10.3 本轮新增/变更的对外字段
+
+| 资源 | 字段 | 变化 |
+|---|---|---|
+| `runtime.traffic` | `planes.userspace` / `planes.kernel_direct` | 新增；两者之和恒等于 `bytes` |
+| `runtime.traffic` | `counter_since` | 语义改为**进程级**边界，与 `runtime/outbounds.counter_since` 同源；reload 不再归零 |
+| `runtime/outbounds` | builtin `direct` 行 | 由恒 0 变为内核直连字节（链路字节）+ `must_direct` 的 payload |
+| `groups[].selection` / `groups[].runtime.selection` | `tcp_member_id` / `udp_member_id` | 自动策略不再为 null，报引擎实选成员（`source:"runtime"`）；`random` 仍为 null |
+| `groups[].runtime.health[]` | `sorting_latency_ms` | 改为引擎真实排序值（含恢复惩罚 + `add_latency`） |
+| `groups[].runtime.health[]` | `ranking` | 由恒 null 变为 `{metric, score, group_offset_ms, recovery_penalty_ms, rank, delta_to_best_ms, reason}` |
+| `nodes[].health[]` / `runtime.health[]` | `purpose` | TCP 由 `shared` 改为 `data`；取值集合变为 `data` / `dns` |
+| 同上 | 样本条数 | 每节点由 4 条变 6 条（补 data-UDP，镜像同 IP 族 DNS 样本） |
+| `runtime/memory` | `cgroup.*` | 系统委派 memcg 后填充；`limit_bytes: null` 表示"无限制"，由 `capabilities` 的 `cgroup.limit_bytes` 指标区分"不支持" |
+| `capabilities.runtime_memory.metrics` | — | 动态：只声明真正读到的指标 |
+
+### 10.4 部署与回滚
+
+- 二进制：`make dae`（**必须走 make**，它会先 `go generate ./control/control.go` 重编 `kern/tproxy.c` 进 `bpf_bpfel.o`；纯 `go build` 会用仓库里那份生成物）；
+- 目标架构 x86_64，与路由器一致，无需交叉编译；
+- 替换方式：备份 → `scp` 到 `/tmp` → `/etc/init.d/dae stop` → 覆盖 `/usr/bin/dae` → `start`；
+- 备份点：`/tmp/dae.bak.<timestamp>`（每轮一份，最早一份是会话开始前的原始版本）；
+- 版本串：`unstable-20261031.r877.31bc21e`（仓库尚无新提交，`r877` 不随改动递增）。
+
+### 10.5 遗留项
+
+- **memcg 委派不持久化**：重启路由器后 cgroup 字段回到 `null`；持久化需写 `/etc/rc.local` 或 procd 配置，属于"dae 之外"的改动，未做。
+- **`rank` 与 `selection` 的语义差**：可在 `ranking` 增加 `selected: true` 标记让前端区分"瞬时最快"与"引擎实选"，未做。
+- **`/rules` 的完整形态**：`?detail=full` 逃生口与响应体 gzip（8.5 MB 可压到约 600 KB）未做。
+- **`warmth`**：恒为 `unknown`，真实冷/热需要按"是否有真实流量成功样本"判定，未做。
+- **直接流量与 outbounds 的口径混合**：`direct` 行同时含链路字节（直连）与 payload 字节（`must_direct`），单条流内部不混，但同一行跨流混合。

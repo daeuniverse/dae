@@ -96,6 +96,37 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
   groups with their maximum (which invented peaks the recorder never measured).
 - Report `datapath.state = "disabled"` while the runtime is suspended instead of
   claiming the datapath is active.
+- Attribute kernel-direct traffic to the builtin `direct` outbound row and split
+  `runtime.traffic.bytes` into `planes.userspace` / `planes.kernel_direct`.
+  Pass-through bytes only ever reached the mixed total, so the `direct` row
+  stayed at zero and `sum(runtime/outbounds)` could never match the total
+  (measured 472 MB / 18% apart on a live router).
+- Keep `runtime.traffic` totals across a reload and share one `counter_since`
+  with `runtime/outbounds`: the traffic store is generation-scoped while the
+  per-outbound registry is process-scoped, so a reload zeroed one side and left
+  the other accumulating.
+- Report data-UDP health samples (borrowing the DNS sibling the engine ranks by),
+  make `sorting_latency_ms` the value the alive set actually compares (policy
+  metric + recovery penalty + `add_latency`), and fill `ranking` with
+  `metric`/`score`/`group_offset_ms`/`recovery_penalty_ms`/`rank`/
+  `delta_to_best_ms`.
+- Return `purpose: "data"` instead of `"shared"` for TCP health samples.
+  Clients pick their primary latency from `transport=tcp,purpose=data`, found
+  nothing, and reported every member as untested with zero available.
+- Report the member an automatic policy is actually dialing in
+  `groups[].selection` / `runtime.selection` instead of `null`; `random` still
+  reports none.
+- Collapse geosite-expanded parameter lists in `GET /api/v1/rules`. One
+  `domain(geosite:...)` line carries hundreds of thousands of suffixes after
+  expansion, which rendered as an 8.5 MB response; the display form now caps
+  each function at 8 parameters plus a `+N more` marker (3.3 KB total). The
+  lossless renderer is unchanged, because reload fingerprints and policy hashes
+  depend on it.
+- Distinguish an unlimited cgroup (`memory.max == "max"`) from a system that
+  does not report cgroup memory at all, so the dashboard can show "no limit"
+  instead of "unknown".
+
+See `api_dev.md` section 10 for the per-issue evidence and verification.
 
 #### Build and release
 
