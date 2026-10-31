@@ -10,6 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 // RoutingRuleSnapshot is one rendered rule of a running routing generation.
@@ -26,31 +27,29 @@ type RoutingRulesSnapshot struct {
 	FallbackOutbound string
 }
 
-// snapshotRoutingProgram renders the optimized evaluation order so the API can
-// export it without retaining the mutable rule tree.
-func snapshotRoutingProgram(program *routing.NormalizedProgram) ([]RoutingRuleSnapshot, string) {
-	if program == nil {
-		return nil, ""
-	}
-	rules := make([]RoutingRuleSnapshot, 0, len(program.Rules))
-	for _, rule := range program.Rules {
+// snapshotConfiguredRules renders the rules exactly as the operator wrote them.
+//
+// It must be handed the parsed configuration, never the optimized program: the
+// optimizers expand geosite/geoip data into hundreds of thousands of parameters
+// and rewrite selector names, so exporting the evaluation order produced an
+// 8.5 MB response describing rules nobody wrote. The configured form is both the
+// truthful answer and orders of magnitude smaller.
+func snapshotConfiguredRules(rules []*config_parser.RoutingRule, fallback config.FunctionOrString) ([]RoutingRuleSnapshot, string) {
+	snapshots := make([]RoutingRuleSnapshot, 0, len(rules))
+	for _, rule := range rules {
 		if rule == nil {
 			continue
 		}
-		// DisplayString, not String: the shipped rule tree is geosite-expanded,
-		// so the lossless form turns a single config line into thousands of
-		// suffixes. That made /api/v1/rules an 8.5 MB response the dashboard had
-		// to download and parse before it could render anything.
-		rules = append(rules, RoutingRuleSnapshot{
-			Expression: rule.DisplayString(false, false),
+		snapshots = append(snapshots, RoutingRuleSnapshot{
+			Expression: rule.String(false, false, false),
 			Outbound:   rule.Outbound.MarshalString(false, true, true),
 		})
 	}
-	fallback, err := config.ParseFunctionOrString(program.Fallback)
-	if err != nil || fallback == nil {
-		return rules, ""
+	parsed, err := config.ParseFunctionOrString(fallback)
+	if err != nil || parsed == nil {
+		return snapshots, ""
 	}
-	return rules, fallback.MarshalString(false, true, true)
+	return snapshots, parsed.MarshalString(false, true, true)
 }
 
 func routingGenerationID(epoch routing.PolicyEpoch) string {

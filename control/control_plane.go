@@ -750,6 +750,10 @@ func NewControlPlaneWithContextOptions(
 	if err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
+	// Snapshot the rules as configured, before the optimizers' expansion is all
+	// that is left of them. The API reports what the operator wrote; the
+	// optimized tree is the evaluation order and stays internal.
+	routingRules, routingFallback := snapshotConfiguredRules(routingA.Rules, routingA.Fallback)
 	routingA.Rules = nil // Release.
 	// Device-scoped whitelists (selector && domain -> group followed by a
 	// selector-only -> direct/block line) cannot match in kernel space when
@@ -791,7 +795,6 @@ func NewControlPlaneWithContextOptions(
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
-	routingRules, routingFallback := snapshotRoutingProgram(routingProgram)
 	kernspaceSnapshot := builder.KernspaceSnapshot()
 	if !buildOpts.DelayDatapathCommit {
 		log.Infoln("Loading routing rules into kernel space (BPF)...")

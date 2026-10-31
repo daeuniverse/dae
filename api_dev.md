@@ -892,21 +892,28 @@ API  (tcp6, US01_IPv4) sorting_latency_ms=689.354861
 
 **根因**：运行期规则树是 **geosite 展开后**的——一条 `domain(geosite:category-ads-all)` 变成带 **194,282** 个 `suffix:` 参数的函数；`snapshotRoutingProgram` 用**无损**的 `RoutingRule.String()` 渲染。`config_parser.Function.String()` 本来自带 5 参数截断，但 `RoutingRule.String()` 自己手写参数循环，绕过了它。
 
-**修改**
+**修改（2026-10-31 二次修正：直接给原始值）**
+
+最初的修法是"折叠展开后的参数表"（`DisplayParamLimit` + `+N more`）。它解决了体积，但导出的仍然是 **optimizer 视角的规则**：名字被改写（`dport`→`port`、`dip`→`ip`、domain 的隐式 key 被补成 `suffix`）、`geosite` 被摊平、相邻同出站规则被合并、还混进了 `InferSniffPunt` 注入的规则。那不是用户写的配置。
+
+改为**直接导出配置原文**：
 
 | 文件 | 内容 |
 |---|---|
-| `pkg/config_parser/section.go` | 新增 `RoutingRule.DisplayString()`：每函数最多 `DisplayParamLimit(8)` 个参数，其余折叠为 `+N more` |
-| `control/routing_rules.go` | `expression` 改用 `DisplayString` |
-| 测试 | `TestDisplayStringCollapsesExpandedParams`（同时断言 `String()` 仍无损） |
+| `control/routing_rules.go` | `snapshotRoutingProgram(program)` → `snapshotConfiguredRules(rules, fallback)`：接收配置解析结果，用无损 `String()` 渲染 |
+| `control/control_plane.go` | 在 `ApplyRulesOptimizers` 之后、`routingA.Rules = nil` 之前取快照，把**展开前**的规则交给 API |
+| `pkg/config_parser/section.go` | 删除 `DisplayParamLimit` / `DisplayString` / `displayFunction`（已无使用方） |
+| 测试 | 删除 `TestDisplayStringCollapsesExpandedParams`；新增 `TestSnapshotConfiguredRulesKeepsConfiguredForm` |
 
 **关键安全点**：`String()` / `MarshalString()` **一字未改**。它们被 reload 指纹（`cmd/reload_manager.go`）与 policy hash 使用，截断会导致两份不同配置算出同一指纹、reload 静默跳过真实变更。
 
-**验证**：`8,517,179 → 3,284 bytes`（≈2600 倍），10 条规则与 `index`/`rule_id` 不变：
+**语义变化（需注意）**：`index` / `rule_id` 现在表示**配置顺序**，不再等于内核评估顺序。优化器会合并相邻同出站规则、注入 sniff-punt 规则，因此两者的条数与下标可能不同。当前 `RoutingRuleExpressionByIndex` 无调用方，flows 的 `rule_source` 仍为 `unknown`，所以没有下游受影响；若将来要用 `rule_id` 回溯内核规则，需要额外建立映射。
+
+**验证**：`8,517,179 bytes → 配置原文（KB 级）`，且返回的就是配置里写的那几行：
 
 ```json
-"domain(suffix: 0.avmarket.rs, ..., suffix: 0017c6c37c.com, +194274 more) -> block"
-"ip(0.0.0.0/8, ..., 1.1.2.0/23, +10034 more) -> direct"
+"domain(geosite: category-ads-all) -> block"
+"pname(dnsmasq, systemctl, ...) && !dport(53) -> must_direct"
 ```
 
 #### R4 `/policies` 不显示当前选中节点

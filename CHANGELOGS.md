@@ -116,12 +116,13 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - Report the member an automatic policy is actually dialing in
   `groups[].selection` / `runtime.selection` instead of `null`; `random` still
   reports none.
-- Collapse geosite-expanded parameter lists in `GET /api/v1/rules`. One
-  `domain(geosite:...)` line carries hundreds of thousands of suffixes after
-  expansion, which rendered as an 8.5 MB response; the display form now caps
-  each function at 8 parameters plus a `+N more` marker (3.3 KB total). The
-  lossless renderer is unchanged, because reload fingerprints and policy hashes
-  depend on it.
+- Export the configured routing rules in `GET /api/v1/rules` instead of the
+  optimizer-expanded tree. Reporting the evaluation order rewrote selector
+  names, flattened every `geosite` into hundreds of thousands of suffixes and
+  mixed in injected sniff-punt lines - an 8.5 MB response describing rules
+  nobody wrote. The resource now returns the rules as written. Note that
+  `index` / `rule_id` therefore follow the configuration, not the kernel
+  evaluation order, which may merge adjacent rules and inject its own.
 - Distinguish an unlimited cgroup (`memory.max == "max"`) from a system that
   does not report cgroup memory at all, so the dashboard can show "no limit"
   instead of "unknown".

@@ -8,26 +8,22 @@ package control
 import (
 	"context"
 	"net/netip"
+	"strconv"
 	"testing"
 	"time"
 
 	ob "github.com/daeuniverse/dae/component/outbound"
-	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func TestSnapshotRoutingProgram(t *testing.T) {
-	program := &routing.NormalizedProgram{
-		Rules: []*config_parser.RoutingRule{{
-			AndFunctions: []*config_parser.Function{{
-				Name:   "pname",
-				Params: []*config_parser.Param{{Val: "curl"}},
-			}},
-			Outbound: config_parser.Function{Name: "proxy"},
+func TestSnapshotConfiguredRules(t *testing.T) {
+	rules, fallback := snapshotConfiguredRules([]*config_parser.RoutingRule{{
+		AndFunctions: []*config_parser.Function{{
+			Name:   "pname",
+			Params: []*config_parser.Param{{Val: "curl"}},
 		}},
-		Fallback: "direct",
-	}
-	rules, fallback := snapshotRoutingProgram(program)
+		Outbound: config_parser.Function{Name: "proxy"},
+	}}, "direct")
 	if len(rules) != 1 {
 		t.Fatalf("rules = %d, want 1", len(rules))
 	}
@@ -99,5 +95,43 @@ func TestActiveFlowSnapshotsIncludeUDP(t *testing.T) {
 	snapshots := manager.ActiveFlowSnapshots()
 	if len(snapshots) != 1 || snapshots[0].ID != "u_1" || snapshots[0].Network != "udp" || snapshots[0].Mark != 7 {
 		t.Fatalf("snapshots = %#v", snapshots)
+	}
+}
+
+// TestSnapshotConfiguredRulesKeepsConfiguredForm pins the /rules contract: the
+// resource reports the rules as written, not the optimizer-expanded tree that
+// turns one geosite line into six figures of suffixes.
+func TestSnapshotConfiguredRulesKeepsConfiguredForm(t *testing.T) {
+	expanded := make([]*config_parser.Param, 0, 2000)
+	for i := range 2000 {
+		expanded = append(expanded, &config_parser.Param{Key: "suffix", Val: "d" + strconv.Itoa(i) + ".example.com"})
+	}
+	configured := []*config_parser.RoutingRule{{
+		AndFunctions: []*config_parser.Function{{
+			Name:   "domain",
+			Params: []*config_parser.Param{{Key: "geosite", Val: "category-ads-all"}},
+		}},
+		Outbound: config_parser.Function{Name: "block"},
+	}}
+
+	rules, _ := snapshotConfiguredRules(configured, "proxy")
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if got := rules[0].Expression; got != "domain(geosite: category-ads-all) -> block" {
+		t.Fatalf("expression = %q, want the configured form", got)
+	}
+	if rules[0].Outbound != "block" {
+		t.Fatalf("outbound = %q", rules[0].Outbound)
+	}
+
+	// The same rule after expansion must never be what the API exports.
+	expandedRule := []*config_parser.RoutingRule{{
+		AndFunctions: []*config_parser.Function{{Name: "domain", Params: expanded}},
+		Outbound:     config_parser.Function{Name: "block"},
+	}}
+	expandedRules, _ := snapshotConfiguredRules(expandedRule, "proxy")
+	if len(expandedRules[0].Expression) < 10000 {
+		t.Fatalf("expanded expression = %d bytes, expected the fixture to be large", len(expandedRules[0].Expression))
 	}
 }
