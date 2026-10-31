@@ -51,6 +51,88 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 ### Unreleased
 
+#### Features
+
+- Native API (`api` section) now covers groups, runtime selection, asynchronous operations and traffic history:
+  - `GET /api/v1/groups`, `GET /api/v1/groups/{group_id}` and read-only
+    `GET /api/v1/groups/{group_id}/config` report user-configured groups with
+    stable `g_`/`n_` identifiers, policy mapping, configuration and runtime
+    selection.
+  - New `select` group policy, plus `select(n)` to start at a given member.
+    `PUT /api/v1/groups/{group_id}/selection` switches the member per transport
+    (`tcp`, `udp` or `both`). The choice is memory-only: it is never written back
+    to the configuration and a reload returns to the configured index.
+  - `POST /api/v1/operations/reload|suspend|resume` return `202` with a pollable
+    operation, honour `Idempotency-Key`, and report the resulting generation or
+    runtime state.
+  - `GET /api/v1/runtime/traffic/history` exposes the recorded traffic samples
+    with validated `window_seconds` / `max_points` bounds.
+  - `GET /api/v1/nodes` and `GET /api/v1/nodes/{node_id}` list every managed
+    node with its group membership and typed health samples; pagination is
+    cursor-based and bound to one generation. Node management stays
+    `404 capability_not_supported` (`can_manage: false`).
+  - Group `runtime.health` now reports per-member probe state, latency,
+    10-sample average and moving average, plus the metric the group sorts by.
+  - Automatic policies (`random`, `min`, `min_avg10`, `min_moving_avg`) accept
+    a runtime pin through `PUT /groups/{group_id}/selection`
+    (`source: "override"`); `DELETE` clears it. The pin is per transport,
+    memory-only and resets on reload.
+  - `capabilities` now advertises `groups`, `nodes`, `traffic_history`,
+    `operations`, `reload`, `suspend` and `resume`.
+  - Known contract resources that remain unimplemented (`/dns/*`,
+    `/runtime/settings`, `/routing/trace`, `/auth/*`) now consistently answer
+    `404 capability_not_supported` instead of a generic `resource_not_found`.
+
+#### Bug Fixes
+
+- Fix the native API's real-time speed being wrong (often `0 B/s`) in
+  dashboards: traffic buckets only rotated when a snapshot was taken, so every
+  byte between two polls landed in the first finished 250ms bucket and the
+  one-second rate was scaled by that bucket's share of the window. Buckets now
+  rotate as bytes are recorded, which keeps the live rate accurate at any poll
+  cadence and stops the fabricated spikes it produced in the history chart.
+- Fix traffic history thinning: `max_points` is now met by keeping every Nth
+  recorded sample verbatim, as the contract requires, instead of aggregating
+  groups with their maximum (which invented peaks the recorder never measured).
+- Report `datapath.state = "disabled"` while the runtime is suspended instead of
+  claiming the datapath is active.
+- Attribute kernel-direct traffic to the builtin `direct` outbound row and split
+  `runtime.traffic.bytes` into `planes.userspace` / `planes.kernel_direct`.
+  Pass-through bytes only ever reached the mixed total, so the `direct` row
+  stayed at zero and `sum(runtime/outbounds)` could never match the total
+  (measured 472 MB / 18% apart on a live router).
+- Keep `runtime.traffic` totals across a reload and share one `counter_since`
+  with `runtime/outbounds`: the traffic store is generation-scoped while the
+  per-outbound registry is process-scoped, so a reload zeroed one side and left
+  the other accumulating.
+- Report data-UDP health samples (borrowing the DNS sibling the engine ranks by),
+  make `sorting_latency_ms` the value the alive set actually compares (policy
+  metric + recovery penalty + `add_latency`), and fill `ranking` with
+  `metric`/`score`/`group_offset_ms`/`recovery_penalty_ms`/`rank`/
+  `delta_to_best_ms`.
+- Return `purpose: "data"` instead of `"shared"` for TCP health samples.
+  Clients pick their primary latency from `transport=tcp,purpose=data`, found
+  nothing, and reported every member as untested with zero available.
+- Report the member an automatic policy is actually dialing in
+  `groups[].selection` / `runtime.selection` instead of `null`; `random` still
+  reports none.
+- Export the configured routing rules in `GET /api/v1/rules` instead of the
+  optimizer-expanded tree. Reporting the evaluation order rewrote selector
+  names, flattened every `geosite` into hundreds of thousands of suffixes and
+  mixed in injected sniff-punt lines - an 8.5 MB response describing rules
+  nobody wrote. The resource now returns the rules as written. Note that
+  `index` / `rule_id` therefore follow the configuration, not the kernel
+  evaluation order, which may merge adjacent rules and inject its own.
+- Distinguish an unlimited cgroup (`memory.max == "max"`) from a system that
+  does not report cgroup memory at all, so the dashboard can show "no limit"
+  instead of "unknown".
+- Report `runtime.process.cpu_percent` instead of always `null`. The value is
+  the daemon's CPU time over the latest one-second interval as a percentage of
+  one CPU, sampled from `/proc/<pid>/stat`, so a dashboard can show CPU usage;
+  it stays `null` until a second sample exists.
+
+See `api_dev.md` section 10 for the per-issue evidence and verification.
+
 #### Build and release
 
 - Add a 20:00 UTC+8 nightly build for days with new commits, publishing only to `nightly`.

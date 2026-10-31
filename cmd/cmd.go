@@ -32,9 +32,11 @@ var (
 )
 
 func init() {
-	config.Version = Version
+	// One resolved identity feeds `dae -v` and the native API, so a frontend
+	// never reports a version the command line disagrees with.
+	config.Version = build.Version
 	rootCmd.Version = strings.Join([]string{
-		Version,
+		build.Version,
 		fmt.Sprintf("go runtime %v %v/%v", runtime.Version(), runtime.GOOS, runtime.GOARCH),
 		"Copyright (c) 2022-2026 @daeuniverse",
 		"License GNU AGPLv3 <https://github.com/daeuniverse/dae/blob/main/LICENSE>",

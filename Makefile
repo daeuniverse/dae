@@ -102,10 +102,15 @@ dae: ebpf
 ## End Dae Build
 
 ## Begin Git Submodules
+# submodule_paths must be a single space-separated list on one line: a bare
+# second line is not valid make syntax and, because the file is -included,
+# would abort every later invocation. Join the paths with paste instead of
+# "tr '\n' ' ' | tr ' \n' '\n'", which used to split them again and relied on
+# there being exactly one submodule.
 .gitmodules.d.mk: .gitmodules
 	@set -e && \
-	submodules=$$(grep '\[submodule "' .gitmodules | cut -d'"' -f2 | tr '\n' ' ' | tr ' \n' '\n') && \
-	echo "submodule_paths=$${submodules}" > $@
+	submodules=$$(grep '\[submodule "' .gitmodules | cut -d'"' -f2 | paste -sd ' ' -) && \
+	echo "submodule_paths=$${submodules}" > "$@"
 
 -include .gitmodules.d.mk
 

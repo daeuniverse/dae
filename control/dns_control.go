@@ -134,6 +134,14 @@ type dnsControllerStore struct {
 	dnsForwardersClosed atomic.Bool
 	sf                  singleflight.Group
 
+	// dnsLog is the bounded query log served by GET /dns/log. It lives on the
+	// shared store so a reload that reuses the DNS controller keeps it.
+	dnsLogMu    sync.Mutex
+	dnsLogSeq   uint64
+	dnsLogRing  []dnsLogRecord
+	dnsLogStart int
+	dnsLogLen   int
+
 	janitorStop  chan struct{}
 	janitorDone  chan struct{}
 	lruScratchMu sync.Mutex

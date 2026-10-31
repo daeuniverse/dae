@@ -32,7 +32,32 @@ const (
 	DialerSelectionPolicy_MinMovingAverageLatencies DialerSelectionPolicy = "min_moving_avg"
 	// DialerSelectionPolicy_MinLastLatency selects the dialer with minimum last latency.
 	DialerSelectionPolicy_MinLastLatency DialerSelectionPolicy = "min"
+	// DialerSelectionPolicy_Select keeps a runtime-switchable member. The
+	// configured index is only the initial choice; it is never written back to
+	// the configuration and is reset on reload.
+	DialerSelectionPolicy_Select DialerSelectionPolicy = "select"
 )
+
+// IgnoresDialerHealth reports whether the policy picks a member without
+// consulting per-dialer health state, so probes must not gate admission for
+// its groups.
+func (p DialerSelectionPolicy) IgnoresDialerHealth() bool {
+	return p == DialerSelectionPolicy_Fixed || p == DialerSelectionPolicy_Select
+}
+
+// SupportsOverride reports whether a pinned member may stand in for the
+// policy's automatic choice at runtime.
+func (p DialerSelectionPolicy) SupportsOverride() bool {
+	switch p {
+	case DialerSelectionPolicy_Random,
+		DialerSelectionPolicy_MinLastLatency,
+		DialerSelectionPolicy_MinAverage10Latencies,
+		DialerSelectionPolicy_MinMovingAverageLatencies:
+		return true
+	default:
+		return false
+	}
+}
 
 const (
 	// UdpCheckLookupHost is the default host used for UDP connectivity checks.

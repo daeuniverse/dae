@@ -50,6 +50,8 @@ type ControlPlane struct {
 	directDialer netproxy.Dialer
 
 	runtimeStats *runtimeStats
+	memoryStats  *memoryStats
+	processCPU   *processCPUStats
 
 	core       *controlPlaneCore
 	deferFuncs []func() error
@@ -64,6 +66,12 @@ type ControlPlane struct {
 	sessionManagerBinding atomic.Pointer[controlPlaneSessionManagerBinding]
 	egressRuntime         *egressRuntime
 	drainTracker          *controlPlaneDrainTracker
+
+	// outboundCounters is the process-level registry this generation's groups
+	// report into; outboundCountersByIndex resolves it once per flow.
+	outboundCountersMu      sync.RWMutex
+	outboundCounters        *outbound.CounterRegistry
+	outboundCountersByIndex map[uint8]*outbound.Counters
 
 	controlPlaneRoutingEpochRuntime
 	controlPlaneDNSRuntime
@@ -690,6 +698,15 @@ func NewControlPlaneWithContextOptions(
 			dialers = newDialers
 			finalOption = groupOption
 		}
+		// A selector's configured index is its initial member, so an explicit
+		// index outside the filtered member list can never work. Reject it here
+		// instead of failing every selection at runtime. An empty group stays
+		// tolerated, exactly like every other policy: its filter may match
+		// nodes again after the next subscription update.
+		if policy.Policy == consts.DialerSelectionPolicy_Select && len(dialers) > 0 &&
+			(policy.FixedIndex < 0 || policy.FixedIndex >= len(dialers)) {
+			return nil, fmt.Errorf(`group "%v": policy select(%d) is out of range: the group has %d members`, group.Name, policy.FixedIndex, len(dialers))
+		}
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
@@ -734,6 +751,10 @@ func NewControlPlaneWithContextOptions(
 	if err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
+	// Snapshot the rules as configured, before the optimizers' expansion is all
+	// that is left of them. The API reports what the operator wrote; the
+	// optimized tree is the evaluation order and stays internal.
+	routingRules, routingFallback := snapshotConfiguredRules(routingA.Rules, routingA.Fallback)
 	routingA.Rules = nil // Release.
 	// Device-scoped whitelists (selector && domain -> group followed by a
 	// selector-only -> direct/block line) cannot match in kernel space when
@@ -844,12 +865,18 @@ func NewControlPlaneWithContextOptions(
 		log:           log,
 		directDialer:  directDialer,
 		runtimeStats:  newRuntimeStats(),
+		memoryStats:   newMemoryStats(),
+		processCPU:    newProcessCPUStats(),
 		core:          core,
 		deferFuncs:    planeDeferFuncs,
 		listenIp:      "0.0.0.0",
 		egressRuntime: egressRuntime,
 		controlPlaneGenerationState: controlPlaneGenerationState{
 			outbounds:           outbounds,
+			dnsRules:            dnsRulesFromConfig(&dnsConfig.Routing, routingGenerationID(policyIdentity.Epoch())),
+			routingRules:        routingRules,
+			routingFallback:     routingFallback,
+			routingGeneration:   routingGenerationID(policyIdentity.Epoch()),
 			referencedOutbounds: referencedOutbounds,
 			dialMode:            dialMode,
 			policyIdentity:      policyIdentity,
@@ -889,6 +916,7 @@ func NewControlPlaneWithContextOptions(
 	SetAnyfromSoMark(global.SoMarkFromDae)
 	plane.deferFuncs = append(plane.deferFuncs, plane.closePublishedListenerFiles)
 	plane.startRealDomainNegJanitor()
+	plane.startMemorySampler()
 
 	var upstreamHostResolver func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
 	if len(bootstrapResolvers) > 0 {
@@ -1031,6 +1059,14 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
 		{name: "active_routing_epoch_map", m: bpf.ActiveRoutingEpochMap},
+		// The pass-through accounting map is unconditionally referenced by the
+		// datapath, so a load that skips it would leave userspace reading a nil
+		// map and silently reporting zero. It is easy to miss: the binding target
+		// is the hand-maintained bpfDataplaneMaps whitelist, not the generated
+		// struct, so forgetting to register a new map there fails open at runtime
+		// instead of failing at load.
+		{name: "direct_traffic_map", m: bpf.DirectTrafficMap},
+		{name: "direct_reverse_map", m: bpf.DirectReverseMap},
 	}
 	for _, r := range required {
 		if r.m == nil {

@@ -12,6 +12,7 @@ var SectionSummaryDesc = Desc{
 	"node":         "Nodes defined here will be merged as a part of the global node pool.",
 	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
 	"group":        "Node group. Groups defined here can be used as outbounds in section \"routing\".",
+	"api":          "Native HTTP control-plane API listener. Disabled by default. A non-loopback listener requires secret (Bearer token); secretless anonymous access is only allowed on loopback with allow_anonymous_loopback enabled.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
 Built-in outbound: direct, must_direct, block.
@@ -32,6 +33,17 @@ var SectionDescription = map[string]Desc{
 	"GlobalDesc": GlobalDesc,
 	"DnsDesc":    DnsDesc,
 	"GroupDesc":  GroupDesc,
+	"ApiDesc":    ApiDesc,
+}
+
+var ApiDesc = Desc{
+	"enabled":                  "Enable the native HTTP API listener. Disabled by default.",
+	"listen":                   "Numeric IP and port to listen on, for example 127.0.0.1:9527. Hostnames and the \":port\" shorthand are rejected. Wildcard binds (0.0.0.0 or ::) are treated as non-loopback and require secret.",
+	"secret":                   "Static bearer token. A non-empty value selects token mode: every non-discovery request must send Authorization: Bearer <secret>.",
+	"allow_anonymous_loopback": "Permit credential-free requests only when secret is empty and the listener is actually bound to a loopback address.",
+	"allow_origins":            "Exact HTTP(S) origins allowed for cross-origin browser access. Empty disables cross-origin access.",
+	"allowed_hosts":            "Additional Host authorities accepted by the listener, used behind a reverse proxy. Omitted port means 80.",
+	"ui":                       "Absolute path to a directory containing a built frontend (with index.html). It is served without credentials at /ui/, while API calls still require the token. Empty disables UI hosting.",
 }
 
 var GlobalDesc = Desc{
@@ -85,9 +97,10 @@ Available functions: name, subtag. Not operator is supported.
 Available keys in name function: keyword, regex. No key indicates full match.
 Available keys in subtag function: regex. No key indicates full match.`,
 	"policy": `Dialer selection policy. For each new connection, select a node as dialer from group by this policy.
-Available values: random, fixed, min, min_avg10, min_moving_avg.
+Available values: random, fixed, select, min, min_avg10, min_moving_avg.
 random: Select randomly.
 fixed: Select the fixed node. Connectivity check will be disabled.
+select: Keep a switchable node. select alone starts at the first member, select(n) at the n-th member. The choice can be changed at runtime through the native API and is never written back to the configuration, so a reload returns to the configured index. Connectivity check will be disabled.
 min: Select node by the latency of last check.
 min_avg10: Select node by the average of latencies of last 10 checks.
 min_moving_avg: Select node by the moving average of latencies of checks, which means more recent latencies have higher weight.

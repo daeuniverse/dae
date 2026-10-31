@@ -33,8 +33,13 @@ type reloadManager struct {
 	reloading                    atomic.Bool
 	reloadActive                 atomic.Bool
 	reloadPending                atomic.Bool
+	runtimeReloadPending         atomic.Bool
+	pendingSuspend               atomic.Bool
+	previousRuntimeState         atomic.Value // string
 	mu                           sync.Mutex
 	reloadingErr                 error
+	currentReloadID              string
+	status                       *runtimeStatus
 	lastRetirementMu             sync.Mutex
 	lastRetirementCancel         context.CancelFunc
 	pendingStagedHandoff         *stagedReloadHandoff
@@ -46,6 +51,9 @@ type reloadManager struct {
 	transitionActive             bool
 	shutdownStarted              bool
 	activeRetirement             *activeRetirementTask
+
+	observerMu     sync.Mutex
+	reloadObserver func(operationID string, started bool, success bool, reloadErr error)
 }
 
 // activeRetirementTask transfers cleanup ownership of one published
@@ -67,8 +75,99 @@ func newReloadManager(reloadReqs chan reloadRequest, runStateChanges chan struct
 	return m
 }
 
-func (m *reloadManager) queueReloadRequest(log *logrus.Logger, req reloadRequest) {
-	tryQueueReloadRequest(log, m.reloadReqs, &m.reloadActive, &m.reloadPending, req)
+func (m *reloadManager) queueReloadRequest(log *logrus.Logger, req reloadRequest) bool {
+	return tryQueueReloadRequest(log, m.reloadReqs, &m.reloadActive, &m.reloadPending, req)
+}
+
+// setReloadObserver installs the native API hook that follows API-initiated
+// reloads from queueing to completion. It is set once, before the worker
+// starts, so no locking is needed on the read path beyond the mutex.
+func (m *reloadManager) setReloadObserver(observer func(operationID string, started bool, success bool, reloadErr error)) {
+	if m == nil {
+		return
+	}
+	m.observerMu.Lock()
+	defer m.observerMu.Unlock()
+	m.reloadObserver = observer
+}
+
+func (m *reloadManager) notifyReloadObserver(operationID string, started bool, success bool, reloadErr error) {
+	if m == nil || operationID == "" {
+		return
+	}
+	m.observerMu.Lock()
+	observer := m.reloadObserver
+	m.observerMu.Unlock()
+	if observer != nil {
+		observer(operationID, started, success, reloadErr)
+	}
+}
+
+func (m *reloadManager) setRuntimeStatus(status *runtimeStatus) {
+	if m == nil {
+		return
+	}
+	m.status = status
+}
+
+func (m *reloadManager) beginRuntimeReload(req reloadRequest) {
+	if m == nil || m.status == nil {
+		return
+	}
+	if previous := m.status.getState(); previous != "" {
+		m.previousRuntimeState.Store(previous)
+	}
+	m.pendingSuspend.Store(req.isSuspend)
+	m.runtimeReloadPending.Store(true)
+	operationID := req.apiOperationID
+	if operationID == "" {
+		operationID = newOperationID()
+	}
+	m.mu.Lock()
+	m.currentReloadID = operationID
+	m.mu.Unlock()
+	m.status.setState(runtimeStateReloading)
+	m.notifyReloadObserver(operationID, true, false, nil)
+}
+
+func (m *reloadManager) currentRuntimeReloadID() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.currentReloadID
+}
+
+func (m *reloadManager) finishRuntimeReload(success bool) {
+	if m == nil || m.status == nil {
+		return
+	}
+	if !m.runtimeReloadPending.CompareAndSwap(true, false) {
+		return
+	}
+	operationID := m.currentRuntimeReloadID()
+	if operationID == "" {
+		operationID = newOperationID()
+	}
+	if success {
+		if m.pendingSuspend.Load() {
+			m.status.setState(runtimeStateSuspended)
+		} else {
+			m.status.setState(runtimeStateRunning)
+		}
+		m.status.recordLastReload(operationID, "succeeded", nil)
+		m.notifyReloadObserver(operationID, false, true, nil)
+		return
+	}
+	if previous, ok := m.previousRuntimeState.Load().(string); ok && previous != "" {
+		m.status.setState(runtimeLifecycleState(previous))
+	} else {
+		m.status.setState(runtimeStateRunning)
+	}
+	reloadErr := m.reloadError()
+	m.status.recordLastReload(operationID, "failed", reloadErr)
+	m.notifyReloadObserver(operationID, false, false, reloadErr)
 }
 
 func (m *reloadManager) beginHandoff() {
@@ -103,7 +202,13 @@ coalesce:
 	for {
 		select {
 		case nextReq := <-m.reloadReqs:
+			// Keep the API operation of either request so an API-initiated
+			// reload that coalesced with a signal still reports its status.
+			operationID := req.apiOperationID
 			req = nextReq
+			if req.apiOperationID == "" {
+				req.apiOperationID = operationID
+			}
 			if req.requestedAt.IsZero() {
 				req.requestedAt = time.Now()
 			}
@@ -277,6 +382,7 @@ func (m *reloadManager) finishReloadFailure() {
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
 	clearReloadPending(&m.reloadPending)
+	m.finishRuntimeReload(false)
 }
 
 // failPublishedReloadAttempt reports a recoverable post-handoff failure to
@@ -298,15 +404,18 @@ func (m *reloadManager) failReloadAttempt(reloadErr error) {
 	if reloadErr != nil {
 		_ = sdnotify.Ready()
 		_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
+		m.setReloadError(reloadErr)
 	}
 	m.reloadActive.Store(false)
 	clearReloadPending(&m.reloadPending)
+	m.finishRuntimeReload(false)
 }
 
 func (m *reloadManager) finishReloadSuccess() {
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
 	releaseReloadPendingAfterRetirement(&m.reloadPending, m.takePendingRetirementDone())
+	m.finishRuntimeReload(true)
 }
 
 // beginReloadTransition reserves the cutover critical section. Shutdown uses

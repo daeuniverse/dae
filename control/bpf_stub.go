@@ -219,6 +219,8 @@ type bpfMapSpecs struct {
 	ConntrackArgsMap         *ebpf.MapSpec `ebpf:"conntrack_args_map"`
 	CookiePidMap             *ebpf.MapSpec `ebpf:"cookie_pid_map"`
 	DaeIfindexMap            *ebpf.MapSpec `ebpf:"dae_ifindex_map"`
+	DirectTrafficMap         *ebpf.MapSpec `ebpf:"direct_traffic_map"`
+	DirectReverseMap         *ebpf.MapSpec `ebpf:"direct_reverse_map"`
 	DomainRoutingMap         *ebpf.MapSpec `ebpf:"domain_routing_map"`
 	EventRingbuf             *ebpf.MapSpec `ebpf:"event_ringbuf"`
 	FastSock                 *ebpf.MapSpec `ebpf:"fast_sock"`
@@ -263,6 +265,8 @@ type bpfMaps struct {
 	ConntrackArgsMap         *ebpf.Map `ebpf:"conntrack_args_map"`
 	CookiePidMap             *ebpf.Map `ebpf:"cookie_pid_map"`
 	DaeIfindexMap            *ebpf.Map `ebpf:"dae_ifindex_map"`
+	DirectTrafficMap         *ebpf.Map `ebpf:"direct_traffic_map"`
+	DirectReverseMap         *ebpf.Map `ebpf:"direct_reverse_map"`
 	DomainRoutingMap         *ebpf.Map `ebpf:"domain_routing_map"`
 	EventRingbuf             *ebpf.Map `ebpf:"event_ringbuf"`
 	FastSock                 *ebpf.Map `ebpf:"fast_sock"`
@@ -291,6 +295,8 @@ func (m *bpfMaps) Close() error {
 		m.ConntrackArgsMap,
 		m.CookiePidMap,
 		m.DaeIfindexMap,
+		m.DirectTrafficMap,
+		m.DirectReverseMap,
 		m.DomainRoutingMap,
 		m.EventRingbuf,
 		m.FastSock,

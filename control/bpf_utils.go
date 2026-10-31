@@ -383,6 +383,8 @@ type bpfDataplaneMaps struct {
 	ParseCtxScratchMap       *ebpf.Map `ebpf:"parse_ctx_scratch_map"`
 	PktScratchMap            *ebpf.Map `ebpf:"pkt_scratch_map"`
 	RedirectTrack            *ebpf.Map `ebpf:"redirect_track"`
+	DirectTrafficMap         *ebpf.Map `ebpf:"direct_traffic_map"`
+	DirectReverseMap         *ebpf.Map `ebpf:"direct_reverse_map"`
 	RouteCtxScratchMap       *ebpf.Map `ebpf:"route_ctx_scratch_map"`
 	RoutingHandoffMap        *ebpf.Map `ebpf:"routing_handoff_map"`
 	RoutingMap               *ebpf.Map `ebpf:"routing_map"`
@@ -802,6 +804,8 @@ func assignDataplaneToBpf(bpf *bpfObjects, dp *bpfDataplane) {
 	bpf.ParseCtxScratchMap = dp.ParseCtxScratchMap
 	bpf.PktScratchMap = dp.PktScratchMap
 	bpf.RedirectTrack = dp.RedirectTrack
+	bpf.DirectTrafficMap = dp.DirectTrafficMap
+	bpf.DirectReverseMap = dp.DirectReverseMap
 	bpf.RouteCtxScratchMap = dp.RouteCtxScratchMap
 	bpf.RoutingHandoffMap = dp.RoutingHandoffMap
 	bpf.RoutingMap = dp.RoutingMap

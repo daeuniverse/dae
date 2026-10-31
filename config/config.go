@@ -160,6 +160,21 @@ type Config struct {
 	Group        []Group         `mapstructure:"group" desc:"GroupDesc"`
 	Routing      Routing         `mapstructure:"routing" required:""`
 	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
+	Api          Api             `mapstructure:"api" desc:"ApiDesc"`
+}
+
+// Api configures the native HTTP control-plane API.
+//
+// It is a top-level section on purpose: enabling and securing the listener is
+// an engine concern, not part of global datapath tuning.
+type Api struct {
+	Enabled                bool     `mapstructure:"enabled" default:"false"`
+	Listen                 string   `mapstructure:"listen" default:"127.0.0.1:9527"`
+	Secret                 string   `mapstructure:"secret"`
+	AllowAnonymousLoopback bool     `mapstructure:"allow_anonymous_loopback" default:"false"`
+	AllowOrigins           []string `mapstructure:"allow_origins"`
+	AllowedHosts           []string `mapstructure:"allowed_hosts"`
+	UI                     string   `mapstructure:"ui"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {
