@@ -52,8 +52,9 @@ func healthTestDialer(t *testing.T) *dialer.Dialer {
 
 func TestDialerHealthSamples(t *testing.T) {
 	d := healthTestDialer(t)
-	samples := dialerHealthSamples(d)
-	require.Len(t, samples, 2)
+	samples := dialerHealthSamples(d, nil)
+	// tcp/shared, udp/dns and the data-UDP key that mirrors the DNS sample.
+	require.Len(t, samples, 3)
 
 	byPurpose := map[string]healthSample{}
 	for _, sample := range samples {
@@ -86,12 +87,24 @@ func TestDialerHealthSamples(t *testing.T) {
 	// Engine error detail stays out of the response.
 	require.NotNil(t, udp.observation.Error)
 	require.Equal(t, "probe_failed", *udp.observation.Error)
+
+	// data-UDP has no probe of its own: the engine ranks it with the DNS sample
+	// of the same IP version, and the API mirrors that instead of dropping it.
+	data := byPurpose["data"]
+	require.Equal(t, "udp", data.observation.Transport)
+	require.Equal(t, "data", data.observation.Purpose)
+	require.Equal(t, "ipv4", data.observation.IpVersion)
+	require.Equal(t, "dns_round_trip", data.observation.Measurement)
+	require.Equal(t, "probe", data.observation.SampleSource)
+	require.Equal(t, udp.observation.State, data.observation.State)
+	require.Equal(t, udp.observation.ObservedAt, data.observation.ObservedAt)
+	require.Nil(t, data.observation.LatencyMs)
 }
 
 func TestDialerHealthSamplesSkipUnprobedCollections(t *testing.T) {
 	option := &dialer.GlobalOption{Log: logrus.New(), CheckInterval: 15 * time.Second}
 	d := newNamedDialer(option, &dialer.Property{Property: D.Property{Name: "fresh"}})
-	require.Empty(t, dialerHealthSamples(d))
+	require.Empty(t, dialerHealthSamples(d, nil))
 	require.Empty(t, dialerHealthObservations(d))
 }
 
@@ -107,7 +120,7 @@ func TestGroupMemberHealthSortingLatency(t *testing.T) {
 	healthy := healthTestDialer(t)
 	item.group.Dialers = append(item.group.Dialers, healthy)
 	observations = groupMemberHealth(item)
-	require.Len(t, observations, 2)
+	require.Len(t, observations, 3)
 	for _, observation := range observations {
 		require.Equal(t, nodeIDOf(healthy.Property()), observation.MemberID)
 		require.Nil(t, observation.Ranking)
@@ -249,9 +262,37 @@ func TestGroupMemberHealthCollapsesDuplicateLinks(t *testing.T) {
 		policy: outbound.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
 	}
 	observations := groupMemberHealth(item)
-	// Two domains (DNS-UDP + TCP) for one member, not four.
-	require.Len(t, observations, 2)
+	// Three domains (DNS-UDP + TCP + mirrored data-UDP) for one member, not six.
+	require.Len(t, observations, 3)
 	for _, observation := range observations {
 		require.Equal(t, nodeIDOf(probed.Property()), observation.MemberID)
 	}
+}
+
+func TestBuildRankingUsesEngineSortingValue(t *testing.T) {
+	metric := 45.0
+	sorting := 70.0
+	offset := 20.0
+	rank := 2
+	delta := 17.0
+	sample := healthSample{
+		lastMs:      &metric,
+		sortingMs:   &sorting,
+		offsetMs:    &offset,
+		rank:        &rank,
+		deltaToBest: &delta,
+	}
+	ranking := buildRanking(consts.DialerSelectionPolicy_MinLastLatency, sample)
+	require.NotNil(t, ranking)
+	require.Equal(t, string(consts.DialerSelectionPolicy_MinLastLatency), *ranking.Metric)
+	// score is what the alive set compared, not the bare policy metric.
+	require.InDelta(t, 70, *ranking.Score, 1e-9)
+	require.InDelta(t, 20, *ranking.GroupOffsetMs, 1e-9)
+	// penalty = sorting - metric - offset = 70 - 45 - 20.
+	require.InDelta(t, 5, *ranking.RecoveryPenaltyMs, 1e-9)
+	require.Equal(t, 2, *ranking.Rank)
+	require.InDelta(t, 17, *ranking.DeltaToBestMs, 1e-9)
+
+	// A sample with no engine rank produces no ranking at all.
+	require.Nil(t, buildRanking(consts.DialerSelectionPolicy_MinLastLatency, healthSample{lastMs: &metric}))
 }

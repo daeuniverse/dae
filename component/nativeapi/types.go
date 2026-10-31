@@ -247,14 +247,21 @@ type HealthObservation struct {
 	Error        *string  `json:"error"`
 }
 
-// GroupRanking explains how a member was scored for its group. dae does not
-// expose a score, so it is always null today.
+// GroupRanking explains how a member was scored for its group. dae fills it from
+// the alive set that actually makes the selection decision, so score is the
+// value the engine compared (policy metric + recovery penalty + manual offset).
 type GroupRanking struct {
 	Metric            *string  `json:"metric"`
 	RecoveryPenaltyMs *float64 `json:"recovery_penalty_ms"`
 	GroupOffsetMs     *float64 `json:"group_offset_ms"`
 	Score             *float64 `json:"score"`
 	Reason            *string  `json:"reason"`
+	// Rank is the 1-based position of this member for the same transport,
+	// purpose and IP version, ordered by score ascending.
+	Rank *int `json:"rank"`
+	// DeltaToBestMs is how far this member sits behind the best member of the
+	// same key. Zero for the best member itself.
+	DeltaToBestMs *float64 `json:"delta_to_best_ms"`
 }
 
 // GroupHealthObservation is one member's health sample plus the latency the

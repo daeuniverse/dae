@@ -25,63 +25,128 @@ type healthSample struct {
 	lastMs      *float64
 	avg10Ms     *float64
 	movingAvgMs *float64
+
+	// Engine-side ranking, filled only for the group projection. sortingMs is
+	// the value the alive set actually compares (metric + recovery penalty +
+	// manual offset), rank is its 1-based position, and deltaToBestMs is how far
+	// it sits behind the best member of the same key.
+	sortingMs   *float64
+	offsetMs    *float64
+	penaltyMs   *float64
+	rank        *int
+	deltaToBest *float64
 }
+
+// rankOfHealthKey resolves one dialer's engine-side rank for one health key.
+type rankOfHealthKey func(*dialer.Dialer, dialer.HealthKey) (dialer.LatencyRank, bool)
 
 // dialerHealthSamples projects a dialer's probe state into contract
 // observations. Collections that were never probed are omitted rather than
-// reported with fabricated timestamps.
-func dialerHealthSamples(d *dialer.Dialer) []healthSample {
+// reported with fabricated timestamps, except data-UDP, which the engine ranks
+// through its DNS sibling (see snapshotLatencyForPolicy).
+func dialerHealthSamples(d *dialer.Dialer, rankOf rankOfHealthKey) []healthSample {
 	if d == nil {
 		return nil
 	}
 	snapshot := d.HealthSnapshot()
 	keys := dialer.StandardHealthKeys()
 	samples := make([]healthSample, 0, len(keys))
+	// Data-UDP borrows the DNS sample of the same IP version, which the loop has
+	// already produced: StandardHealthKeys lists the DNS keys first.
+	byKey := make(map[dialer.HealthKey]healthSample, len(keys))
 	for _, key := range keys {
 		collection := snapshot.Collections[key.CollectionIndex()]
 		probe := collection.LastProbe
+
+		var sample healthSample
 		if probe.CheckedAt.IsZero() {
-			continue
-		}
-		transport, purpose := healthDomainOf(key.Domain)
-		state := "unavailable"
-		var probeError *string
-		if probe.Alive {
-			state = "healthy"
+			if key.Domain != dialer.HealthDomainDataUDP {
+				continue
+			}
+			// Data-UDP has no probe of its own: real UDP traffic only flips the
+			// alive flag and never records a delay, so the engine ranks it with
+			// the DNS-UDP samples of the same dialer. Mirror that borrowing here
+			// instead of dropping the key, which is what left the API with four
+			// samples per node while the alive sets logged six networks.
+			dnsKey := dialer.HealthKey{Domain: dialer.HealthDomainDnsUDP, IpVersion: key.IpVersion}
+			borrowed, ok := byKey[dnsKey]
+			if !ok || borrowed.observation.ObservedAt == "" {
+				continue
+			}
+			sample = borrowed
+			transport, purpose := healthDomainOf(key.Domain)
+			sample.observation.Transport = transport
+			sample.observation.Purpose = purpose
+			sample.sortingMs, sample.offsetMs, sample.penaltyMs = nil, nil, nil
+			sample.rank, sample.deltaToBest = nil, nil
 		} else {
-			// Keep engine detail out of the response: the contract wants a
-			// stable, sanitized reason.
-			reason := "probe_failed"
-			probeError = &reason
+			sample = buildHealthSample(key, probe, collection)
 		}
-		lastMs := durationToMs(probe.Latency, probe.HasLatency)
-		avg10Ms := averageLatencyMs(collection.Latencies)
-		movingAvgMs := durationToMs(collection.MovingAverage, collection.MovingAverage > 0)
-		measurement := "http_headers"
-		if transport == "udp" {
-			measurement = "dns_round_trip"
+
+		if rankOf != nil {
+			attachRank(&sample, d, key, rankOf)
 		}
-		samples = append(samples, healthSample{
-			observation: nativeapi.HealthObservation{
-				Transport:    transport,
-				Purpose:      purpose,
-				IpVersion:    ipVersionName(key.IpVersion),
-				Warmth:       "unknown",
-				Measurement:  measurement,
-				SampleSource: "probe",
-				State:        state,
-				LatencyMs:    lastMs,
-				MovingAvgMs:  movingAvgMs,
-				Avg10Ms:      avg10Ms,
-				ObservedAt:   probe.CheckedAt.UTC().Format(time.RFC3339),
-				Error:        probeError,
-			},
-			lastMs:      lastMs,
-			avg10Ms:     avg10Ms,
-			movingAvgMs: movingAvgMs,
-		})
+		byKey[key] = sample
+		samples = append(samples, sample)
 	}
 	return samples
+}
+
+// buildHealthSample turns one collection's last probe into a contract
+// observation.
+func buildHealthSample(key dialer.HealthKey, probe dialer.DialerProbeObservationSnapshot, collection dialer.DialerCollectionHealthSnapshot) healthSample {
+	transport, purpose := healthDomainOf(key.Domain)
+	state := "unavailable"
+	var probeError *string
+	if probe.Alive {
+		state = "healthy"
+	} else {
+		// Keep engine detail out of the response: the contract wants a stable,
+		// sanitized reason.
+		reason := "probe_failed"
+		probeError = &reason
+	}
+	lastMs := durationToMs(probe.Latency, probe.HasLatency)
+	avg10Ms := averageLatencyMs(collection.Latencies)
+	movingAvgMs := durationToMs(collection.MovingAverage, collection.MovingAverage > 0)
+	measurement := "http_headers"
+	if transport == "udp" {
+		measurement = "dns_round_trip"
+	}
+	return healthSample{
+		observation: nativeapi.HealthObservation{
+			Transport:    transport,
+			Purpose:      purpose,
+			IpVersion:    ipVersionName(key.IpVersion),
+			Warmth:       "unknown",
+			Measurement:  measurement,
+			SampleSource: "probe",
+			State:        state,
+			LatencyMs:    lastMs,
+			MovingAvgMs:  movingAvgMs,
+			Avg10Ms:      avg10Ms,
+			ObservedAt:   probe.CheckedAt.UTC().Format(time.RFC3339),
+			Error:        probeError,
+		},
+		lastMs:      lastMs,
+		avg10Ms:     avg10Ms,
+		movingAvgMs: movingAvgMs,
+	}
+}
+
+// attachRank copies the alive set's ordering for this dialer and key, so the
+// API reports the value the engine compares rather than a re-derived metric.
+func attachRank(sample *healthSample, d *dialer.Dialer, key dialer.HealthKey, rankOf rankOfHealthKey) {
+	rank, ok := rankOf(d, key)
+	if !ok || rank.Dialer != d {
+		return
+	}
+	sortingMs := float64(rank.Sorting) / float64(time.Millisecond)
+	offsetMs := float64(rank.Offset) / float64(time.Millisecond)
+	rankNo := rank.Rank
+	sample.sortingMs = &sortingMs
+	sample.offsetMs = &offsetMs
+	sample.rank = &rankNo
 }
 
 func healthDomainOf(domain dialer.HealthDomain) (transport, purpose string) {
@@ -135,7 +200,8 @@ func sortingLatency(policy consts.DialerSelectionPolicy, sample healthSample) *f
 }
 
 func dialerHealthObservations(d *dialer.Dialer) []nativeapi.HealthObservation {
-	samples := dialerHealthSamples(d)
+	// The node resource is group-agnostic, so it has no alive set to rank by.
+	samples := dialerHealthSamples(d, nil)
 	observations := make([]nativeapi.HealthObservation, 0, len(samples))
 	for _, sample := range samples {
 		observations = append(observations, sample.observation)
@@ -149,6 +215,25 @@ func groupMemberHealth(item userGroup) []nativeapi.GroupHealthObservation {
 	// instead of appearing twice under the same key.
 	memberOrder := make([]string, 0, len(item.group.Dialers))
 	memberSamples := make(map[string][]healthSample, len(item.group.Dialers))
+
+	// Snapshot each alive set once per key instead of once per member sample.
+	ranksByKey := make(map[int]map[*dialer.Dialer]dialer.LatencyRank, 6)
+	rankOf := func(d *dialer.Dialer, key dialer.HealthKey) (dialer.LatencyRank, bool) {
+		idx := key.CollectionIndex()
+		ranks, ok := ranksByKey[idx]
+		if !ok {
+			ranks = make(map[*dialer.Dialer]dialer.LatencyRank)
+			if set := item.group.MustGetAliveDialerSet(key.NetworkType()); set != nil {
+				for _, rank := range set.SortingSnapshot() {
+					ranks[rank.Dialer] = rank
+				}
+			}
+			ranksByKey[idx] = ranks
+		}
+		rank, ok := ranks[d]
+		return rank, ok
+	}
+
 	for _, d := range item.group.Dialers {
 		property := d.Property()
 		if property == nil {
@@ -158,20 +243,74 @@ func groupMemberHealth(item userGroup) []nativeapi.GroupHealthObservation {
 		if _, seen := memberSamples[memberID]; !seen {
 			memberOrder = append(memberOrder, memberID)
 		}
-		memberSamples[memberID] = mergeHealthSamples(memberSamples[memberID], dialerHealthSamples(d))
+		memberSamples[memberID] = mergeHealthSamples(memberSamples[memberID], dialerHealthSamples(d, rankOf))
+	}
+
+	// The delta is relative to the best member of the same health key, which is
+	// only known once every member has been projected.
+	bestByKey := make(map[string]float64, 6)
+	for _, memberID := range memberOrder {
+		for _, sample := range memberSamples[memberID] {
+			if sample.sortingMs == nil {
+				continue
+			}
+			key := healthObservationKey(sample.observation)
+			if best, ok := bestByKey[key]; !ok || *sample.sortingMs < best {
+				bestByKey[key] = *sample.sortingMs
+			}
+		}
 	}
 
 	observations := make([]nativeapi.GroupHealthObservation, 0, len(memberOrder)*2)
 	for _, memberID := range memberOrder {
-		for _, sample := range memberSamples[memberID] {
-			observations = append(observations, nativeapi.GroupHealthObservation{
+		for i := range memberSamples[memberID] {
+			sample := &memberSamples[memberID][i]
+			observation := nativeapi.GroupHealthObservation{
 				HealthObservation: sample.observation,
 				MemberID:          memberID,
-				SortingLatencyMs:  sortingLatency(item.policy.Policy, sample),
-			})
+				SortingLatencyMs:  sortingLatency(item.policy.Policy, *sample),
+			}
+			if sample.sortingMs != nil {
+				// The engine's value, which already carries the recovery penalty
+				// and the manual offset; the policy metric above does not.
+				observation.SortingLatencyMs = sample.sortingMs
+				if best, ok := bestByKey[healthObservationKey(sample.observation)]; ok {
+					delta := *sample.sortingMs - best
+					sample.deltaToBest = &delta
+				}
+				observation.Ranking = buildRanking(item.policy.Policy, *sample)
+			}
+			observations = append(observations, observation)
 		}
 	}
 	return observations
+}
+
+// buildRanking explains the score a member received for one health key.
+func buildRanking(policy consts.DialerSelectionPolicy, sample healthSample) *nativeapi.GroupRanking {
+	if sample.sortingMs == nil {
+		return nil
+	}
+	metric := string(policy)
+	reason := "ranked by " + metric
+	ranking := &nativeapi.GroupRanking{
+		Metric:        &metric,
+		GroupOffsetMs: sample.offsetMs,
+		Score:         sample.sortingMs,
+		Rank:          sample.rank,
+		DeltaToBestMs: sample.deltaToBest,
+		Reason:        &reason,
+	}
+	// The recovery penalty is what the alive set added on top of the policy
+	// metric it read; sorting = metric + penalty + offset.
+	if metricMs := sortingLatency(policy, sample); metricMs != nil {
+		penalty := *sample.sortingMs - *metricMs
+		if sample.offsetMs != nil {
+			penalty -= *sample.offsetMs
+		}
+		ranking.RecoveryPenaltyMs = &penalty
+	}
+	return ranking
 }
 
 // mergeHealthSamples keeps one sample per transport/purpose/IP version,
