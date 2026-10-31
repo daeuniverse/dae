@@ -149,16 +149,23 @@ func attachRank(sample *healthSample, d *dialer.Dialer, key dialer.HealthKey, ra
 	sample.rank = &rankNo
 }
 
+// healthDomainOf maps a health domain to the contract's transport/purpose pair.
+//
+// The purpose names what the latency is used for, not which probe produced it:
+// TCP and data-UDP both carry "data", DNS carries "dns". Emitting "shared" for
+// TCP (as this used to) put every node in a bucket no client recognises: the
+// dashboard picks its primary latency from transport=tcp,purpose=data, found
+// none, and reported every member as untested with zero available.
 func healthDomainOf(domain dialer.HealthDomain) (transport, purpose string) {
 	switch domain {
 	case dialer.HealthDomainTCP:
-		return "tcp", "shared"
+		return "tcp", "data"
 	case dialer.HealthDomainDnsUDP:
 		return "udp", "dns"
 	case dialer.HealthDomainDataUDP:
 		return "udp", "data"
 	default:
-		return "tcp", "shared"
+		return "tcp", "data"
 	}
 }
 

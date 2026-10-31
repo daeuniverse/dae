@@ -59,7 +59,7 @@ func TestNodesListAndDetail(t *testing.T) {
 	tag := "my_sub"
 	health := HealthObservation{
 		Transport:    "tcp",
-		Purpose:      "shared",
+		Purpose:      "data",
 		IpVersion:    "ipv4",
 		Warmth:       "unknown",
 		Measurement:  "http_headers",

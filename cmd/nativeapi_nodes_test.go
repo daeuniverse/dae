@@ -53,17 +53,19 @@ func healthTestDialer(t *testing.T) *dialer.Dialer {
 func TestDialerHealthSamples(t *testing.T) {
 	d := healthTestDialer(t)
 	samples := dialerHealthSamples(d, nil)
-	// tcp/shared, udp/dns and the data-UDP key that mirrors the DNS sample.
+	// tcp/data, udp/dns and the data-UDP key that mirrors the DNS sample.
 	require.Len(t, samples, 3)
 
-	byPurpose := map[string]healthSample{}
+	// Key by transport+purpose: TCP and data-UDP both carry purpose "data",
+	// which is what clients select their primary latency from.
+	byKey := map[string]healthSample{}
 	for _, sample := range samples {
-		byPurpose[sample.observation.Purpose] = sample
+		byKey[sample.observation.Transport+"/"+sample.observation.Purpose] = sample
 	}
 
-	tcp := byPurpose["shared"]
+	tcp := byKey["tcp/data"]
 	require.Equal(t, "tcp", tcp.observation.Transport)
-	require.Equal(t, "shared", tcp.observation.Purpose)
+	require.Equal(t, "data", tcp.observation.Purpose)
 	require.Equal(t, "ipv4", tcp.observation.IpVersion)
 	require.Equal(t, "healthy", tcp.observation.State)
 	require.Equal(t, "http_headers", tcp.observation.Measurement)
@@ -78,7 +80,7 @@ func TestDialerHealthSamples(t *testing.T) {
 	require.InDelta(t, 45, *tcp.observation.Avg10Ms, 1e-9)
 	require.Equal(t, "2026-01-01T00:00:00Z", tcp.observation.ObservedAt)
 
-	udp := byPurpose["dns"]
+	udp := byKey["udp/dns"]
 	require.Equal(t, "udp", udp.observation.Transport)
 	require.Equal(t, "dns", udp.observation.Purpose)
 	require.Equal(t, "dns_round_trip", udp.observation.Measurement)
@@ -90,7 +92,7 @@ func TestDialerHealthSamples(t *testing.T) {
 
 	// data-UDP has no probe of its own: the engine ranks it with the DNS sample
 	// of the same IP version, and the API mirrors that instead of dropping it.
-	data := byPurpose["data"]
+	data := byKey["udp/data"]
 	require.Equal(t, "udp", data.observation.Transport)
 	require.Equal(t, "data", data.observation.Purpose)
 	require.Equal(t, "ipv4", data.observation.IpVersion)
@@ -200,8 +202,8 @@ func TestMergeSortedStrings(t *testing.T) {
 }
 
 func TestMergeHealthObservationsKeepsNewestPerKey(t *testing.T) {
-	older := nativeapiHealth("tcp", "shared", "ipv4", "2026-01-01T00:00:00Z", "unavailable")
-	newer := nativeapiHealth("tcp", "shared", "ipv4", "2026-01-01T00:05:00Z", "healthy")
+	older := nativeapiHealth("tcp", "data", "ipv4", "2026-01-01T00:00:00Z", "unavailable")
+	newer := nativeapiHealth("tcp", "data", "ipv4", "2026-01-01T00:05:00Z", "healthy")
 	other := nativeapiHealth("udp", "dns", "ipv4", "2026-01-01T00:00:00Z", "healthy")
 
 	merged := mergeHealthObservations([]nativeapi.HealthObservation{older}, []nativeapi.HealthObservation{newer, other})
@@ -211,7 +213,7 @@ func TestMergeHealthObservationsKeepsNewestPerKey(t *testing.T) {
 	require.Equal(t, "dns", merged[1].Purpose)
 
 	// A candidate without a parsable timestamp never replaces a known one.
-	broken := nativeapiHealth("tcp", "shared", "ipv4", "", "unavailable")
+	broken := nativeapiHealth("tcp", "data", "ipv4", "", "unavailable")
 	merged = mergeHealthObservations([]nativeapi.HealthObservation{newer}, []nativeapi.HealthObservation{broken})
 	require.Equal(t, "healthy", merged[0].State)
 }
