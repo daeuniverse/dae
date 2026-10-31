@@ -649,6 +649,17 @@ func (c *DnsController) resolveDNSUpstream(
 	if err != nil {
 		return nil, err
 	}
+	// A legitimate terminal error reply may omit the question section: DNSPod
+	// (119.29.29.29) answers NXDOMAIN with QUERY:0 for Bonjour/DNS-SD reverse
+	// lookups (*._dns-sd._udp.*.in-addr.arpa, qtype PTR). That is not an answer
+	// to some *other* request, so restore the question from the request before
+	// the RFC 5452 echo check below (which would otherwise drop it and leave the
+	// client with SERVFAIL/timeout). Positive answers (rcode==0) and any reply
+	// that carries records must still echo the question.
+	if len(respMsg.Question) == 0 && respMsg.Rcode != dnsmessage.RcodeSuccess &&
+		len(respMsg.Answer) == 0 && reqQuestion.Name != "" {
+		respMsg.Question = []dnsmessage.Question{reqQuestion}
+	}
 	if reqQuestion.Name != "" && !questionEchoMatches(reqQuestion, respMsg) {
 		return nil, fmt.Errorf("upstream %v reply does not echo the request question (possible spoofing or upstream cross-talk); dropped", upstreamName)
 	}
