@@ -223,6 +223,76 @@ type RoutingRule struct {
 	Outbound     Function
 }
 
+// DisplayParamLimit caps how many parameters one function renders in
+// DisplayString.
+//
+// A single geosite-expanded rule carries thousands of suffixes (this deployment
+// renders one as 8.5 MB of JSON), which is unusable in a UI and large enough to
+// make the rules endpoint the slowest one the dashboard polls. String and
+// MarshalString stay lossless: identify and hash rules with those, never with
+// DisplayString.
+const DisplayParamLimit = 8
+
+// DisplayString renders a rule for API and UI display, collapsing oversized
+// parameter lists to DisplayParamLimit entries plus a "+N more" marker.
+func (r *RoutingRule) DisplayString(compact bool, quoteVal bool) string {
+	if r == nil {
+		return ""
+	}
+	var builder strings.Builder
+	for i, f := range r.AndFunctions {
+		if i != 0 {
+			if compact {
+				builder.WriteString("&&")
+			} else {
+				builder.WriteString(" && ")
+			}
+		}
+		builder.WriteString(displayFunction(f, compact, quoteVal))
+	}
+	if compact {
+		builder.WriteString("->" + r.Outbound.MarshalString(compact, quoteVal, true))
+	} else {
+		builder.WriteString(" -> " + r.Outbound.MarshalString(compact, quoteVal, true))
+	}
+	return builder.String()
+}
+
+func displayFunction(f *Function, compact bool, quoteVal bool) string {
+	if f == nil {
+		return ""
+	}
+	var paramBuilder strings.Builder
+	if len(f.Params) > DisplayParamLimit {
+		rendered := make([]string, 0, DisplayParamLimit+1)
+		for _, param := range f.Params[:DisplayParamLimit] {
+			rendered = append(rendered, param.String(compact, quoteVal))
+		}
+		rendered = append(rendered, fmt.Sprintf("+%d more", len(f.Params)-DisplayParamLimit))
+		if compact {
+			paramBuilder.WriteString(strings.Join(rendered, ","))
+		} else {
+			paramBuilder.WriteString(strings.Join(rendered, ", "))
+		}
+	} else {
+		for j, param := range f.Params {
+			if j != 0 {
+				if compact {
+					paramBuilder.WriteString(",")
+				} else {
+					paramBuilder.WriteString(", ")
+				}
+			}
+			paramBuilder.WriteString(param.String(compact, quoteVal))
+		}
+	}
+	symNot := ""
+	if f.Not {
+		symNot = "!"
+	}
+	return fmt.Sprintf("%v%v(%v)", symNot, f.Name, paramBuilder.String())
+}
+
 func (r *RoutingRule) String(replaceParamWithN bool, compact bool, quoteVal bool) string {
 	var builder strings.Builder
 	var n int

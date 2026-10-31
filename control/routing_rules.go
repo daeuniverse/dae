@@ -37,8 +37,12 @@ func snapshotRoutingProgram(program *routing.NormalizedProgram) ([]RoutingRuleSn
 		if rule == nil {
 			continue
 		}
+		// DisplayString, not String: the shipped rule tree is geosite-expanded,
+		// so the lossless form turns a single config line into thousands of
+		// suffixes. That made /api/v1/rules an 8.5 MB response the dashboard had
+		// to download and parse before it could render anything.
 		rules = append(rules, RoutingRuleSnapshot{
-			Expression: rule.String(false, false, false),
+			Expression: rule.DisplayString(false, false),
 			Outbound:   rule.Outbound.MarshalString(false, true, true),
 		})
 	}
