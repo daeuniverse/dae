@@ -3775,3 +3775,237 @@ int test_ab_cookie_pid_lazy_refresh(struct __sk_buff *skb)
 	bpf_map_delete_elem(&cookie_pid_map, &cookie);
 	return 0;
 }
+/* ---------------------------------------------------------------------------
+ * Direct-traffic accounting.
+ *
+ * account_direct_traffic runs on the pass-through branches that never reach
+ * userspace, so nothing else in this suite exercises it. These cases pin the
+ * two failures that would otherwise be silent: a pass-through that is not
+ * counted at all, and a proxied flow that is counted as if it were one.
+ *
+ * The setup program resets the per-CPU counters, runs the datapath role, then
+ * publishes what its own CPU recorded into an ARRAY probe. Reading the probe
+ * from the check program keeps the assertion independent of which CPU the two
+ * runs land on, which a per-CPU lookup could not guarantee.
+ * ------------------------------------------------------------------------ */
+
+struct direct_traffic_probe {
+	__u64 upload;
+	__u64 download;
+	__u64 expected;
+	__s64 ret;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct direct_traffic_probe);
+	__uint(max_entries, 1);
+} test_direct_traffic_probe_map SEC(".maps");
+
+static __always_inline int reset_direct_traffic_counters(void)
+{
+	__u64 zero = 0;
+	__u32 key = DIRECT_TRAFFIC_UPLOAD_BYTES;
+
+	if (bpf_map_update_elem(&direct_traffic_map, &key, &zero, BPF_ANY))
+		return TC_ACT_SHOT;
+	key = DIRECT_TRAFFIC_DOWNLOAD_BYTES;
+	if (bpf_map_update_elem(&direct_traffic_map, &key, &zero, BPF_ANY))
+		return TC_ACT_SHOT;
+	return TC_ACT_OK;
+}
+
+static __always_inline __u64 direct_traffic_value(__u32 key)
+{
+	__u64 *v = bpf_map_lookup_elem(&direct_traffic_map, &key);
+
+	return v ? *v : 0;
+}
+
+static __always_inline int
+publish_direct_traffic_probe(struct __sk_buff *skb, int ret)
+{
+	__u32 key = 0;
+	struct direct_traffic_probe *probe =
+		bpf_map_lookup_elem(&test_direct_traffic_probe_map, &key);
+
+	if (!probe)
+		return TC_ACT_SHOT;
+	probe->upload = direct_traffic_value(DIRECT_TRAFFIC_UPLOAD_BYTES);
+	probe->download = direct_traffic_value(DIRECT_TRAFFIC_DOWNLOAD_BYTES);
+	probe->expected = skb->len;
+	probe->ret = ret;
+	return ret;
+}
+
+static __always_inline int
+setup_accounting_conn_state(__u32 saddr, __u32 daddr, __u16 sport,
+			    __u16 dport, __u8 l4proto, __u8 outbound,
+			    __u32 mark, __u8 direct_passthrough)
+{
+	struct test_routing_cache_ctx *ctx =
+		bpf_map_lookup_elem(&test_routing_cache_ctx_map, &zero_key);
+	struct conn_state *conn_state;
+
+	if (!ctx)
+		return TC_ACT_SHOT;
+	__builtin_memset(ctx, 0, sizeof(*ctx));
+	ctx->key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	ctx->key.sip.u6_addr32[3] = bpf_htonl(saddr);
+	ctx->key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	ctx->key.dip.u6_addr32[3] = bpf_htonl(daddr);
+	ctx->key.sport = bpf_htons(sport);
+	ctx->key.dport = bpf_htons(dport);
+	ctx->key.l4proto = l4proto;
+
+	conn_state = bpf_map_lookup_elem(&test_conn_state_scratch_map, &zero_key);
+	if (!conn_state)
+		return TC_ACT_SHOT;
+	__builtin_memset(conn_state, 0, sizeof(*conn_state));
+	conn_state->state = TCP_STATE_ACTIVE;
+	conn_state->last_seen_ns = bpf_ktime_get_ns();
+	conn_state->meta.data.has_routing = 1;
+	conn_state->meta.data.outbound = outbound;
+	conn_state->meta.data.mark = mark;
+	conn_state->direct_passthrough = direct_passthrough;
+	return bpf_map_update_elem(&conn_state_map, &ctx->key, conn_state,
+				   BPF_ANY);
+}
+
+/* A LAN client's UDP packet that routing sends to the direct outbound must add
+ * its bytes to the upload counter and nothing to the download one. */
+SEC("tc/pktgen/direct_traffic_lan_ingress_upload")
+int testpktgen_direct_traffic_lan_ingress_upload(struct __sk_buff *skb)
+{
+	return set_minimal_ipv4_udp_with_dscp(skb, IPV4(192,168,0,1),
+					      IPV4(1,1,1,1), 19233, 80, 0);
+}
+
+SEC("tc/setup/direct_traffic_lan_ingress_upload")
+int testsetup_direct_traffic_lan_ingress_upload(struct __sk_buff *skb)
+{
+	int ret;
+
+	if (reset_direct_traffic_counters())
+		return TC_ACT_SHOT;
+	set_routing_fallback(OUTBOUND_DIRECT, true);
+	ret = do_tproxy_lan_ingress(skb, 14);
+	return publish_direct_traffic_probe(skb, ret);
+}
+
+SEC("tc/check/direct_traffic_lan_ingress_upload")
+int testcheck_direct_traffic_lan_ingress_upload(struct __sk_buff *skb)
+{
+	__u32 key = 0;
+	struct direct_traffic_probe *probe =
+		bpf_map_lookup_elem(&test_direct_traffic_probe_map, &key);
+
+	if (!probe)
+		return TC_ACT_SHOT;
+	if (probe->ret != TC_ACT_OK) {
+		bpf_printk("lan direct: ret(%lld) != TC_ACT_OK\n", probe->ret);
+		return TC_ACT_SHOT;
+	}
+	if (probe->expected == 0 || probe->upload != probe->expected) {
+		bpf_printk("lan direct: upload(%llu) != packet len(%llu)\n",
+			   probe->upload, probe->expected);
+		return TC_ACT_SHOT;
+	}
+	if (probe->download != 0) {
+		bpf_printk("lan direct: download(%llu) != 0\n", probe->download);
+		return TC_ACT_SHOT;
+	}
+	return TC_ACT_OK;
+}
+
+/* The reply packet of a flow the kernel forwards must land in the download
+ * counter, and the tuple must not be mistaken for an upload on the way. */
+SEC("tc/pktgen/direct_traffic_wan_ingress_download")
+int testpktgen_direct_traffic_wan_ingress_download(struct __sk_buff *skb)
+{
+	return set_minimal_ipv4_udp_with_dscp(skb, IPV4(1,1,1,1),
+					      IPV4(192,168,0,1), 80, 19233, 0);
+}
+
+SEC("tc/setup/direct_traffic_wan_ingress_download")
+int testsetup_direct_traffic_wan_ingress_download(struct __sk_buff *skb)
+{
+	int ret;
+
+	if (reset_direct_traffic_counters())
+		return TC_ACT_SHOT;
+	/* WAN ingress looks the reply up through the reversed tuple, i.e. the
+	 * forward direction of the flow, so the entry is keyed forwards. */
+	if (setup_accounting_conn_state(IPV4(192,168,0,1), IPV4(1,1,1,1),
+					19233, 80, IPPROTO_UDP, OUTBOUND_DIRECT,
+					0, 1))
+		return TC_ACT_SHOT;
+	ret = do_tproxy_wan_ingress(skb, 14);
+	return publish_direct_traffic_probe(skb, ret);
+}
+
+SEC("tc/check/direct_traffic_wan_ingress_download")
+int testcheck_direct_traffic_wan_ingress_download(struct __sk_buff *skb)
+{
+	__u32 key = 0;
+	struct direct_traffic_probe *probe =
+		bpf_map_lookup_elem(&test_direct_traffic_probe_map, &key);
+
+	if (!probe)
+		return TC_ACT_SHOT;
+	if (probe->expected == 0 || probe->download != probe->expected) {
+		bpf_printk("wan direct: download(%llu) != packet len(%llu)\n",
+			   probe->download, probe->expected);
+		return TC_ACT_SHOT;
+	}
+	if (probe->upload != 0) {
+		bpf_printk("wan direct: upload(%llu) != 0\n", probe->upload);
+		return TC_ACT_SHOT;
+	}
+	return TC_ACT_OK;
+}
+
+/* Same packet shape, proxied flow: the reply must not be counted as direct
+ * traffic, because the relay already counts those bytes. */
+SEC("tc/pktgen/direct_traffic_wan_ingress_proxy_ignored")
+int testpktgen_direct_traffic_wan_ingress_proxy_ignored(struct __sk_buff *skb)
+{
+	return set_minimal_ipv4_udp_with_dscp(skb, IPV4(8,8,8,8),
+					      IPV4(192,168,0,1), 443, 23456, 0);
+}
+
+SEC("tc/setup/direct_traffic_wan_ingress_proxy_ignored")
+int testsetup_direct_traffic_wan_ingress_proxy_ignored(struct __sk_buff *skb)
+{
+	int ret;
+
+	if (reset_direct_traffic_counters())
+		return TC_ACT_SHOT;
+	if (setup_accounting_conn_state(IPV4(192,168,0,1), IPV4(8,8,8,8),
+					23456, 443, IPPROTO_UDP,
+					OUTBOUND_USER_DEFINED_MIN, 0, 0))
+		return TC_ACT_SHOT;
+	ret = do_tproxy_wan_ingress(skb, 14);
+	return publish_direct_traffic_probe(skb, ret);
+}
+
+SEC("tc/check/direct_traffic_wan_ingress_proxy_ignored")
+int testcheck_direct_traffic_wan_ingress_proxy_ignored(struct __sk_buff *skb)
+{
+	__u32 key = 0;
+	struct direct_traffic_probe *probe =
+		bpf_map_lookup_elem(&test_direct_traffic_probe_map, &key);
+
+	if (!probe)
+		return TC_ACT_SHOT;
+	if (probe->download != 0) {
+		bpf_printk("wan proxy: download(%llu) != 0\n", probe->download);
+		return TC_ACT_SHOT;
+	}
+	if (probe->upload != 0) {
+		bpf_printk("wan proxy: upload(%llu) != 0\n", probe->upload);
+		return TC_ACT_SHOT;
+	}
+	return TC_ACT_OK;
+}

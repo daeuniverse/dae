@@ -523,7 +523,19 @@ struct conn_state {
 	__u32 pid;                 // Process ID (for WAN egress; 0 for LAN)
 	// 0 is unknown; active routing slots 0 and 1 are encoded as 1 and 2.
 	__u8 routing_epoch_slot;
-	__u8 padding_after_pid;
+	// Set by whichever hook decided this flow is forwarded by the kernel
+	// without userspace: the LAN-ingress direct branch, or the WAN-egress
+	// direct branch for a local socket.
+	//
+	// The download side at WAN ingress cannot recover this from the routing
+	// shape. Three cases must be told apart and only the first is a
+	// pass-through: a LAN flow routed to direct stores outbound=DIRECT with
+	// the rule's mark (which may be non-zero); a local socket with a non-zero
+	// direct mark is dialed by userspace and already counted by the relay; and
+	// an entry whose routing has not been published yet looks exactly like a
+	// pass-through. Occupies the alignment slot that used to be padding, so
+	// the entry size is unchanged.
+	__u8 direct_passthrough;
 	__u16 datapath_generation;
 };
 
@@ -600,6 +612,142 @@ static __always_inline void bump_stat(__u32 key)
 
 	if (counter)
 		__sync_fetch_and_add(counter, 1);
+}
+
+/* Direct (non-proxied) traffic accounting.
+ *
+ * The direct path returns from the datapath without ever reaching userspace,
+ * so the relay byte counters cannot see it: runtime.traffic and
+ * runtime/outbounds used to show a permanent hole that grew with every
+ * "fallback: direct" match. These counters close it without touching the
+ * forwarding decision: no redirect, no per-flow state, no packet copy.
+ *
+ * PERCPU: this is the highest-PPS path in the datapath. A per-CPU value needs
+ * no cacheline arbitration, so accounting costs one lookup plus one add on the
+ * CPU that already owns the packet.
+ *
+ * Keys are a userspace-visible contract; mirror any change in
+ * control/direct_traffic.go (guarded by
+ * TestDirectTrafficKeysParityWithKernelSource).
+ */
+enum direct_traffic_key {
+	// key=0: bytes leaving towards the WAN on a pass-through decision.
+	DIRECT_TRAFFIC_UPLOAD_BYTES = 0,
+	// key=1: bytes arriving from the WAN on a pass-through flow.
+	DIRECT_TRAFFIC_DOWNLOAD_BYTES = 1,
+	DIRECT_TRAFFIC_MAX = 2,
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, __u64);
+	__uint(max_entries, DIRECT_TRAFFIC_MAX);
+} direct_traffic_map SEC(".maps");
+
+/* account_direct_traffic records one pass-through packet. A failed lookup only
+ * loses an observation: it must never influence forwarding, which is why every
+ * caller keeps its own return value untouched.
+ *
+ * len is skb->len, i.e. link bytes including the L2 header on *_l2
+ * attachments. Userspace documents the figure as "link bytes" so it is never
+ * silently added to the relay's payload byte counters.
+ */
+static __always_inline void account_direct_traffic(__u32 key, __u32 len)
+{
+	__u64 *v = bpf_map_lookup_elem(&direct_traffic_map, &key);
+
+	if (v)
+		__sync_fetch_and_add(v, (__u64)len);
+}
+
+/* NAT-independent index of pass-through flows.
+ *
+ * The download side is observed on the WAN-ingress hook, where a reply packet
+ * on a NAT gateway no longer carries the LAN address: SNAT rewrote the
+ * connection's destination to the WAN address, so reversing that tuple never
+ * matches the conn_state entry the LAN ingress created. The LAN-egress hook
+ * does see the restored tuple, but a bridged LAN forwards through the member
+ * ports instead of the bridge device, so its egress qdisc only ever sees the
+ * host's own traffic.
+ *
+ * What survives translation is the remote endpoint and the local port (SNAT
+ * preserves the port unless it has to remap a collision), so those three fields
+ * are the key. The value is the last time the flow was seen, refreshed on both
+ * directions, which doubles as an LRU access and lets one busy flow be
+ * recognised after the LAN side went quiet.
+ *
+ * Only flows the datapath forwards without userspace are recorded, so a proxied
+ * flow can never be recognised here. A local-port collision with another host
+ * behind the same NAT would mis-account bytes for a direct flow that is direct
+ * either way; it cannot leak a proxied flow into the counters.
+ */
+struct direct_reverse_key {
+	union ip6 remote_ip;
+	__u16 remote_port;
+	__u16 local_port;
+	__u8 l4proto;
+	__u8 pad[3];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 131072);
+	__type(key, struct direct_reverse_key);
+	__type(value, __u64);
+} direct_reverse_map SEC(".maps");
+
+/* remember_direct_flow records the LAN-side tuple of a pass-through flow. */
+static __always_inline void remember_direct_flow(const struct tuples_key *key)
+{
+	struct direct_reverse_key rk = {};
+
+	rk.remote_ip = key->dip;
+	rk.remote_port = key->dport;
+	rk.local_port = key->sport;
+	rk.l4proto = key->l4proto;
+
+	__u64 now = bpf_ktime_get_ns();
+
+	bpf_map_update_elem(&direct_reverse_map, &rk, &now, BPF_ANY);
+}
+
+/* is_known_direct_flow answers whether the tuple of a reply packet belongs to a
+ * recorded pass-through flow: caller passes the packet's own tuple, so the
+ * remote endpoint is the source. A hit refreshes the entry. */
+static __always_inline bool is_known_direct_flow(const struct tuples_key *key)
+{
+	struct direct_reverse_key rk = {};
+
+	rk.remote_ip = key->sip;
+	rk.remote_port = key->sport;
+	rk.local_port = key->dport;
+	rk.l4proto = key->l4proto;
+
+	__u64 *last_seen = bpf_map_lookup_elem(&direct_reverse_map, &rk);
+
+	if (!last_seen)
+		return false;
+	*last_seen = bpf_ktime_get_ns();
+	return true;
+}
+
+/* is_direct_conn_state reports whether a conn_state entry belongs to a flow the
+ * datapath forwards without userspace. The flag is set by the hook that made
+ * the forwarding decision, so this is a fact about the flow rather than an
+ * inference from its routing shape (see struct conn_state for why those
+ * differ). Every proxied flow leaves it clear.
+ *
+ * The routing half of the test is a staleness guard: a tuple can be republished
+ * with a proxy decision without the entry being re-created, which would leave
+ * the flag set on a flow the relay now counts.
+ */
+static __always_inline bool is_direct_conn_state(const struct conn_state *s)
+{
+	if (!s || !s->direct_passthrough)
+		return false;
+	return !s->meta.data.has_routing ||
+	       s->meta.data.outbound == OUTBOUND_DIRECT;
 }
 
 // Event rate-limit constants are owned by userspace and injected through the
@@ -1469,6 +1617,13 @@ struct parsed_packet {
 	__u8 l4proto;
 	__u8 listener_l4proto;
 	__u8 handoff_required;
+	/* Set by the WAN-ingress role when it accounted this packet as direct
+	 * download traffic. The dual-role hook (wan_lan_ingress, a single-interface
+	 * deployment) then runs the LAN-ingress role on the same skb, which would
+	 * otherwise classify the same packet as a direct upload and double count
+	 * it. Both roles share this per-CPU scratch, and every entry point zeroes
+	 * it, so the flag can only describe the packet in flight. */
+	__u8 counted_as_download;
 	__u16 datapath_generation;
 };
 
@@ -2767,6 +2922,11 @@ static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 
 // Reverse-direction conntrack refresh shared by standalone and combined LAN
 // egress roles after a single packet parse.
+//
+// Only the diagnostic counters live here. A bridged LAN forwards through its
+// member ports instead of the bridge device, so this hook sees the host's own
+// traffic and hardly any forwarded reply packets; the download side of a
+// pass-through flow is counted on the WAN ingress instead.
 static __always_inline int
 tproxy_lan_egress_refresh(struct tuples *tuples, const struct tcphdr *tcph,
 			  const struct udphdr *udph, __u8 l4proto)
@@ -2944,7 +3104,19 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		if (!tcp_state->meta.data.has_routing) {
 			/* No cache: keep historical direct-pass semantics (e.g.
 			 * single-arm / reply-path traffic).
+			 *
+			 * A pass-through flow keeps direct_passthrough set from the
+			 * packet that made the decision, and its routing is never
+			 * published, so this return is the only place its established
+			 * upload bytes can be counted. Without it every direct TCP flow
+			 * contributes its SYN and nothing else.
 			 */
+			if (tcp_state->direct_passthrough &&
+			    !pkt->counted_as_download)
+				account_direct_traffic(
+					DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
+			if (tcp_state->direct_passthrough)
+				remember_direct_flow(&pkt->tuples.five);
 			return TC_ACT_OK;
 		}
 
@@ -2954,6 +3126,15 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 
 		if (outbound == OUTBOUND_DIRECT) {
 			skb->mark = mark;
+			tcp_state->direct_passthrough = 1;
+			remember_direct_flow(&pkt->tuples.five);
+			/* Established TCP leaves here, not via the direct label
+			 * below, so the upload counter needs this second site. On a
+			 * single-interface deployment the WAN-ingress role may already
+			 * have accounted this packet as a download. */
+			if (!pkt->counted_as_download)
+				account_direct_traffic(
+					DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 			return TC_ACT_OK;
 		}
 		if (unlikely(outbound == OUTBOUND_BLOCK))
@@ -2999,6 +3180,8 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 
 				if (outbound == OUTBOUND_DIRECT) {
 					skb->mark = mark;
+					udp_state->direct_passthrough = 1;
+					remember_direct_flow(&pkt->tuples.five);
 					goto direct;
 				} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 					goto block;
@@ -3151,6 +3334,14 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 
 	if (outbound == OUTBOUND_DIRECT) {
 		skb->mark = mark;
+		/* Record the decision on the flow, not on the routing shape: a
+		 * direct(mark: N) LAN flow is still a kernel pass-through, while the
+		 * same shape on a local socket is dialed by userspace. */
+		if (tcp_state)
+			tcp_state->direct_passthrough = 1;
+		if (udp_state)
+			udp_state->direct_passthrough = 1;
+		remember_direct_flow(&pkt->tuples.five);
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
 #endif
@@ -3186,6 +3377,11 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		routing_epoch_slot);
 
 direct:
+	/* Every UDP pass-through and the TCP-SYN pass-throughs (including the
+	 * map-full fallback) reach this label. Skip a packet the WAN-ingress role
+	 * already counted as download on a single-interface deployment. */
+	if (!pkt->counted_as_download)
+		account_direct_traffic(DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 	return TC_ACT_OK;
 
 block:
@@ -3292,11 +3488,38 @@ tproxy_wan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 	// Reverse-direction conntrack refresh.
 	if (pkt->l4proto == IPPROTO_TCP) {
 		struct tuples_key reversed_tuples_key;
+		struct conn_state *rev_state;
 
 		copy_reversed_tuples(&pkt->tuples.five, &reversed_tuples_key);
-		mark_tcp_seen(&reversed_tuples_key, &pkt->tcph, true,
-			      NULL, NULL, NULL, NULL,
-			      0, NULL, 0, ROUTING_EPOCH_SLOT_UNKNOWN);
+		rev_state = mark_tcp_seen(&reversed_tuples_key, &pkt->tcph, true,
+					  NULL, NULL, NULL, NULL,
+					  0, NULL, 0,
+					  ROUTING_EPOCH_SLOT_UNKNOWN);
+		/* Download side of a pass-through flow. Every packet on this hook
+		 * arrived from the WAN, so a direct flow's packet here is download
+		 * traffic regardless of which direction created the entry: a flow the
+		 * outside opened (is_wan_ingress_direction set) still downloads. */
+		if (is_direct_conn_state(rev_state)) {
+			account_direct_traffic(DIRECT_TRAFFIC_DOWNLOAD_BYTES,
+					       skb->len);
+			/* reversed_tuples_key is the LAN-side tuple, so refreshing
+			 * here keeps a busy flow indexed even while its LAN half is
+			 * idle (a large download is exactly that shape). */
+			remember_direct_flow(&reversed_tuples_key);
+			pkt->counted_as_download = 1;
+		} else if (!rev_state &&
+			   is_known_direct_flow(&pkt->tuples.five)) {
+			/* NAT gateway: SNAT rewrote the connection's destination to
+			 * the WAN address, so this reply's reversed tuple can never
+			 * match the entry the LAN ingress created, and the hook is the
+			 * only one that sees every reply packet (a bridged LAN
+			 * forwards through its member ports, never through the bridge
+			 * device's egress qdisc). The three-field index survives the
+			 * translation because SNAT preserves the local port. */
+			account_direct_traffic(DIRECT_TRAFFIC_DOWNLOAD_BYTES,
+					       skb->len);
+			pkt->counted_as_download = 1;
+		}
 	} else if (pkt->l4proto == IPPROTO_UDP) {
 		struct tuples_key reversed_tuples_key;
 		__u8 state_status = UDP_CONN_STATE_STATUS_UNAVAILABLE;
@@ -3313,10 +3536,27 @@ tproxy_wan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		 * wan_egress pass-through depends on (host-terminated UDP
 		 * services), so this is counted, not enforced. See fix-plan.md
 		 * decision A20. */
-		mark_udp_seen_with_status(&reversed_tuples_key, true,
-					  NULL, NULL, NULL, NULL,
-					  0, NULL, 0,
-					  ROUTING_EPOCH_SLOT_UNKNOWN, &state_status);
+		{
+			struct conn_state *rev_state =
+				mark_udp_seen_with_status(&reversed_tuples_key, true,
+							  NULL, NULL, NULL,
+							  NULL, 0, NULL, 0,
+							  ROUTING_EPOCH_SLOT_UNKNOWN,
+							  &state_status);
+			if (is_direct_conn_state(rev_state)) {
+				account_direct_traffic(
+					DIRECT_TRAFFIC_DOWNLOAD_BYTES, skb->len);
+				remember_direct_flow(&reversed_tuples_key);
+				pkt->counted_as_download = 1;
+			} else if (state_status == UDP_CONN_STATE_STATUS_MISSING &&
+				   is_known_direct_flow(&pkt->tuples.five)) {
+				/* NAT gateway: same reasoning as the TCP branch
+				 * above. */
+				account_direct_traffic(
+					DIRECT_TRAFFIC_DOWNLOAD_BYTES, skb->len);
+				pkt->counted_as_download = 1;
+			}
+		}
 		if (state_status != UDP_CONN_STATE_STATUS_EXISTING &&
 		    state_status != UDP_CONN_STATE_STATUS_UNAVAILABLE)
 			bump_stat(BPF_STATS_UNSOLICITED_UDP_SEEN);
@@ -3541,10 +3781,24 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			routing_epoch_slot);
 
 		if (!tcp_conn) {
-			if (outbound == OUTBOUND_DIRECT && mark == 0)
+			if (outbound == OUTBOUND_DIRECT && mark == 0) {
+				/* conn_state_map is full. The flow is still forwarded by
+				 * the kernel, so count the packet; there is no entry to
+				 * recognise the rest of the flow by, so only this SYN is
+				 * ever counted. */
+				account_direct_traffic(
+					DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 				return DAE_TC_CONTINUE;
+			}
 			return TC_ACT_SHOT;
 		}
+
+		/* Record the pass-through decision on the flow so the WAN-ingress role
+		 * can account its download side. Only the branches that actually bypass
+		 * userspace qualify, which is exactly what
+		 * wan_egress_needs_control_plane answers. */
+		if (!wan_egress_needs_control_plane(outbound, mark))
+			tcp_conn->direct_passthrough = 1;
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		__u32 pid = pid_pname ? pid_pname->pid : 0;
@@ -3573,12 +3827,26 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			bump_stat(BPF_STATS_STATELESS_TCP_PASSTHROUGH);
 			return DAE_TC_CONTINUE;
 		}
-		if (!tcp_conn->meta.data.has_routing)
+		if (!tcp_conn->meta.data.has_routing) {
+			/* A WAN-egress entry without a routing decision is a local
+			 * socket's pass-through flow: the direct branch above
+			 * deliberately publishes none, and a proxied flow always does.
+			 * Accounting has to happen here because that branch returns
+			 * before the shared pass-through site below, so leaving this
+			 * out would count only the SYN of every local direct TCP flow. */
+			tcp_conn->direct_passthrough = 1;
+			account_direct_traffic(DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 			return DAE_TC_CONTINUE;
+		}
 
 		outbound = tcp_conn->meta.data.outbound;
 		mark = tcp_conn->meta.data.mark;
 		must = tcp_conn->meta.data.must;
+		/* must_direct and any other DIRECT shape that still publishes a
+		 * routing decision reaches the shared pass-through site below, so
+		 * it needs the flow flag here as well. */
+		if (!wan_egress_needs_control_plane(outbound, mark))
+			tcp_conn->direct_passthrough = 1;
 		__builtin_memcpy(handoff_mac, tcp_conn->mac, 6);
 		__builtin_memcpy(scratch->mac, tcp_conn->mac, 6);
 		handoff_pname = (const char *)tcp_conn->pname;
@@ -3593,6 +3861,11 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 		bpf_printk("GO OUTBOUND_DIRECT");
 #endif
 		skb->mark = mark;
+		/* Only locally generated packets reach this hook (the ingress_ifindex
+		 * guard above drops the forwarded ones), so this is the upload side of
+		 * a local socket's pass-through flow and cannot double count the LAN
+		 * ingress sites. */
+		account_direct_traffic(DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 		return DAE_TC_CONTINUE;
 	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -3749,9 +4022,12 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (!wan_egress_needs_control_plane(outbound, mark))
+	if (!wan_egress_needs_control_plane(outbound, mark)) {
+		if (udp_conn_state)
+			udp_conn_state->direct_passthrough = 1;
+		account_direct_traffic(DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 		return DAE_TC_CONTINUE;
-	else if (unlikely(outbound == OUTBOUND_BLOCK))
+	} else if (unlikely(outbound == OUTBOUND_BLOCK))
 		return TC_ACT_SHOT;
 
 	if (!cached_routing &&

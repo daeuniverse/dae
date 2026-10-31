@@ -142,6 +142,14 @@ func (r *bpfMaintenanceRuntime) run() {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Direct traffic is sampled at the runtime-stats bucket width, not at the
+	// janitor cadence: see directTrafficAccountant.record. The janitor ticker
+	// backs off to seconds while idle, which would squeeze several buckets of
+	// bytes into the current 250ms bucket and fake a rate spike.
+	trafficTicker := time.NewTicker(RuntimeSampleInterval)
+	defer trafficTicker.Stop()
+	var directTraffic directTrafficAccountant
+
 	var (
 		lastConnCleanup      time.Time
 		lastRedirectCleanup  time.Time
@@ -255,6 +263,13 @@ func (r *bpfMaintenanceRuntime) run() {
 				continue
 			}
 			runJanitorRound(r.active.Load(), now, false)
+		case <-trafficTicker.C:
+			// No cleanup/generation guard here: the accountant publishes through
+			// the process-wide stats store and reads this runtime's own BPF map, so
+			// it is correct even while a generation handoff is in flight. Guarding
+			// on the maintenance target stalled the counters for good once that
+			// target was retired.
+			directTraffic.record(r.bpf)
 		}
 	}
 }
