@@ -810,6 +810,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 | R4 | `/policies` 不显示选中节点 | 自动策略一律返回 `selection: null` | 投影层缺陷 |
 | R5 | `/policies` 显示「0 个可用 / 4 个未测试」 | TCP 样本的 `purpose` 用了 `shared`，前端按 `tcp + data` 取主延迟 | 契约字段值错误 |
 | R6 | `/overview` 内存卡片 7 项全为「—」 | 系统未委派 cgroup memory 控制器，整棵树没有 `memory.*` | 环境 + 少量代码 |
+| R7 | `/overview`「CPU 使用率」恒为「—」 | `process.cpu_percent` 在 provider 里硬编码 `nil`，引擎没有采样 | 功能缺失 |
 
 ### 10.2 逐条记录
 
@@ -999,6 +1000,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 | `nodes[].health[]` / `runtime.health[]` | `purpose` | TCP 由 `shared` 改为 `data`；取值集合变为 `data` / `dns` |
 | 同上 | 样本条数 | 每节点由 4 条变 6 条（补 data-UDP，镜像同 IP 族 DNS 样本） |
 | `runtime/memory` | `cgroup.*` | 系统委派 memcg 后填充；`limit_bytes: null` 表示"无限制"，由 `capabilities` 的 `cgroup.limit_bytes` 指标区分"不支持" |
+| `runtime.process` | `cpu_percent` | 由恒 `null` 变为真实值（2026-10-31） |
 | `capabilities.runtime_memory.metrics` | — | 动态：只声明真正读到的指标 |
 
 ### 10.4 部署与回滚
@@ -1022,7 +1024,49 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 端点契约，已同步到 development（中英文各新增 `Runtime summary and per-outbound counters` 与
 `Memory` 两节，并更新 groups / nodes / rules 段落）。
 
-### 10.6 遗留项
+### 10.6 CPU 占用率
+
+**症状**：`/overview` 的「CPU 使用率」恒为 `—`。
+
+**根因**：`runtime.process.cpu_percent` 在 provider 里被硬编码为 `nil`（
+`cmd/nativeapi_provider.go`），引擎侧根本没有采样。
+
+**契约口径**（`api-standardize` `openapi.yaml`）：
+
+> CPU time the engine process used over the server's latest sampling interval, as
+> a percentage of one CPU. 100 means one core fully busy; the value may exceed 100
+> on multi-core hosts. Null until two samples exist or when unmeasurable.
+
+即：单核百分比、可超 100、且必须是**区间增量**而非生命周期均值。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `control/process_stats.go` | 新增 `processCPUStats`：读 `/proc/<pid>/stat` 的 `utime+stime`（USER_HZ=100，Linux ABI 固定值），按实际墙钟区间折算单核百分比；首次采样只作基线 |
+| `control/memory_stats.go` | CPU 采样搭在既有的 1s memory ticker 上（一个 goroutine 服务两个指标，且 1s 正是契约所说的采样区间） |
+| `control/control_plane.go` | 新增 `processCPU` 字段与构造 |
+| `cmd/nativeapi_provider.go` | 填充 `Process.CPUPercent` |
+| `control/process_stats_test.go` | comm 含空格/括号的解析、两次采样才出值、可超 100、文件消失后清空而非沿用旧值 |
+
+**取舍**
+
+- `/proc/<pid>/stat` 的 `comm` 用括号包裹且可能自带空格与括号，解析从**最后一个 `)`** 开始切分，避免进程名形如 `a) b` 时错位。
+- 读不到（文件消失/解析失败）时清空为 `null`，而不是沿用上一次的值——契约允许 `null`，但不允许陈旧数字冒充当前值。
+- 读数为进程级累计时间，reload 前后连续（`/proc/self` 不变），因此 reload 期间的 CPU 开销会被计入下一个区间的首个采样，短暂出现 >100 属于正常。
+
+**实测**（路由器 4 核实机）
+
+| 场景 | API `cpu_percent` | `/proc/stat` 真值 |
+|---|---|---|
+| 空闲 | 1–2% | 1.80%/10s |
+| 代理下载 4.1 MB/s | 11% | — |
+| 代理下载 2.6 MB/s | 10% | — |
+| 下载结束回落 | 1–2% | — |
+| `dae reload` 瞬间 | 44% → 127% → 146% | 与"重建数据面"一致 |
+| `detail=full` | `{pid: 13315, cpu_percent: 118.0}` | — |
+
+### 10.7 遗留项
 
 - **memcg 委派不持久化**：重启路由器后 cgroup 字段回到 `null`；持久化需写 `/etc/rc.local` 或 procd 配置，属于"dae 之外"的改动，未做。
 - **`rank` 与 `selection` 的语义差**：可在 `ranking` 增加 `selected: true` 标记让前端区分"瞬时最快"与"引擎实选"，未做。

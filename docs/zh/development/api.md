@@ -218,6 +218,11 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 `traffic.planes.userspace` 与 `traffic.planes.kernel_direct` 把两者分开，且相加精确等于
 `traffic.bytes`；需要单一口径的读者应取 plane，而不是混合总量。
 
+`process.cpu_percent` 是守护进程在最近一个 1 秒采样区间内的 CPU 占用，按**单核**百分比计：
+`100` 表示一个核心跑满，多核主机可能超过 100。它是区间增量而非生命周期均值，因此在拿到两次
+采样之前为 `null`；reload 会重启该区间，期间短暂回到 `null`。`process.pid` 仅在
+`detail=full` 时返回。
+
 `traffic.counter_since` 与 `runtime/outbounds.counter_since` 是同一个进程级边界，且都跨
 reload 保留。per-outbound 计数器是进程级、流量存储是 generation 级，因此 generation
 交接时会继承总量，而不是从零重来。

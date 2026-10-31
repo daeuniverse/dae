@@ -270,6 +270,13 @@ the eBPF datapath counts link bytes for the flows it forwards without userspace.
 separable and sum exactly to `traffic.bytes`, so a reader that needs one
 consistent unit should use a plane instead of the mixed total.
 
+`process.cpu_percent` is the daemon's CPU usage over the latest one-second
+sampling interval, as a percentage of **one** CPU: `100` means one core fully
+busy and a multi-core host can report more. It is a delta, not a lifetime
+average, so it is `null` until two samples exist; a reload restarts the interval
+and briefly reports `null` again. `process.pid` is present only with
+`detail=full`.
+
 `traffic.counter_since` and `runtime/outbounds.counter_since` report the same
 process-level boundary and both survive a reload. The per-outbound registry is
 process-scoped while the traffic store is generation-scoped, so the totals are

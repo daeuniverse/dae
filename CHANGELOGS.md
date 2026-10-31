@@ -126,6 +126,10 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - Distinguish an unlimited cgroup (`memory.max == "max"`) from a system that
   does not report cgroup memory at all, so the dashboard can show "no limit"
   instead of "unknown".
+- Report `runtime.process.cpu_percent` instead of always `null`. The value is
+  the daemon's CPU time over the latest one-second interval as a percentage of
+  one CPU, sampled from `/proc/<pid>/stat`, so a dashboard can show CPU usage;
+  it stays `null` until a second sample exists.
 
 See `api_dev.md` section 10 for the per-issue evidence and verification.
 
