@@ -198,8 +198,10 @@ group {
   - [x] `secret` 为空 + `allow_anonymous_loopback=true` 但 listen 非 loopback 时启动失败。
   - [x] `dae validate -c` 覆盖 API 配置。
 - [x] 文档
-  - [x] `docs/en/configuration/api.md`
+  - [x] `docs/en/configuration/api.md`（listener 配置与部署）
   - [x] `docs/zh/configuration/api.md`
+  - [x] `docs/en/development/api.md`（端点与资源契约）
+  - [x] `docs/zh/development/api.md`
   - [x] 中英文 README 配置示例。
 
 ### P0-2 API server 骨架
@@ -747,8 +749,11 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 
 ## 7. 文档
 
-- [x] `docs/en/configuration/api.md`
-- [x] `docs/zh/configuration/api.md`
+- 文档按内容分层（2026-10-31）：涉及配置文件（`api` section 字段、认证、TLS、
+  Host/Origin、`ui`、reload 语义）的写入 `docs/{en,zh}/configuration/api.md`；涉及端点、
+  资源契约与实现取舍的写入 `docs/{en,zh}/development/api.md`。
+- [x] `docs/en/configuration/api.md`、`docs/zh/configuration/api.md`
+- [x] `docs/en/development/api.md`、`docs/zh/development/api.md`
 - [x] 中英文 README 配置示例增加 `api` section。
 - [x] 组策略文档增加 `select`，说明“运行时选择不落盘、reload 重置”。
 - [x] `CHANGELOGS.md`。
@@ -1004,7 +1009,20 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 - 备份点：`/tmp/dae.bak.<timestamp>`（每轮一份，最早一份是会话开始前的原始版本）；
 - 版本串：`unstable-20261031.r877.31bc21e`（仓库尚无新提交，`r877` 不随改动递增）。
 
-### 10.5 遗留项
+### 10.5 文档落位
+
+按内容分层维护，避免"配置"与"端点契约"混在一起：
+
+| 内容 | 文件 |
+|---|---|
+| `api` section 字段、认证模式、TLS 部署要求、Host/Origin 校验、`ui` 自托管、reload 语义 | `docs/{en,zh}/configuration/api.md` |
+| 端点清单、资源契约（`runtime` 的 planes、`outbounds` 的 direct 行、`runtime/memory` 的 cgroup 前提、`groups` 的 selection 与 health、`nodes` 的 purpose、`rules` 的配置态语义、日志） | `docs/{en,zh}/development/api.md` |
+
+两份文档互相链接：configuration 开头明确指向 development，反之亦然。本节的 6 个修复全部属于
+端点契约，已同步到 development（中英文各新增 `Runtime summary and per-outbound counters` 与
+`Memory` 两节，并更新 groups / nodes / rules 段落）。
+
+### 10.6 遗留项
 
 - **memcg 委派不持久化**：重启路由器后 cgroup 字段回到 `null`；持久化需写 `/etc/rc.local` 或 procd 配置，属于"dae 之外"的改动，未做。
 - **`rank` 与 `selection` 的语义差**：可在 `ranking` 增加 `selected: true` 标记让前端区分"瞬时最快"与"引擎实选"，未做。
