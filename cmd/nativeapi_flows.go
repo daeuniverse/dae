@@ -151,10 +151,6 @@ func (p *nativeAPIProvider) CloseConnections(ctx context.Context, filter nativea
 		return nativeapi.BulkCloseResult{}, err
 	}
 	matched := make([]control.SessionFlowSnapshot, 0, 16)
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = nativeapi.NodeListDefaultLimit
-	}
 	for _, flow := range plane.ActiveFlowSnapshots() {
 		if filter.Type == "tcp" && flow.Network != "tcp" {
 			continue

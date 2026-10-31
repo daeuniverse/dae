@@ -4027,8 +4027,9 @@ fast_path_skip_routing:
 			udp_conn_state->direct_passthrough = 1;
 		account_direct_traffic(DIRECT_TRAFFIC_UPLOAD_BYTES, skb->len);
 		return DAE_TC_CONTINUE;
-	} else if (unlikely(outbound == OUTBOUND_BLOCK))
+	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 		return TC_ACT_SHOT;
+	}
 
 	if (!cached_routing &&
 	    !wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,

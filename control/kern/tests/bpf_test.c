@@ -3775,6 +3775,7 @@ int test_ab_cookie_pid_lazy_refresh(struct __sk_buff *skb)
 	bpf_map_delete_elem(&cookie_pid_map, &cookie);
 	return 0;
 }
+
 /* ---------------------------------------------------------------------------
  * Direct-traffic accounting.
  *
