@@ -185,3 +185,38 @@ func TestReadEbpfBytesReportsZeroWithoutObjects(t *testing.T) {
 		t.Fatal("an unreadable /proc tree must report unknown")
 	}
 }
+
+// TestReadMemorySnapshotUnlimitedLimit pins the distinction the dashboard needs:
+// an unlimited cgroup (memory.max == "max") is not "this system has no cgroup
+// reporting" - the limit metric is known, its value simply is not a byte count.
+func TestReadMemorySnapshotUnlimitedLimit(t *testing.T) {
+	procSelf, cgroupDir := writeMemoryFixture(t)
+	writeFile(t, filepath.Join(cgroupDir, "memory.max"), "max\n")
+
+	snapshot := readMemorySnapshot(procSelf)
+	if snapshot.Cgroup == nil {
+		t.Fatal("cgroup reading is missing")
+	}
+	if snapshot.Cgroup.LimitBytes != nil {
+		t.Fatalf("limit = %v, want nil for an unlimited cgroup", *snapshot.Cgroup.LimitBytes)
+	}
+	if !snapshot.Cgroup.LimitUnlimited {
+		t.Fatal("memory.max == \"max\" must be reported as an unlimited limit")
+	}
+
+	stats := newMemoryStats()
+	stats.procSelf = procSelf
+	stats.mu.Lock()
+	stats.learnMetricsLocked(snapshot)
+	stats.mu.Unlock()
+	metrics := stats.metricNames()
+	found := false
+	for _, metric := range metrics {
+		if metric == "cgroup.limit_bytes" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("metrics = %v, want cgroup.limit_bytes advertised for an unlimited cgroup", metrics)
+	}
+}

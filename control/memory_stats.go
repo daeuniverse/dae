@@ -37,7 +37,12 @@ type CgroupMemorySnapshot struct {
 	Scope        string
 	CurrentBytes *uint64
 	LimitBytes   *uint64
-	Events       *CgroupMemoryEvents
+	// LimitUnlimited is set when memory.max exists but reads "max". The limit is
+	// then reported as nil (there is no byte value to report) while still
+	// counting as a known metric, so a client can render "unlimited" instead of
+	// "unknown".
+	LimitUnlimited bool
+	Events         *CgroupMemoryEvents
 }
 
 // KernelMemorySnapshot is the kernel memory charged to this process's eBPF
@@ -143,13 +148,17 @@ func readCgroupMemory(procSelf string) *CgroupMemorySnapshot {
 	snapshot := &CgroupMemorySnapshot{Scope: cgroupScope(directory)}
 
 	current, currentOK := readUintFile(filepath.Join(directory, "memory.current"))
-	limit, limitOK := readUintFile(filepath.Join(directory, "memory.max"))
+	limit, unlimited, limitOK := readMemoryMax(filepath.Join(directory, "memory.max"))
 	events := readCgroupEvents(filepath.Join(directory, "memory.events"))
 	if currentOK {
 		snapshot.CurrentBytes = &current
 	}
 	if limitOK {
-		snapshot.LimitBytes = &limit
+		if unlimited {
+			snapshot.LimitUnlimited = true
+		} else {
+			snapshot.LimitBytes = &limit
+		}
 	}
 	if events != nil {
 		snapshot.Events = events
@@ -174,6 +183,29 @@ func readUintFile(path string) (uint64, bool) {
 		return 0, false
 	}
 	return parsed, true
+}
+
+// readMemoryMax reads memory.max, which uses the literal "max" for an
+// unlimited cgroup. That case is reported separately from a missing file: the
+// first means "no limit", the second means "this system does not report
+// limits".
+func readMemoryMax(path string) (value uint64, unlimited bool, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false, false
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "max" {
+		return 0, true, true
+	}
+	if trimmed == "" {
+		return 0, false, false
+	}
+	parsed, err := strconv.ParseUint(trimmed, 10, 64)
+	if err != nil {
+		return 0, false, false
+	}
+	return parsed, false, true
 }
 
 func readCgroupEvents(path string) *CgroupMemoryEvents {
@@ -460,7 +492,7 @@ func (s *memoryStats) learnMetricsLocked(snapshot MemorySnapshot) {
 		if snapshot.Cgroup.CurrentBytes != nil {
 			learn("cgroup.current_bytes")
 		}
-		if snapshot.Cgroup.LimitBytes != nil {
+		if snapshot.Cgroup.LimitBytes != nil || snapshot.Cgroup.LimitUnlimited {
 			learn("cgroup.limit_bytes")
 		}
 		if snapshot.Cgroup.Events != nil {
