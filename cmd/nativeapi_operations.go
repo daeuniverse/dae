@@ -19,6 +19,8 @@ type nativeAPIOperations struct {
 	store      *nativeapi.OperationStore
 	manager    *reloadManager
 	supervisor *runtimeSupervisor
+	events     *nativeAPIProvider
+	probes     *probeGate
 }
 
 func newNativeAPIOperations(manager *reloadManager, supervisor *runtimeSupervisor) *nativeAPIOperations {
@@ -26,6 +28,7 @@ func newNativeAPIOperations(manager *reloadManager, supervisor *runtimeSuperviso
 		store:      nativeapi.NewOperationStore(nativeapi.OperationRetention, nativeapi.MaxOperationReplayKeys),
 		manager:    manager,
 		supervisor: supervisor,
+		probes:     newProbeGate(),
 	}
 }
 
@@ -85,44 +88,77 @@ func (o *nativeAPIOperations) GetOperation(ctx context.Context, operationID stri
 // requested it. Signal-triggered reloads carry an ID no operation owns, so
 // their notifications are ignored.
 func (o *nativeAPIOperations) FollowReload(operationID string, started bool, success bool, reloadErr error) {
-	if o == nil || o.store == nil || operationID == "" {
+	if o == nil {
 		return
 	}
 	if started {
-		o.store.Start(operationID)
+		if o.store != nil && operationID != "" {
+			o.store.Start(operationID)
+			o.events.publishOperationUpdated(operationID, "running")
+		}
 		return
 	}
-	kind, known := o.store.Kind(operationID)
-	if !known {
-		return
+	// A signal-triggered reload owns no operation but still changes the
+	// generation, so it must publish the same invalidation events.
+	kind, known := "", false
+	if o.store != nil && operationID != "" {
+		kind, known = o.store.Kind(operationID)
+		if !known {
+			return
+		}
 	}
 	if !success {
-		o.store.Fail(operationID, &nativeapi.SafeError{
-			Code:    "reload_rejected",
-			Message: "the configuration change was rejected and the previous generation keeps running",
-		})
+		if known {
+			o.store.Fail(operationID, &nativeapi.SafeError{
+				Code:    "reload_rejected",
+				Message: "the configuration change was rejected and the previous generation keeps running",
+			})
+			o.events.publishOperationUpdated(operationID, "failed")
+		}
+		o.events.publishRuntimeUpdated()
 		return
 	}
-	switch kind {
-	case nativeapi.OperationKindSuspend:
-		state := "suspended"
-		o.store.Succeed(operationID, nativeapi.RuntimeStateResult{RuntimeState: &state})
-	case nativeapi.OperationKindResume:
-		state := "running"
-		o.store.Succeed(operationID, nativeapi.RuntimeStateResult{RuntimeState: &state})
-	default:
-		var activeGenerationID *string
-		var datapathGenerationID *string
-		if active := o.supervisor.activeSnapshot(); active != nil {
-			id := active.id
-			activeGenerationID = &id
-			if datapath := active.controlPlane.DatapathGenerationID(); datapath != "" {
-				datapathGenerationID = &datapath
+	if known {
+		switch kind {
+		case nativeapi.OperationKindSuspend:
+			state := "suspended"
+			o.store.Succeed(operationID, nativeapi.RuntimeStateResult{RuntimeState: &state})
+		case nativeapi.OperationKindResume:
+			state := "running"
+			o.store.Succeed(operationID, nativeapi.RuntimeStateResult{RuntimeState: &state})
+		default:
+			var activeGenerationID *string
+			var datapathGenerationID *string
+			if active := o.supervisor.activeSnapshot(); active != nil {
+				id := active.id
+				activeGenerationID = &id
+				if datapath := active.controlPlane.DatapathGenerationID(); datapath != "" {
+					datapathGenerationID = &datapath
+				}
 			}
+			o.store.Succeed(operationID, nativeapi.ReloadResult{
+				ActiveGenerationID:   activeGenerationID,
+				DatapathGenerationID: datapathGenerationID,
+			})
 		}
-		o.store.Succeed(operationID, nativeapi.ReloadResult{
-			ActiveGenerationID:   activeGenerationID,
-			DatapathGenerationID: datapathGenerationID,
-		})
+		o.events.publishOperationUpdated(operationID, "succeeded")
+	}
+	o.publishGenerationEvents()
+}
+
+// publishGenerationEvents emits the invalidation events a successful reload
+// implies.
+func (o *nativeAPIOperations) publishGenerationEvents() {
+	if o == nil || o.events == nil {
+		return
+	}
+	current := ""
+	if active := o.supervisor.activeSnapshot(); active != nil {
+		current = active.id
+	}
+	o.events.publishRuntimeUpdated()
+	if current != "" && current != o.events.lastGenerationID {
+		o.events.publishGenerationChanged(o.events.lastGenerationID, current)
+		o.events.lastGenerationID = current
 	}
 }

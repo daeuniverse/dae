@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/config"
+	"github.com/sirupsen/logrus"
 )
 
 // nativeAPIConfig maps dae configuration onto the native listener. The engine
@@ -38,6 +40,19 @@ func nativeAPIConfig(conf *config.Config) nativeapi.Config {
 type nativeAPIProvider struct {
 	supervisor *runtimeSupervisor
 	status     *runtimeStatus
+	log        *logrus.Logger
+	geoDirs    []string
+
+	geoMu    sync.Mutex
+	geoCache map[string]geoAssetCache
+
+	dnsQueryMu     sync.Mutex
+	dnsQueryWindow time.Time
+	dnsQueryCount  int
+
+	logHub           *frameHub
+	eventHub         *frameHub
+	lastGenerationID string
 }
 
 func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) (nativeapi.Runtime, error) {
@@ -90,11 +105,16 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 			Kind:       "ebpf",
 			State:      datapathState,
 			Visibility: "partial",
-			Ebpf:       nil,
+			Ebpf:       nativeAPIEbpfSummary(active.controlPlane.SnapshotDatapathSummary().Ebpf),
 		},
 		Traffic: nativeapi.TrafficSummary{
-			Scope:        "visible",
-			ObservedBy:   "userspace",
+			Scope: "visible",
+			// The byte totals mix two observation planes: the userspace relay
+			// (payload bytes) and the eBPF pass-through counters (link bytes for
+			// direct flows that never reach userspace). The contract's
+			// traffic.observed_by enum is userspace/ebpf/mixed, so a mixed total
+			// must say so.
+			ObservedBy:   "mixed",
 			CounterSince: formatTime(active.activatedAt),
 			SampledAt:    formatTime(stats.UpdatedAt),
 			Connections: nativeapi.Connections{
@@ -173,5 +193,8 @@ var (
 	_ nativeapi.GroupProvider          = (*nativeAPIProvider)(nil)
 	_ nativeapi.NodeProvider           = (*nativeAPIProvider)(nil)
 	_ nativeapi.TrafficHistoryProvider = (*nativeAPIProvider)(nil)
+	_ nativeapi.OutboundProvider       = (*nativeAPIProvider)(nil)
+	_ nativeapi.MemoryProvider         = (*nativeAPIProvider)(nil)
+	_ nativeapi.DatapathProvider       = (*nativeAPIProvider)(nil)
 	_ nativeapi.OperationProvider      = (*nativeAPIOperations)(nil)
 )

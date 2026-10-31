@@ -484,8 +484,22 @@ func (r *Runner) Run() (err error) {
 
 	var apiServer *nativeapi.Server
 	if conf.Api.Enabled {
-		provider := &nativeAPIProvider{supervisor: runtimeSupervisor, status: rtStatus}
+		logHub := newFrameHub(rtStatus.snapshot().InstanceID, "logs", nativeapi.LogMaxBufferedRecords, nativeapi.LogRetentionSeconds*time.Second, 0)
+		eventHub := newFrameHub(rtStatus.snapshot().InstanceID, "events", nativeapi.EventMaxBufferedEvents, nativeapi.EventRetentionSeconds*time.Second, nativeapi.EventMaxClients)
+		log.AddHook(&logHubHook{hub: logHub})
+		provider := &nativeAPIProvider{
+			supervisor: runtimeSupervisor,
+			status:     rtStatus,
+			log:        log,
+			geoDirs:    externGeoDataDirs,
+			logHub:     logHub,
+			eventHub:   eventHub,
+		}
+		if active := runtimeSupervisor.activeSnapshot(); active != nil {
+			provider.lastGenerationID = active.id
+		}
 		operations := newNativeAPIOperations(reloadManager, runtimeSupervisor)
+		operations.events = provider
 		server, err := nativeapi.NewServer(nativeAPIConfig(conf), provider, log)
 		if err != nil {
 			_ = listener.Close()
@@ -496,7 +510,19 @@ func (r *Runner) Run() (err error) {
 		server.SetGroupProvider(provider)
 		server.SetNodeProvider(provider)
 		server.SetTrafficHistoryProvider(provider)
+		server.SetOutboundProvider(provider)
+		server.SetMemoryProvider(provider)
+		server.SetDatapathProvider(provider)
+		server.SetRulesProvider(provider)
+		server.SetProviderProvider(provider)
+		server.SetGeoDataProvider(provider)
+		server.SetDnsProvider(provider)
+		server.SetConnectionProvider(provider)
+		server.SetFlowProvider(provider)
+		server.SetLogProvider(provider)
+		server.SetEventProvider(provider)
 		server.SetOperationProvider(operations)
+		server.SetProbeProvider(operations)
 		reloadManager.setReloadObserver(operations.FollowReload)
 		if err := server.Start(); err != nil {
 			_ = listener.Close()
