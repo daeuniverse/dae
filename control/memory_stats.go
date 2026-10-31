@@ -630,11 +630,16 @@ func (s *memoryStats) metricNames() []string {
 // the history interval until the plane context is cancelled. The immediate
 // sample makes capabilities advertise the readable metrics without waiting
 // for the first tick.
+//
+// CPU usage rides the same ticker: it is a delta between two readings, so it
+// needs a steady interval of its own, and one second is what the contract calls
+// the server's sampling interval. The first tick only establishes the baseline.
 func (c *ControlPlane) startMemorySampler() {
 	if c == nil || c.memoryStats == nil {
 		return
 	}
 	c.memoryStats.sample()
+	c.processCPU.sample(c.memoryStats.clock())
 	go func() {
 		ticker := time.NewTicker(memorySampleInterval)
 		defer ticker.Stop()
@@ -643,7 +648,9 @@ func (c *ControlPlane) startMemorySampler() {
 			case <-c.ctx.Done():
 				return
 			case <-ticker.C:
+				now := c.memoryStats.clock()
 				c.memoryStats.sample()
+				c.processCPU.sample(now)
 			}
 		}
 	}()

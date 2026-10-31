@@ -51,6 +51,7 @@ type ControlPlane struct {
 
 	runtimeStats *runtimeStats
 	memoryStats  *memoryStats
+	processCPU   *processCPUStats
 
 	core       *controlPlaneCore
 	deferFuncs []func() error
@@ -865,6 +866,7 @@ func NewControlPlaneWithContextOptions(
 		directDialer:  directDialer,
 		runtimeStats:  newRuntimeStats(),
 		memoryStats:   newMemoryStats(),
+		processCPU:    newProcessCPUStats(),
 		core:          core,
 		deferFuncs:    planeDeferFuncs,
 		listenIp:      "0.0.0.0",

@@ -152,7 +152,9 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 			},
 		},
 		Process: nativeapi.Process{
-			CPUPercent: nil,
+			// A percentage of one CPU over the latest sampling interval; nil
+			// until the sampler has two readings.
+			CPUPercent: active.controlPlane.ProcessCPUPercent(),
 		},
 	}
 	if detail == "full" {
