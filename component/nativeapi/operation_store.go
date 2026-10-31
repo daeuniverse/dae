@@ -27,6 +27,7 @@ const (
 	OperationKindReload  = "reload"
 	OperationKindSuspend = "suspend"
 	OperationKindResume  = "resume"
+	OperationKindProbe   = "probe"
 )
 
 // OperationStore is the bounded in-memory operation record. Unfinished

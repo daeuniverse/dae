@@ -5,7 +5,10 @@
 
 package nativeapi
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 const (
 	APIName    = "daeuniverse/native"
@@ -358,6 +361,197 @@ type RuntimeStateResult struct {
 	RuntimeState *string `json:"runtime_state"`
 }
 
+// ProviderList is one page of provider metadata.
+type ProviderList struct {
+	Providers  []Provider `json:"providers"`
+	NextCursor *string    `json:"next_cursor"`
+}
+
+type Provider struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Kind        string           `json:"kind"`
+	URLRedacted *string          `json:"url_redacted"`
+	NodeCount   uint64           `json:"node_count"`
+	UpdatedAt   *string          `json:"updated_at"`
+	ExpiresAt   *string          `json:"expires_at"`
+	Traffic     *ProviderTraffic `json:"traffic"`
+	Status      string           `json:"status"`
+	LastError   *SafeError       `json:"last_error"`
+	Download    *GeoDataDownload `json:"download,omitempty"`
+}
+
+type ProviderTraffic struct {
+	UploadBytes   *string `json:"upload_bytes"`
+	DownloadBytes *string `json:"download_bytes"`
+	TotalBytes    *string `json:"total_bytes"`
+}
+
+type GeoDataDownload struct {
+	Route   string  `json:"route"`
+	GroupID *string `json:"group_id"`
+}
+
+// GeoData is the loaded geodata asset report.
+type GeoData struct {
+	ObservedAt string     `json:"observed_at"`
+	Assets     []GeoAsset `json:"assets"`
+}
+
+type GeoAsset struct {
+	Kind           string  `json:"kind"`
+	SHA256         string  `json:"sha256"`
+	SizeBytes      string  `json:"size_bytes"`
+	ModifiedAt     *string `json:"modified_at"`
+	SourceRedacted *string `json:"source_redacted"`
+}
+
+// RuleList is the complete routing dictionary of one generation.
+type RuleList struct {
+	GenerationID string        `json:"generation_id"`
+	Rules        []RoutingRule `json:"rules"`
+	Fallback     RuleFallback  `json:"fallback"`
+}
+
+type RoutingRule struct {
+	RuleID     string      `json:"rule_id"`
+	Index      uint64      `json:"index"`
+	Expression string      `json:"expression"`
+	Outbound   string      `json:"outbound"`
+	Must       bool        `json:"must"`
+	Source     *RuleSource `json:"source"`
+	Kind       string      `json:"kind"`
+}
+
+type RuleSource struct {
+	File     string  `json:"file"`
+	SourceID string  `json:"source_id"`
+	Line     uint64  `json:"line"`
+	Column   *uint64 `json:"column"`
+}
+
+type RuleFallback struct {
+	Outbound string      `json:"outbound"`
+	Source   *RuleSource `json:"source"`
+}
+
+// RuntimeOutbounds is the per-outbound counter projection.
+type RuntimeOutbounds struct {
+	ObservedAt   string             `json:"observed_at"`
+	CounterSince string             `json:"counter_since"`
+	Outbounds    []OutboundCounters `json:"outbounds"`
+}
+
+// OutboundCounters is one outbound's cumulative counters. Byte totals are
+// decimal strings because they are UInt64 in the contract; active connections
+// is a SafeUInt JSON number.
+type OutboundCounters struct {
+	Name              string `json:"name"`
+	Kind              string `json:"kind"`
+	ActiveConnections uint64 `json:"active_connections"`
+	TotalConnections  string `json:"total_connections"`
+	UploadBytes       string `json:"upload_bytes"`
+	DownloadBytes     string `json:"download_bytes"`
+	Errors            string `json:"errors"`
+}
+
+// RuntimeMemory is the process, cgroup and kernel memory snapshot.
+type RuntimeMemory struct {
+	ObservedAt string         `json:"observed_at"`
+	Process    *MemoryProcess `json:"process"`
+	Cgroup     *MemoryCgroup  `json:"cgroup"`
+	Kernel     *MemoryKernel  `json:"kernel"`
+}
+
+type MemoryProcess struct {
+	RSSBytes *string `json:"rss_bytes"`
+}
+
+type MemoryCgroup struct {
+	Scope        string              `json:"scope"`
+	CurrentBytes *string             `json:"current_bytes"`
+	LimitBytes   *string             `json:"limit_bytes"`
+	Events       *MemoryCgroupEvents `json:"events"`
+}
+
+type MemoryCgroupEvents struct {
+	High    *string `json:"high"`
+	OOM     *string `json:"oom"`
+	OOMKill *string `json:"oom_kill"`
+}
+
+type MemoryKernel struct {
+	EbpfBytes *string `json:"ebpf_bytes"`
+	SampledAt *string `json:"sampled_at"`
+}
+
+type MemoryHistory struct {
+	ObservedAt          string                `json:"observed_at"`
+	WindowSeconds       int                   `json:"window_seconds"`
+	SampledEverySeconds float64               `json:"sampled_every_seconds"`
+	Samples             []MemoryHistorySample `json:"samples"`
+}
+
+type MemoryHistorySample struct {
+	SampledAt          string  `json:"sampled_at"`
+	RSSBytes           *string `json:"rss_bytes"`
+	CgroupCurrentBytes *string `json:"cgroup_current_bytes"`
+	KernelEbpfBytes    *string `json:"kernel_ebpf_bytes"`
+}
+
+// Datapath is the detailed datapath view.
+type Datapath struct {
+	ObservedAt string      `json:"observed_at"`
+	Kind       string      `json:"kind"`
+	State      string      `json:"state"`
+	Visibility string      `json:"visibility"`
+	Ebpf       *EbpfDetail `json:"ebpf"`
+	Errors     []SafeError `json:"errors"`
+}
+
+type EbpfSummary struct {
+	Backend   string             `json:"backend"`
+	Programs  string             `json:"programs"`
+	Hooks     string             `json:"hooks"`
+	Routing   EbpfRoutingSummary `json:"routing"`
+	Health    string             `json:"health"`
+	LastError *string            `json:"last_error"`
+	CheckedAt string             `json:"checked_at"`
+}
+
+type EbpfRoutingSummary struct {
+	State        string  `json:"state"`
+	GenerationID *string `json:"generation_id"`
+	Epoch        *string `json:"epoch"`
+}
+
+type EbpfDetail struct {
+	EbpfSummary
+	Attachments []EbpfAttachment `json:"attachments,omitempty"`
+	Maps        *EbpfMaps        `json:"maps"`
+}
+
+type EbpfAttachment struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Interface string `json:"interface,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Cgroup    string `json:"cgroup,omitempty"`
+	Hook      string `json:"hook,omitempty"`
+	State     string `json:"state"`
+}
+
+type EbpfMaps struct {
+	State     string        `json:"state"`
+	ConnState *MapOccupancy `json:"conn_state"`
+}
+
+type MapOccupancy struct {
+	Occupancy      *uint64 `json:"occupancy"`
+	Capacity       uint64  `json:"capacity"`
+	OccupancyKnown bool    `json:"occupancy_known"`
+}
+
 type TrafficHistory struct {
 	ObservedAt          string                 `json:"observed_at"`
 	WindowSeconds       int                    `json:"window_seconds"`
@@ -370,4 +564,342 @@ type TrafficHistorySample struct {
 	UploadBytesPerSecond   *string `json:"upload_bytes_per_second"`
 	DownloadBytesPerSecond *string `json:"download_bytes_per_second"`
 	Connections            *uint64 `json:"connections"`
+}
+
+// DNS cache views.
+type DnsCacheCoverage struct {
+	Positive   bool `json:"positive"`
+	Negative   bool `json:"negative"`
+	Persistent bool `json:"persistent"`
+}
+
+type DnsCacheEntry struct {
+	EntryID    string      `json:"entry_id"`
+	Domain     string      `json:"domain"`
+	Type       string      `json:"type"`
+	Class      string      `json:"class"`
+	Status     string      `json:"status"`
+	Answers    []DnsAnswer `json:"answers,omitempty"`
+	ExpiresAt  string      `json:"expires_at"`
+	StaleUntil *string     `json:"stale_until"`
+}
+
+type DnsCacheUsage struct {
+	Entries       string  `json:"entries"`
+	EntryCapacity *string `json:"entry_capacity"`
+}
+
+type DnsCacheList struct {
+	ObservedAt string           `json:"observed_at"`
+	Coverage   DnsCacheCoverage `json:"coverage"`
+	Entries    []DnsCacheEntry  `json:"entries"`
+	Total      uint64           `json:"total"`
+	NextCursor *string          `json:"next_cursor"`
+	Usage      *DnsCacheUsage   `json:"usage,omitempty"`
+}
+
+type DeleteCount struct {
+	Deleted uint64 `json:"deleted"`
+}
+
+type DeleteMatchingCount struct {
+	Matched uint64 `json:"matched"`
+	Deleted uint64 `json:"deleted"`
+}
+
+// DNS log views.
+type DnsQuestion struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type DnsAnswer struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Class string `json:"class"`
+	TTL   uint32 `json:"ttl"`
+	Data  string `json:"data"`
+}
+
+type DnsRoute struct {
+	Source string  `json:"source"`
+	Rule   *string `json:"rule"`
+}
+
+type DnsLogRecord struct {
+	ID         string      `json:"id"`
+	ObservedAt string      `json:"observed_at"`
+	Src        *string     `json:"src"`
+	Question   DnsQuestion `json:"question"`
+	Status     string      `json:"status"`
+	Cached     bool        `json:"cached"`
+	Upstream   *string     `json:"upstream"`
+	Route      DnsRoute    `json:"route"`
+	ElapsedMs  uint64      `json:"elapsed_ms"`
+	Answers    []DnsAnswer `json:"answers"`
+}
+
+type DnsLogList struct {
+	ObservedAt string         `json:"observed_at"`
+	Total      uint64         `json:"total"`
+	NextCursor *string        `json:"next_cursor"`
+	Records    []DnsLogRecord `json:"records"`
+}
+
+// DNS rules views.
+type DnsRoutingRule struct {
+	RuleID     string      `json:"rule_id"`
+	Index      uint64      `json:"index"`
+	Expression string      `json:"expression"`
+	Action     string      `json:"action"`
+	Upstream   *string     `json:"upstream"`
+	Source     *RuleSource `json:"source"`
+	Kind       string      `json:"kind"`
+}
+
+type DnsRuleList struct {
+	GenerationID string           `json:"generation_id"`
+	Request      []DnsRoutingRule `json:"request"`
+	Response     []DnsRoutingRule `json:"response"`
+}
+
+// DNS query views.
+type DnsQueryRequest struct {
+	Domain    string   `json:"domain"`
+	Type      []string `json:"type"`
+	Upstream  string   `json:"upstream"`
+	CacheMode string   `json:"cache_mode"`
+}
+
+type DnsQueryResult struct {
+	Type         string      `json:"type"`
+	Cached       bool        `json:"cached"`
+	CacheEntryID *string     `json:"cache_entry_id"`
+	Upstream     *string     `json:"upstream"`
+	Route        DnsRoute    `json:"route"`
+	Status       string      `json:"status"`
+	ElapsedMs    uint64      `json:"elapsed_ms"`
+	Question     DnsQuestion `json:"question"`
+	Answers      []DnsAnswer `json:"answers,omitempty"`
+}
+
+type DnsQueryResponse struct {
+	Domain    string           `json:"domain"`
+	CacheMode string           `json:"cache_mode"`
+	QueryTime string           `json:"query_time"`
+	Results   []DnsQueryResult `json:"results"`
+}
+
+// Connection views.
+type Connection struct {
+	ID                     string   `json:"id"`
+	FlowID                 *string  `json:"flow_id"`
+	Pname                  *string  `json:"pname"`
+	State                  string   `json:"state"`
+	Src                    string   `json:"src,omitempty"`
+	Dst                    string   `json:"dst,omitempty"`
+	Domain                 *string  `json:"domain,omitempty"`
+	Outbound               *string  `json:"outbound"`
+	Chain                  []string `json:"chain"`
+	ChainSource            string   `json:"chain_source"`
+	RuleID                 *string  `json:"rule_id"`
+	RuleExpression         *string  `json:"rule_expression"`
+	RuleSource             string   `json:"rule_source"`
+	Ingress                *string  `json:"ingress"`
+	DomainSource           *string  `json:"domain_source"`
+	StartedAt              *string  `json:"started_at"`
+	ObservedBy             string   `json:"observed_by"`
+	UploadBytes            *string  `json:"upload_bytes"`
+	DownloadBytes          *string  `json:"download_bytes"`
+	UploadBytesPerSecond   *string  `json:"upload_bytes_per_second"`
+	DownloadBytesPerSecond *string  `json:"download_bytes_per_second"`
+}
+
+type ConnectionList struct {
+	ObservedAt string       `json:"observed_at"`
+	InstanceID string       `json:"instance_id"`
+	Visibility string       `json:"visibility"`
+	Truncated  bool         `json:"truncated"`
+	TCP        []Connection `json:"tcp"`
+	UDP        []Connection `json:"udp"`
+	TotalTCP   uint64       `json:"total_tcp"`
+	TotalUDP   uint64       `json:"total_udp"`
+}
+
+type BulkCloseResult struct {
+	Closed  uint64 `json:"closed"`
+	Skipped uint64 `json:"skipped"`
+}
+
+// Flow views.
+type FlowInput struct {
+	Src           *string  `json:"src"`
+	Dst           *string  `json:"dst"`
+	Domain        *string  `json:"domain"`
+	DomainSource  *string  `json:"domain_source"`
+	Pid           *uint64  `json:"pid"`
+	ProcessPath   *string  `json:"process_path"`
+	SrcMAC        *string  `json:"src_mac"`
+	Ingress       *string  `json:"ingress"`
+	DomainRuleIDs []string `json:"domain_rule_ids"`
+	Dscp          *uint64  `json:"dscp"`
+	Mark          *uint64  `json:"mark"`
+}
+
+type FlowTrace struct {
+	Status  string   `json:"status"`
+	Missing []string `json:"missing"`
+	Steps   []any    `json:"steps"`
+}
+
+type FlowSummary struct {
+	ID               string     `json:"id"`
+	InstanceID       string     `json:"instance_id"`
+	Revision         uint64     `json:"revision"`
+	Network          string     `json:"network"`
+	State            string     `json:"state"`
+	Pname            *string    `json:"pname"`
+	ConnectionID     *string    `json:"connection_id"`
+	Outbound         *string    `json:"outbound"`
+	Chain            []string   `json:"chain"`
+	ChainSource      string     `json:"chain_source"`
+	RuleID           *string    `json:"rule_id"`
+	RuleGenerationID *string    `json:"rule_generation_id"`
+	RuleExpression   *string    `json:"rule_expression"`
+	RuleSource       string     `json:"rule_source"`
+	Ingress          *string    `json:"ingress"`
+	DomainSource     *string    `json:"domain_source"`
+	ObservedBy       string     `json:"observed_by"`
+	StartedAt        *string    `json:"started_at"`
+	EndedAt          *string    `json:"ended_at"`
+	TraceStatus      string     `json:"trace_status"`
+	Input            *FlowInput `json:"input,omitempty"`
+}
+
+type FlowDetail struct {
+	FlowSummary
+	Input *FlowInput `json:"input"`
+	Trace *FlowTrace `json:"trace"`
+}
+
+type FlowCoverage struct {
+	UserspaceTCP string `json:"userspace_tcp"`
+	UserspaceUDP string `json:"userspace_udp"`
+	KernelDirect string `json:"kernel_direct"`
+	KernelBlock  string `json:"kernel_block"`
+	DNSIntercept string `json:"dns_intercept"`
+	KernelBypass string `json:"kernel_bypass"`
+}
+
+type FlowList struct {
+	InstanceID     string        `json:"instance_id"`
+	ObservedAt     string        `json:"observed_at"`
+	Coverage       FlowCoverage  `json:"coverage"`
+	DroppedRecords *string       `json:"dropped_records"`
+	Flows          []FlowSummary `json:"flows"`
+	NextCursor     *string       `json:"next_cursor"`
+}
+
+// LogRecord is one sanitized engine log record.
+type LogRecord struct {
+	TS      string         `json:"ts"`
+	Level   string         `json:"level"`
+	Target  *string        `json:"target"`
+	Message string         `json:"message"`
+	Fields  map[string]any `json:"fields"`
+}
+
+// StreamReadyEvent is the first frame of every SSE stream.
+type StreamReadyEvent struct {
+	InstanceID string `json:"instance_id"`
+	ObservedAt string `json:"observed_at"`
+}
+
+// SSEFrame is one server-sent event frame.
+type SSEFrame struct {
+	ID    string
+	Event string
+	Data  any
+}
+
+// SSEStream is an opened resumable event stream.
+type SSEStream struct {
+	Ready   SSEFrame
+	Replay  []SSEFrame
+	Updates <-chan SSEFrame
+	Cancel  func()
+}
+
+// Probe views.
+type ProbeTarget struct {
+	Type    string `json:"type"`
+	NodeID  string `json:"node_id,omitempty"`
+	GroupID string `json:"group_id,omitempty"`
+}
+
+type ProbeMembers struct {
+	Values []string
+}
+
+func (m *ProbeMembers) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		m.Values = []string{single}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(data, &list); err != nil {
+		return err
+	}
+	m.Values = list
+	return nil
+}
+
+func (m ProbeMembers) MarshalJSON() ([]byte, error) {
+	if len(m.Values) == 1 && (m.Values[0] == "direct" || m.Values[0] == "leaves") {
+		return json.Marshal(m.Values[0])
+	}
+	return json.Marshal(m.Values)
+}
+
+type ProbeRequest struct {
+	Target    ProbeTarget   `json:"target"`
+	Kind      string        `json:"kind"`
+	Transport []string      `json:"transport"`
+	IPVersion string        `json:"ip_version"`
+	Members   *ProbeMembers `json:"members,omitempty"`
+	Warmth    string        `json:"warmth"`
+}
+
+type ProbeResultItem struct {
+	MemberID           string   `json:"member_id"`
+	ResolvedLeafNodeID *string  `json:"resolved_leaf_node_id"`
+	Kind               string   `json:"kind"`
+	Purpose            string   `json:"purpose"`
+	Transport          string   `json:"transport"`
+	IPVersion          string   `json:"ip_version"`
+	Warmth             string   `json:"warmth"`
+	State              string   `json:"state"`
+	LatencyMs          *float64 `json:"latency_ms"`
+	HealthUpdated      bool     `json:"health_updated"`
+	Error              *string  `json:"error"`
+	ObservedAt         string   `json:"observed_at"`
+}
+
+type TransportBooleanMap struct {
+	TCP bool `json:"tcp"`
+	UDP bool `json:"udp"`
+}
+
+type TransportSelectionMap struct {
+	TCP *string `json:"tcp"`
+	UDP *string `json:"udp"`
+}
+
+type ProbeResult struct {
+	Target           ProbeTarget           `json:"target"`
+	SelectionChanged TransportBooleanMap   `json:"selection_changed"`
+	SelectionBefore  TransportSelectionMap `json:"selection_before"`
+	SelectionAfter   TransportSelectionMap `json:"selection_after"`
+	Results          []ProbeResultItem     `json:"results"`
 }

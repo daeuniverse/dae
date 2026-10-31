@@ -48,10 +48,22 @@ type Server struct {
 	provider RuntimeProvider
 	log      *logrus.Logger
 
-	groups     GroupProvider
-	operations OperationProvider
-	traffic    TrafficHistoryProvider
-	nodes      NodeProvider
+	groups      GroupProvider
+	operations  OperationProvider
+	traffic     TrafficHistoryProvider
+	nodes       NodeProvider
+	outbounds   OutboundProvider
+	memory      MemoryProvider
+	datapath    DatapathProvider
+	rules       RulesProvider
+	providers   ProviderProvider
+	geodata     GeoDataProvider
+	dns         DnsProvider
+	connections ConnectionProvider
+	flows       FlowProvider
+	logs        LogProvider
+	events      EventProvider
+	probes      ProbeProvider
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -164,6 +176,90 @@ func (s *Server) SetNodeProvider(provider NodeProvider) {
 		return
 	}
 	s.nodes = provider
+}
+
+func (s *Server) SetOutboundProvider(provider OutboundProvider) {
+	if s == nil {
+		return
+	}
+	s.outbounds = provider
+}
+
+func (s *Server) SetMemoryProvider(provider MemoryProvider) {
+	if s == nil {
+		return
+	}
+	s.memory = provider
+}
+
+func (s *Server) SetDatapathProvider(provider DatapathProvider) {
+	if s == nil {
+		return
+	}
+	s.datapath = provider
+}
+
+func (s *Server) SetRulesProvider(provider RulesProvider) {
+	if s == nil {
+		return
+	}
+	s.rules = provider
+}
+
+func (s *Server) SetProviderProvider(provider ProviderProvider) {
+	if s == nil {
+		return
+	}
+	s.providers = provider
+}
+
+func (s *Server) SetGeoDataProvider(provider GeoDataProvider) {
+	if s == nil {
+		return
+	}
+	s.geodata = provider
+}
+
+func (s *Server) SetDnsProvider(provider DnsProvider) {
+	if s == nil {
+		return
+	}
+	s.dns = provider
+}
+
+func (s *Server) SetConnectionProvider(provider ConnectionProvider) {
+	if s == nil {
+		return
+	}
+	s.connections = provider
+}
+
+func (s *Server) SetFlowProvider(provider FlowProvider) {
+	if s == nil {
+		return
+	}
+	s.flows = provider
+}
+
+func (s *Server) SetLogProvider(provider LogProvider) {
+	if s == nil {
+		return
+	}
+	s.logs = provider
+}
+
+func (s *Server) SetEventProvider(provider EventProvider) {
+	if s == nil {
+		return
+	}
+	s.events = provider
+}
+
+func (s *Server) SetProbeProvider(provider ProbeProvider) {
+	if s == nil {
+		return
+	}
+	s.probes = provider
 }
 
 func portFromString(value string) (int, error) {
@@ -337,6 +433,40 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRuntime(w, r)
 	case "/api/v1/runtime/traffic/history":
 		s.handleTrafficHistory(w, r)
+	case "/api/v1/runtime/outbounds":
+		s.handleRuntimeOutbounds(w, r)
+	case "/api/v1/runtime/memory":
+		s.handleRuntimeMemory(w, r)
+	case "/api/v1/runtime/memory/history":
+		s.handleMemoryHistory(w, r)
+	case "/api/v1/datapath":
+		s.handleDatapath(w, r)
+	case "/api/v1/rules":
+		s.handleRules(w, r)
+	case "/api/v1/providers":
+		s.handleProviders(w, r)
+	case "/api/v1/geodata":
+		s.handleGeoData(w, r)
+	case "/api/v1/dns/cache":
+		s.handleDnsCache(w, r)
+	case "/api/v1/dns/cache/flush":
+		s.handleDnsCacheFlush(w, r)
+	case "/api/v1/dns/log":
+		s.handleDnsLog(w, r)
+	case "/api/v1/dns/rules":
+		s.handleDnsRules(w, r)
+	case "/api/v1/dns/query":
+		s.handleDnsQuery(w, r)
+	case "/api/v1/connections":
+		s.handleConnections(w, r)
+	case "/api/v1/flows":
+		s.handleFlows(w, r)
+	case "/api/v1/logs":
+		s.handleLogs(w, r)
+	case "/api/v1/events":
+		s.handleEvents(w, r)
+	case "/api/v1/probes":
+		s.handleProbes(w, r)
 	case "/api/v1/groups":
 		s.handleGroups(w, r)
 	case "/api/v1/nodes":
@@ -351,6 +481,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleOperation(w, r)
 		case strings.HasPrefix(r.URL.Path, "/api/v1/nodes/"):
 			s.handleNode(w, r)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/providers/"):
+			s.handleProvider(w, r)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/dns/cache/"):
+			s.handleDnsCacheEntry(w, r)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/connections/"):
+			s.handleConnection(w, r)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/flows/"):
+			s.handleFlow(w, r)
 		default:
 			writeError(w, requestID, http.StatusNotFound, codeResourceNotFound, "resource not found")
 		}
@@ -375,20 +513,9 @@ func writeMethodNotAllowed(w http.ResponseWriter, requestID, allow string) {
 // unavailablePrefixes are contract resources this engine does not implement.
 var unavailablePrefixes = []string{
 	"/api/v1/config",
-	"/api/v1/providers",
-	"/api/v1/geodata",
-	"/api/v1/rules",
-	"/api/v1/dns",
-	"/api/v1/flows",
-	"/api/v1/connections",
-	"/api/v1/probes",
-	"/api/v1/events",
-	"/api/v1/logs",
-	"/api/v1/datapath",
-	"/api/v1/runtime/outbounds",
-	"/api/v1/runtime/memory",
 	// Known contract resources with no implementation plan: answer
 	// capability_not_supported instead of the generic resource_not_found.
+	"/api/v1/geodata/update",
 	"/api/v1/runtime/settings",
 	"/api/v1/routing/trace",
 	"/api/v1/auth",

@@ -137,6 +137,169 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resources["traffic_history"] = map[string]any{"available": false}
 	}
+	if s.outbounds != nil {
+		resources["runtime_outbounds"] = map[string]any{"available": true}
+	} else {
+		resources["runtime_outbounds"] = map[string]any{"available": false}
+	}
+	if s.memory != nil {
+		metrics := s.memory.MemoryMetrics(r.Context())
+		if metrics == nil {
+			metrics = []string{}
+		}
+		resources["runtime_memory"] = map[string]any{
+			"available": true,
+			"metrics":   metrics,
+		}
+		resources["memory_history"] = map[string]any{
+			"available":          true,
+			"max_window_seconds": MaxMemoryHistoryWindowSeconds,
+			"max_points":         MaxMemoryHistoryPoints,
+		}
+	} else {
+		resources["runtime_memory"] = map[string]any{"available": false}
+		resources["memory_history"] = map[string]any{"available": false}
+	}
+	if s.providers != nil {
+		resources["providers"] = map[string]any{
+			"available":     true,
+			"can_refresh":   false,
+			"can_manage":    false,
+			"max_page_size": NodeListMaxLimit,
+		}
+	} else {
+		resources["providers"] = map[string]any{"available": false}
+	}
+	if s.dns != nil {
+		resources["dns_cache"] = map[string]any{
+			"available":    true,
+			"read":         true,
+			"delete_entry": true,
+			"delete_name":  true,
+			"flush":        true,
+			"entry_kinds":  []string{"positive", "negative"},
+		}
+		resources["dns_log"] = map[string]any{
+			"available":     true,
+			"max_records":   DnsLogMaxRecords,
+			"max_page_size": DnsLogMaxPageSize,
+		}
+		resources["dns_rules"] = map[string]any{
+			"available": true,
+			"max_rules": DnsRulesMaxCapacity,
+		}
+		resources["dns_query"] = map[string]any{
+			"available": true,
+			"record_types": []string{
+				"A", "AAAA", "CNAME", "MX", "NS", "PTR", "SOA", "SRV", "TXT", "HTTPS", "SVCB", "CAA",
+			},
+			"limits": map[string]any{
+				"max_types_per_request":             DnsQueryMaxTypes,
+				"query_timeout_ms":                  DnsQueryTimeoutMs,
+				"max_response_bytes":                65535,
+				"per_principal_requests_per_minute": 60,
+				"global_requests_per_minute":        600,
+			},
+		}
+	} else {
+		resources["dns_cache"] = map[string]any{"available": false}
+		resources["dns_log"] = map[string]any{"available": false}
+		resources["dns_rules"] = map[string]any{"available": false}
+		resources["dns_query"] = map[string]any{"available": false}
+	}
+	if s.geodata != nil {
+		resources["geodata"] = map[string]any{
+			"available":  true,
+			"can_update": false,
+			"assets":     []string{"geoip", "geosite"},
+		}
+	} else {
+		resources["geodata"] = map[string]any{"available": false}
+	}
+	if s.connections != nil {
+		resources["connections"] = map[string]any{
+			"available":      true,
+			"can_close":      true,
+			"max_bulk_close": NodeListMaxLimit,
+		}
+	} else {
+		resources["connections"] = map[string]any{"available": false}
+	}
+	if s.flows != nil {
+		resources["flows"] = map[string]any{
+			"available":            true,
+			"recording":            "on",
+			"scopes":               []string{"userspace_tcp", "userspace_udp"},
+			"max_flows":            2048,
+			"max_steps_per_flow":   1,
+			"retention_seconds":    900,
+			"snapshot_ttl_seconds": 30,
+			"max_page_size":        NodeListMaxLimit,
+		}
+	} else {
+		resources["flows"] = map[string]any{"available": false}
+	}
+	if s.logs != nil {
+		resources["logs"] = map[string]any{
+			"available":            true,
+			"levels":               s.logs.LogLevels(),
+			"filters":              s.logs.LogFilters(),
+			"retention_seconds":    LogRetentionSeconds,
+			"max_buffered_records": LogMaxBufferedRecords,
+		}
+	} else {
+		resources["logs"] = map[string]any{"available": false}
+	}
+	if s.events != nil {
+		resources["events"] = map[string]any{
+			"available":           true,
+			"kinds":               s.events.EventKinds(),
+			"retention_seconds":   EventRetentionSeconds,
+			"max_buffered_events": EventMaxBufferedEvents,
+			"max_clients":         EventMaxClients,
+			"heartbeat_seconds":   SSEHeartbeatSeconds,
+		}
+	} else {
+		resources["events"] = map[string]any{"available": false}
+	}
+	if s.probes != nil {
+		resources["probes"] = map[string]any{
+			"available":   true,
+			"targets":     []string{"node", "group"},
+			"kinds":       []string{"tcp_connect", "http", "dns"},
+			"transports":  []string{"tcp", "udp"},
+			"ip_versions": []string{"ipv4", "ipv6", "any"},
+			"limits": map[string]any{
+				"max_members_per_job":               ProbeMaxMembersPerJob,
+				"max_results_per_job":               ProbeMaxResultsPerJob,
+				"max_active_jobs":                   ProbeMaxActiveJobs,
+				"max_queued_jobs":                   ProbeMaxQueuedJobs,
+				"max_concurrent_per_target":         ProbeMaxActiveJobs,
+				"job_timeout_ms":                    ProbeJobTimeoutMs,
+				"per_principal_requests_per_minute": ProbeRequestsPerMinute,
+				"global_requests_per_minute":        ProbeRequestsPerMinute,
+			},
+		}
+	} else {
+		resources["probes"] = map[string]any{"available": false}
+	}
+	if s.rules != nil {
+		resources["rules"] = map[string]any{
+			"available": true,
+			"max_rules": MaxRuleDictionarySize,
+		}
+	} else {
+		resources["rules"] = map[string]any{"available": false}
+	}
+	if s.datapath != nil {
+		resources["datapath"] = map[string]any{
+			"available": true,
+			"kinds":     []string{"ebpf"},
+			"details":   []string{"attachments", "maps"},
+		}
+	} else {
+		resources["datapath"] = map[string]any{"available": false}
+	}
 	if s.operations != nil {
 		resources["operations"] = map[string]any{
 			"available":         true,

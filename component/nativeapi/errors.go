@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -76,6 +77,9 @@ type APIError struct {
 	Code    string
 	Message string
 	Details any
+	// RetryAfterSeconds, when positive, is sent as the Retry-After header so
+	// callers know the floor for retrying the failed request.
+	RetryAfterSeconds int
 }
 
 func (e *APIError) Error() string {
@@ -106,8 +110,14 @@ func writeProviderError(w http.ResponseWriter, requestID string, err error) bool
 		code = codeInvalidRequest
 	}
 	if apiErr.Details != nil {
+		if apiErr.RetryAfterSeconds > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(apiErr.RetryAfterSeconds))
+		}
 		writeErrorDetails(w, requestID, status, code, apiErr.Message, apiErr.Details)
 		return true
+	}
+	if apiErr.RetryAfterSeconds > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(apiErr.RetryAfterSeconds))
 	}
 	writeError(w, requestID, status, code, apiErr.Message)
 	return true

@@ -30,6 +30,17 @@ func (r *responseRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// Flush and Unwrap keep streaming handlers working through the recorder.
+func (r *responseRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *responseRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *responseRecorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
