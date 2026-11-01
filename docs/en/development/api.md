@@ -54,10 +54,25 @@ configuration or re-downloads assets through the API.
 `DELETE /api/v1/nodes/{node_id}` answer the same code for the same reason
 (`nodes.can_manage = false`).
 
-`/api/v1/config*`, `/api/v1/runtime/settings`, `/api/v1/routing/trace` and
-`/api/v1/auth*` remain unimplemented, so a frontend that edits configuration in
-place (for example the routing and DNS editors of a lite doona build) cannot use
-those screens against dae; rules and DNS rules are read-only views here.
+`/api/v1/runtime/settings`, `/api/v1/routing/trace` and `/api/v1/auth*` remain
+unimplemented. Configuration is editable at source level only:
+`GET /api/v1/config`, `GET /api/v1/config/sources[/{source_id}]`,
+`PUT /api/v1/config/sources/{source_id}` (requires `If-Match`) and
+`POST /api/v1/config/validate`. Writes are available only when
+`api.config_write = true` and the config directory follows the managed layout
+(`config.dae` includes `config.d/*.dae` and `api.dae`); otherwise they answer
+`403 permission_denied` with `details.reason`, and nothing is written. Deliberate
+deviations from the contract:
+
+- `api.dae` is hidden. It is omitted from `sources[]`, and its id answers
+  `404 resource_not_found`, the same as an unknown id. Capabilities report it in
+  `x-dae.hidden_sources`.
+- `config.dae` is read-only (`entry_source`). A replacement may not change the
+  `api` section.
+- `GET` reads the files on disk, not an accepted snapshot.
+
+Rules and DNS rules are edited by replacing their owning source (`routing.dae`,
+`dns.dae`). The API does not offer row-level edits.
 
 ### Groups and selection
 

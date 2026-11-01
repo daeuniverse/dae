@@ -1,0 +1,709 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ */
+
+package cmd
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/nativeapi"
+	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
+)
+
+const (
+	// hiddenConfigSourceName is the file the control API must never expose.
+	hiddenConfigSourceName = "api.dae"
+	// configMaxBytes bounds one source, matching the contract default (max_bytes 61440).
+	configMaxBytes = 61440
+	// configMaxSources bounds the number of sources in one request (contract default 16).
+	configMaxSources = 16
+	// configIdempotencyLimit bounds the editor-side replay memory.
+	configIdempotencyLimit = 256
+	configRedacted         = "<redacted>"
+	hiddenSourceLabel      = "<hidden source>"
+)
+
+// apiSecretPattern matches the listener secret inside an api { } block.
+var apiSecretPattern = regexp.MustCompile(`(?s)(\bapi\s*\{[^}]*?\bsecret\s*:\s*)(?:'[^']*'|"[^"]*"|[^\s;}\n]+)`)
+
+// configOperationStarter is the subset of the operations adapter the editor
+// needs to queue a reload after a write.
+type configOperationStarter interface {
+	StartOperation(ctx context.Context, kind, idempotencyKey string) (nativeapi.OperationAccepted, error)
+}
+
+type configEditorIdem struct {
+	fingerprint string
+	accepted    nativeapi.OperationAccepted
+}
+
+// configEditor implements nativeapi.ConfigProvider over the on-disk config
+// tree. Writes go to disk first and then queue a reload, which re-reads disk.
+type configEditor struct {
+	mu         sync.Mutex
+	log        *logrus.Logger
+	mainPath   string
+	baseDir    string
+	apiAtStart config.Api
+	enabled    bool
+	operations configOperationStarter
+	busy       func() bool
+	generation func() string
+	idem       map[string]configEditorIdem
+	idemOrder  []string
+}
+
+// configSourceFile is one loaded source with its raw bytes.
+type configSourceFile struct {
+	id      string
+	path    string
+	abs     string
+	kind    string
+	raw     []byte
+	modTime time.Time
+	masked  bool
+}
+
+func newConfigEditor(cfgFile string, api config.Api, operations configOperationStarter,
+	reload *reloadManager, supervisor *runtimeSupervisor, log *logrus.Logger) (*configEditor, error) {
+	mainPath, err := filepath.Abs(cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config path: %w", err)
+	}
+	if log == nil {
+		log = logrus.New()
+	}
+	e := &configEditor{
+		log:        log,
+		mainPath:   filepath.Clean(mainPath),
+		baseDir:    filepath.Dir(mainPath),
+		apiAtStart: api,
+		enabled:    api.ConfigWrite && operations != nil,
+		operations: operations,
+		idem:       map[string]configEditorIdem{},
+	}
+	e.busy = func() bool {
+		return reload != nil && (reload.reloadActive.Load() || reload.reloadPending.Load())
+	}
+	e.generation = func() string {
+		if supervisor == nil {
+			return ""
+		}
+		if g := supervisor.activeSnapshot(); g != nil {
+			return g.id
+		}
+		return ""
+	}
+	return e, nil
+}
+
+func (e *configEditor) ConfigCapabilities() nativeapi.ConfigCapabilities {
+	e.mu.Lock()
+	all, err := e.loadSources()
+	e.mu.Unlock()
+	managed, reason := false, "layout_unmanaged"
+	if err == nil {
+		managed, reason = detectManagedLayout(e.mainPath, sourcePaths(all))
+	}
+	caps := nativeapi.ConfigCapabilities{
+		Writable:      e.enabled && managed,
+		MaxBytes:      configMaxBytes,
+		MaxSources:    configMaxSources,
+		Layout:        "unmanaged",
+		HiddenSources: []string{hiddenConfigSourceName},
+	}
+	if managed {
+		caps.Layout = "managed"
+	}
+	switch {
+	case !e.enabled:
+		caps.LayoutReason = "writes_disabled"
+	case !managed:
+		caps.LayoutReason = reason
+	}
+	return caps
+}
+
+func sourcePaths(all []configSourceFile) []string {
+	paths := make([]string, 0, len(all))
+	for _, s := range all {
+		paths = append(paths, s.abs)
+	}
+	return paths
+}
+
+// errHiddenSourceRef answers any request that names the hidden source. It is a
+// 400 rather than a 404 because the request itself is disallowed.
+var errHiddenSourceRef = &nativeapi.APIError{Status: 400, Code: "invalid_request", Message: "config source cannot be referenced"}
+
+// readOnlyReason explains why s cannot be written; it is empty when s is writable.
+func (e *configEditor) readOnlyReason(all []configSourceFile, s configSourceFile) string {
+	if ok, reason := e.layoutOK(all); !ok {
+		return reason
+	}
+	if !e.sourceWritable(s) {
+		return "entry_source"
+	}
+	return ""
+}
+
+// layoutOK is the write gate: the feature flag plus the managed layout.
+func (e *configEditor) layoutOK(all []configSourceFile) (bool, string) {
+	if !e.enabled {
+		return false, "writes_disabled"
+	}
+	paths := make([]string, 0, len(all))
+	for _, s := range all {
+		paths = append(paths, s.abs)
+	}
+	return detectManagedLayout(e.mainPath, paths)
+}
+
+// sourceWritable limits writes to config.d/*.dae; config.dae is the read-only entry.
+func (e *configEditor) sourceWritable(s configSourceFile) bool {
+	return s.kind == "include" && filepath.Dir(s.abs) == filepath.Join(e.baseDir, "config.d") && filepath.Ext(s.abs) == ".dae"
+}
+
+func permissionDenied(message, reason string) error {
+	return &nativeapi.APIError{
+		Status:  403,
+		Code:    "permission_denied",
+		Message: message,
+		Details: map[string]any{"reason": reason},
+	}
+}
+
+// loadSources reads every source the merger reaches, excluding nothing; the
+// hidden filter is applied by visibleSources so validation can still see it.
+func (e *configEditor) loadSources() ([]configSourceFile, error) {
+	_, entries, err := config.NewMerger(e.mainPath).Merge()
+	if err != nil {
+		return nil, errors.New(e.scrub(err.Error()))
+	}
+	out := make([]configSourceFile, 0, len(entries))
+	for _, entry := range entries {
+		abs := filepath.Clean(entry)
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(e.baseDir, abs)
+		}
+		raw, err := os.ReadFile(abs)
+		if err != nil {
+			return nil, errors.New(e.scrub(err.Error()))
+		}
+		fi, err := os.Stat(abs)
+		if err != nil {
+			return nil, errors.New(e.scrub(err.Error()))
+		}
+		rel, err := filepath.Rel(e.baseDir, abs)
+		if err != nil {
+			rel = filepath.Base(abs)
+		}
+		kind := "include"
+		if abs == e.mainPath {
+			kind = "main"
+		}
+		out = append(out, configSourceFile{
+			id:      sourceIDFor(rel),
+			path:    filepath.ToSlash(rel),
+			abs:     abs,
+			kind:    kind,
+			raw:     raw,
+			modTime: fi.ModTime(),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].kind != out[j].kind {
+			return out[i].kind == "main"
+		}
+		return out[i].path < out[j].path
+	})
+	return out, nil
+}
+
+// visibleSources drops the hidden source. The main file is never hidden.
+func (e *configEditor) visibleSources(all []configSourceFile) []configSourceFile {
+	out := make([]configSourceFile, 0, len(all))
+	for _, s := range all {
+		if s.abs != e.mainPath && filepath.Base(s.abs) == hiddenConfigSourceName {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func sourceIDFor(rel string) string {
+	sum := sha256.Sum256([]byte(filepath.ToSlash(rel)))
+	return "src_" + hex.EncodeToString(sum[:8])
+}
+
+func rawSHA256(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// maskSource redacts the listener secret. It reports whether anything changed,
+// which makes the content incomplete and suppresses the ETag.
+func maskSource(content string) (string, bool) {
+	if !apiSecretPattern.MatchString(content) {
+		return content, false
+	}
+	masked := apiSecretPattern.ReplaceAllString(content, "${1}'"+configRedacted+"'")
+	return masked, masked != content
+}
+
+// scrub removes the hidden source's name and absolute path from any text that
+// may leave the process.
+func (e *configEditor) scrub(text string) string {
+	hidden := filepath.Join(e.baseDir, hiddenConfigSourceName)
+	text = strings.ReplaceAll(text, hidden, hiddenSourceLabel)
+	return strings.ReplaceAll(text, hiddenConfigSourceName, hiddenSourceLabel)
+}
+
+func (e *configEditor) sourceView(s configSourceFile, readOnlyReason string) (nativeapi.ConfigSource, bool) {
+	content, masked := maskSource(string(s.raw))
+	view := nativeapi.ConfigSource{
+		ConfigSourceContent: nativeapi.ConfigSourceContent{
+			ID:            s.id,
+			Path:          s.path,
+			Kind:          s.kind,
+			ContentSHA256: rawSHA256(s.raw),
+			Bytes:         len(s.raw),
+			Content:       content,
+			LineCount:     strings.Count(content, "\n") + 1,
+		},
+		Writable:       readOnlyReason == "",
+		ReadOnlyReason: readOnlyReason,
+		LoadedAt:       s.modTime,
+	}
+	return view, masked
+}
+
+func (e *configEditor) GetConfig(ctx context.Context) (nativeapi.EffectiveConfig, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.EffectiveConfig{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	all, err := e.loadSources()
+	if err != nil {
+		return nativeapi.EffectiveConfig{}, err
+	}
+	visible := e.visibleSources(all)
+	result := nativeapi.EffectiveConfig{
+		GenerationID: e.generation(),
+		Revision:     revisionOf(all),
+		Sources:      make([]nativeapi.ConfigSource, 0, len(visible)),
+		Diagnostics:  []nativeapi.ConfigDiagnostic{},
+	}
+	for _, s := range visible {
+		view, masked := e.sourceView(s, e.readOnlyReason(all, s))
+		if masked {
+			result.SecretsRedacted = true
+		}
+		result.Sources = append(result.Sources, view)
+	}
+	return result, nil
+}
+
+func revisionOf(visible []configSourceFile) string {
+	parts := make([]string, 0, len(visible))
+	for _, s := range visible {
+		parts = append(parts, s.id+":"+rawSHA256(s.raw))
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// findSource returns the visible source with the given id, or 404. Hidden
+// sources are absent from visible, so their ids are indistinguishable from unknown ones.
+func findSource(visible []configSourceFile, id string) (configSourceFile, error) {
+	for _, s := range visible {
+		if s.id == id {
+			return s, nil
+		}
+	}
+	return configSourceFile{}, &nativeapi.APIError{
+		Status:  404,
+		Code:    "resource_not_found",
+		Message: "config source not found",
+	}
+}
+
+func (e *configEditor) GetConfigSource(ctx context.Context, sourceID string) (nativeapi.ConfigSourceContent, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.ConfigSourceContent{}, false, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	all, err := e.loadSources()
+	if err != nil {
+		return nativeapi.ConfigSourceContent{}, false, err
+	}
+	s, err := findSource(e.visibleSources(all), sourceID)
+	if err != nil {
+		return nativeapi.ConfigSourceContent{}, false, err
+	}
+	view, masked := e.sourceView(s, e.readOnlyReason(all, s))
+	return view.ConfigSourceContent, !masked, nil
+}
+
+// buildCandidate merges the main file with the given overrides and parses the
+// result. Only overrides of visible sources reach this function.
+func (e *configEditor) buildCandidate(overrides map[string][]byte) (*config.Config, error) {
+	sections, _, err := config.NewMergerWithOverrides(e.mainPath, overrides).Merge()
+	if err != nil {
+		return nil, err
+	}
+	return config.New(sections)
+}
+
+// fullValidate runs the same checks the validate command runs on top of the
+// parsed candidate. The API must not be laxer than `dae validate`, otherwise a
+// replacement is stored and the reload that follows it fails.
+func (e *configEditor) fullValidate(conf *config.Config) error {
+	if err := conf.Api.Validate(); err != nil {
+		return err
+	}
+	if err := validateRoutingRules(e.log, conf, []string{e.baseDir}); err != nil {
+		return err
+	}
+	if err := dns.ValidateRouting(e.log, &conf.Dns, []string{e.baseDir}); err != nil {
+		return err
+	}
+	return validateFixedDomainTtl(conf)
+}
+
+// candidateOverrides maps validation sources to absolute paths. Only visible
+// sources can be overridden; anything else is treated as not found.
+func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativeapi.ConfigValidationSource) (map[string][]byte, map[string]string, error) {
+	visible := e.visibleSources(all)
+	byID := map[string]configSourceFile{}
+	byAbs := map[string]configSourceFile{}
+	for _, s := range visible {
+		byID[s.id] = s
+		byAbs[s.abs] = s
+	}
+	overrides := map[string][]byte{}
+	absToID := map[string]string{}
+	hiddenIDs := map[string]bool{}
+	for _, s := range all {
+		if s.abs != e.mainPath && filepath.Base(s.abs) == hiddenConfigSourceName {
+			hiddenIDs[s.id] = true
+		}
+	}
+	for _, r := range reqs {
+		var target configSourceFile
+		var ok bool
+		switch {
+		case r.ID != "":
+			if hiddenIDs[r.ID] {
+				return nil, nil, errHiddenSourceRef
+			}
+			target, ok = byID[r.ID]
+		case r.Path != "":
+			abs := filepath.Clean(filepath.Join(e.baseDir, filepath.FromSlash(r.Path)))
+			if filepath.Base(abs) == hiddenConfigSourceName {
+				return nil, nil, errHiddenSourceRef
+			}
+			target, ok = byAbs[abs]
+			if !ok && abs != e.mainPath && filepath.Base(abs) != hiddenConfigSourceName {
+				// A new include file: validate it as a candidate path.
+				target, ok = configSourceFile{abs: abs, id: sourceIDFor(r.Path)}, true
+			}
+		}
+		if !ok {
+			return nil, nil, &nativeapi.APIError{Status: 404, Code: "resource_not_found", Message: "config source not found"}
+		}
+		if r.Content == nil {
+			return nil, nil, &nativeapi.APIError{Status: 422, Code: "unsupported_value", Message: "source content is required"}
+		}
+		// Two requests that resolve to the same file describe one source twice,
+		// so the candidate would be ambiguous.
+		if _, dup := overrides[target.abs]; dup {
+			return nil, nil, &nativeapi.APIError{Status: 400, Code: "invalid_request", Message: "duplicate configuration source"}
+		}
+		overrides[target.abs] = []byte(*r.Content)
+		absToID[target.abs] = target.id
+	}
+	return overrides, absToID, nil
+}
+
+func (e *configEditor) ValidateConfig(ctx context.Context, req nativeapi.ConfigValidationRequest) (nativeapi.ConfigValidationResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.ConfigValidationResult{}, err
+	}
+	if req.Mode != "" && req.Mode != "syntax" && req.Mode != "full" {
+		return nativeapi.ConfigValidationResult{}, &nativeapi.APIError{Status: 422, Code: "unsupported_value", Message: "unknown validation mode"}
+	}
+	if len(req.Sources) > configMaxSources {
+		return nativeapi.ConfigValidationResult{}, &nativeapi.APIError{Status: 413, Code: "request_too_large", Message: "too many sources"}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	all, err := e.loadSources()
+	if err != nil {
+		return nativeapi.ConfigValidationResult{}, err
+	}
+	overrides, absToID, err := e.candidateOverrides(all, req.Sources)
+	if err != nil {
+		return nativeapi.ConfigValidationResult{}, err
+	}
+
+	diags := []nativeapi.ConfigDiagnostic{}
+	failed := false
+	if req.Mode == "syntax" {
+		// Syntax mode parses the submitted texts only; no merge or full checks run.
+		for abs, raw := range overrides {
+			if _, err := config_parser.Parse(string(raw)); err != nil {
+				failed = true
+				diags = append(diags, e.diagnosticsFor(err, map[string]string{abs: absToID[abs]}, "", "config_invalid")...)
+			}
+		}
+	} else {
+		conf, buildErr := e.buildCandidate(overrides)
+		if buildErr != nil {
+			failed = true
+			diags = append(diags, e.diagnosticsFor(buildErr, absToID, "", "config_invalid")...)
+		} else if fullErr := e.fullValidate(conf); fullErr != nil {
+			failed = true
+			diags = append(diags, e.diagnosticsFor(fullErr, absToID, "", "validation_failed")...)
+		}
+	}
+	if failed && len(diags) == 0 {
+		// Every error pointed only at the hidden source and was dropped; keep the failure visible.
+		diags = append(diags, invalidDiagnostic())
+	}
+	return nativeapi.ConfigValidationResult{
+		Valid:        !failed,
+		Diagnostics:  diags,
+		GenerationID: e.generation(),
+		ValidatedAt:  time.Now(),
+	}, nil
+}
+
+func invalidDiagnostic() nativeapi.ConfigDiagnostic {
+	return nativeapi.ConfigDiagnostic{Level: "error", Code: "config_invalid", Message: "configuration is invalid"}
+}
+
+// parseErrorLinePattern matches the "line L:C" prefixes the parser emits.
+var parseErrorLinePattern = regexp.MustCompile(`(?m)^line (\d+):(\d+)`)
+
+// diagnosticsFor converts err into visible diagnostics, with line and column
+// when the parser reported them. Text is scrubbed of the hidden source's name
+// and path. An error that points only at the hidden source yields nil so the
+// caller can fall back to a generic diagnostic.
+func (e *configEditor) diagnosticsFor(err error, absToID map[string]string, fallbackID, code string) []nativeapi.ConfigDiagnostic {
+	text := err.Error()
+	sourceID := fallbackID
+	for abs, id := range absToID {
+		if id != "" && strings.Contains(text, abs) {
+			sourceID = id
+			break
+		}
+	}
+	if sourceID == "" && strings.Contains(text, filepath.Join(e.baseDir, hiddenConfigSourceName)) {
+		return nil
+	}
+	locs := parseErrorLinePattern.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		return []nativeapi.ConfigDiagnostic{{Level: "error", SourceID: sourceID, Code: code, Message: e.scrub(text)}}
+	}
+	diags := make([]nativeapi.ConfigDiagnostic, 0, len(locs))
+	for i, loc := range locs {
+		end := len(text)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		line, _ := strconv.Atoi(text[loc[2]:loc[3]])
+		column, _ := strconv.Atoi(text[loc[4]:loc[5]])
+		diags = append(diags, nativeapi.ConfigDiagnostic{
+			Level:    "error",
+			SourceID: sourceID,
+			Line:     &line,
+			Column:   &column,
+			Code:     code,
+			Message:  e.scrub(strings.TrimSpace(text[loc[0]:end])),
+		})
+	}
+	return diags
+}
+
+func fingerprintReplace(req nativeapi.ReplaceConfigSourceRequest) string {
+	return rawSHA256([]byte(req.SourceID + "\x00" + req.IfMatch + "\x00" + req.Content))
+}
+
+func (e *configEditor) rememberIdem(key string, entry configEditorIdem) {
+	if _, exists := e.idem[key]; !exists {
+		e.idemOrder = append(e.idemOrder, key)
+	}
+	e.idem[key] = entry
+	for len(e.idemOrder) > configIdempotencyLimit {
+		oldest := e.idemOrder[0]
+		e.idemOrder = e.idemOrder[1:]
+		delete(e.idem, oldest)
+	}
+}
+
+func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.ReplaceConfigSourceRequest) (nativeapi.OperationAccepted, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.OperationAccepted{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	fingerprint := fingerprintReplace(req)
+	if req.IdempotencyKey != "" {
+		if prev, ok := e.idem[req.IdempotencyKey]; ok {
+			if prev.fingerprint != fingerprint {
+				return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+					Status: 409, Code: "idempotency_conflict",
+					Message: "idempotency key was used with a different request",
+				}
+			}
+			return prev.accepted, nil
+		}
+	}
+	all, err := e.loadSources()
+	if err != nil {
+		return nativeapi.OperationAccepted{}, err
+	}
+	if ok, reason := e.layoutOK(all); !ok {
+		return nativeapi.OperationAccepted{}, permissionDenied("config writes are not available", reason)
+	}
+	if len(req.Content) > configMaxBytes {
+		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+			Status: 413, Code: "request_too_large", Message: "config source is too large",
+		}
+	}
+
+	target, err := findSource(e.visibleSources(all), req.SourceID)
+	if err != nil {
+		return nativeapi.OperationAccepted{}, err
+	}
+	if !e.sourceWritable(target) {
+		return nativeapi.OperationAccepted{}, permissionDenied("this source is read-only", "entry_source")
+	}
+	if e.apiAtStart.Secret != "" && strings.Contains(req.Content, e.apiAtStart.Secret) {
+		return nativeapi.OperationAccepted{}, permissionDenied("source must not contain the listener secret", "listener_secret_in_content")
+	}
+	if req.IfMatch != rawSHA256(target.raw) {
+		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+			Status: 412, Code: nativeapi.CodeStaleRevision,
+			Message: "config source changed since it was read",
+		}
+	}
+	if e.busy() {
+		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+			Status: 409, Code: "state_conflict", Message: "a reload is already in progress",
+			Details: map[string]any{"reason": "reload_in_progress"},
+		}
+	}
+	// W_OK check: an unwritable file would fail after the backup was taken.
+	if syscall.Access(target.abs, 2) != nil {
+		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+			Status: 503, Code: "temporarily_unavailable", Message: "config source is not writable right now",
+			Details: map[string]any{"reason": "file_unwritable"},
+		}
+	}
+
+	// Validate the candidate with full checks before touching disk.
+	candidate, buildErr := e.buildCandidate(map[string][]byte{target.abs: []byte(req.Content)})
+	if buildErr != nil {
+		return nativeapi.OperationAccepted{}, e.unprocessable(buildErr, target)
+	}
+	if fullErr := e.fullValidate(candidate); fullErr != nil {
+		return nativeapi.OperationAccepted{}, e.unprocessable(fullErr, target)
+	}
+	if !reflect.DeepEqual(candidate.Api, e.apiAtStart) {
+		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+			Status: 403, Code: "permission_denied",
+			Message: "api listener settings cannot be changed through the config API",
+		}
+	}
+	mode := os.FileMode(0o600)
+	if fi, statErr := os.Stat(target.abs); statErr == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := writeFileAtomic(target.abs+".bak", target.raw, 0o600); err != nil {
+		return nativeapi.OperationAccepted{}, fmt.Errorf("write config backup: %w", err)
+	}
+	if err := writeFileAtomic(target.abs, []byte(req.Content), mode); err != nil {
+		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
+	}
+
+	accepted, err := e.operations.StartOperation(ctx, nativeapi.OperationKindReload, req.IdempotencyKey)
+	if err != nil {
+		// The reload never started, so the on-disk file must return to its
+		// previous state; otherwise the next reload would apply a rejected edit.
+		if restoreErr := writeFileAtomic(target.abs, target.raw, mode); restoreErr != nil {
+			e.log.WithError(restoreErr).Error("failed to restore config source after rejected reload")
+		}
+		return nativeapi.OperationAccepted{}, err
+	}
+	if req.IdempotencyKey != "" {
+		e.rememberIdem(req.IdempotencyKey, configEditorIdem{fingerprint: fingerprint, accepted: accepted})
+	}
+	return accepted, nil
+}
+
+func (e *configEditor) unprocessable(err error, target configSourceFile) error {
+	diags := e.diagnosticsFor(err, map[string]string{target.abs: target.id}, "", "config_invalid")
+	if len(diags) == 0 {
+		diags = []nativeapi.ConfigDiagnostic{invalidDiagnostic()}
+	}
+	return &nativeapi.APIError{
+		Status:  422,
+		Code:    "unsupported_value",
+		Message: "configuration is invalid",
+		Details: map[string]any{"diagnostics": diags},
+	}
+}
+
+// writeFileAtomic writes via a temp file in the same directory and renames it
+// into place, so readers see either the old or the new bytes.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".dae-config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}

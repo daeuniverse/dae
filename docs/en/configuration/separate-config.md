@@ -141,3 +141,8 @@ Run dae with the entry configuration file:
 ```sh
 dae run -c /etc/dae/config.dae
 ```
+
+Editing nodes or other configuration through the [native API](api.md#editing-configuration-through-the-api)
+requires a stricter layout than plain splitting: fixed file names, one section per
+file, and `config.dae` as the entry. When the tree does not meet those conditions,
+API writes are disabled.

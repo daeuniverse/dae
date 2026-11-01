@@ -175,6 +175,9 @@ type Api struct {
 	AllowOrigins           []string `mapstructure:"allow_origins"`
 	AllowedHosts           []string `mapstructure:"allowed_hosts"`
 	UI                     string   `mapstructure:"ui"`
+	// ConfigWrite permits control callers to replace editable config sources
+	// over the native API. It requires a listener secret.
+	ConfigWrite bool `mapstructure:"config_write" default:"false"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {

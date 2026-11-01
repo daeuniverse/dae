@@ -3,7 +3,7 @@
 dae 可以提供与 [api-standardize](https://github.com/daeuniverse/api-standardize)
 契约兼容的原生 HTTP 控制面。该 listener **默认关闭**。
 
-本页只讲 listener 的配置与部署；端点行为与资源契约见
+本页讲 listener 的配置与部署，以及通过 API 写配置所需的目录规范；端点行为与资源契约见
 [development/api.md](../development/api.md)。
 
 ## 配置
@@ -16,6 +16,7 @@ api {
     allow_anonymous_loopback: false
     allow_origins: 'http://localhost:3000'
     allowed_hosts: 'panel.example,panel.example:443'
+    config_write: false
 }
 ```
 
@@ -28,6 +29,63 @@ api {
 | `allow_origins` | 空 | 允许跨域访问的精确 HTTP(S) origin。 |
 | `allowed_hosts` | 空 | 额外接受的 Host authority；省略端口按 80 处理。 |
 | `ui` | 空 | 存放已构建前端的绝对目录，在 `/ui/` 下无凭证访问；非 `/api` 路径会重定向到这里；留空表示不托管前端。 |
+| `config_write` | `false` | 是否允许通过 API 替换配置源。需要同时设置非空 `secret`，且配置目录符合下面的规范结构。 |
+
+## 通过 API 编辑配置
+
+`config_write: true` 只是开关；真正能否写入还取决于**配置目录的结构**。dae 不做行级编辑，
+只接受「整份替换某个源文件」，因此要求配置按固定规范拆分好：
+
+```sh
+# tree /etc/dae
+/etc/dae
+├── config.dae          # 入口：只有一个 include 块
+├── api.dae             # api 块；对 API 完全隐藏，只能人工编辑
+└── config.d
+    ├── global.dae
+    ├── subscription.dae
+    ├── node.dae
+    ├── group.dae
+    ├── routing.dae
+    └── dns.dae
+```
+
+```dae
+# config.dae
+include {
+    config.d/*.dae
+    api.dae
+}
+```
+
+下表条件全部满足才可写，任一不满足即整体禁用——不会出现「一个文件改成功、另一个失败」的状态：
+
+| # | 条件 |
+|---|---|
+| 1 | 入口文件名必须是 `config.dae`。 |
+| 2 | 入口只允许一个 `include` 块，且不得含其它 section。 |
+| 3 | `include` 展开集合必须正好是 `config.d/*.dae` 与 `api.dae`，多一个少一个都不行。 |
+| 4 | `api.dae` 必须存在；`config.d/` 必须包含上面六个模块文件。 |
+| 5 | `config.d/*.dae` 内不得再出现 `include`。 |
+| 6 | 每个 section 只能来自一个文件，例如 `dns` 只能写在 `dns.dae`。 |
+| 7 | 配置文件不能被同组写入或执行，也不能被其他用户以任何方式访问；建议 `0640` 或 `0600`。 |
+| 8 | `config.d/` 必须可写（写入要落 `.bak` 与临时文件）。 |
+
+满足条件后，每一类改动都是替换对应模块文件：改节点替换 `node.dae`，改分组替换
+`group.dae`，改路由替换 `routing.dae`，改 DNS 替换 `dns.dae`，改订阅替换
+`subscription.dae`，以此类推。不拆分、或只拆一部分的配置，无法通过 API 编辑。
+
+不满足时，写请求返回 `403 permission_denied`，原因放在 `details.reason`，也会出现在
+`GET /api/v1/capabilities` 的 `resources.config.x-dae.layout.reason` 中（`writes_disabled`
+或 `layout_unmanaged`），同处的 `layout.kind` 则为 `managed` 或 `unmanaged`。
+
+补充约束：
+
+- `api.dae` 对 API 完全隐藏：不出现在源列表里，其 ID 一律返回 `404`。因此**改监听地址、
+  端口或 secret 只能人工改文件并重启**。
+- `config.dae` 本身只读（`entry_source`），替换时不得改动 `api` 块。
+- 写入前会跑与 `dae validate -c` 相同的完整校验；不通过的候选返回 `422` 并附行号，磁盘
+  不会变动。
 
 ## 认证
 

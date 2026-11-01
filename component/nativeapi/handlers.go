@@ -110,6 +110,27 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"available": false,
 		},
 	}
+	if s.config != nil {
+		caps := s.config.ConfigCapabilities()
+		resources["config"] = map[string]any{
+			"available":   true,
+			"writable":    caps.Writable,
+			"create":      false,
+			"max_bytes":   caps.MaxBytes,
+			"max_sources": caps.MaxSources,
+			"x-dae": map[string]any{
+				"store":          map[string]any{"kind": "file"},
+				"layout":         map[string]any{"kind": caps.Layout, "reason": caps.LayoutReason},
+				"hidden_sources": caps.HiddenSources,
+			},
+		}
+		resources["config_validate"] = map[string]any{
+			"available":   true,
+			"modes":       []string{"syntax", "full"},
+			"max_bytes":   caps.MaxBytes,
+			"max_sources": caps.MaxSources,
+		}
+	}
 	if s.groups != nil {
 		resources["groups"] = map[string]any{
 			"available":            true,

@@ -4,9 +4,9 @@ dae can expose a native HTTP control-plane API compatible with the
 [api-standardize](https://github.com/daeuniverse/api-standardize) contract. The
 listener is **disabled by default**.
 
-This page covers everything needed to configure and deploy the listener.
-Endpoint behaviour and the resource contract live in
-[development/api.md](../development/api.md).
+This page covers configuring and deploying the listener, plus the directory
+layout that API writes require. Endpoint behaviour and the resource contract live
+in [development/api.md](../development/api.md).
 
 ## Configuration
 
@@ -18,6 +18,7 @@ api {
     allow_anonymous_loopback: false
     allow_origins: 'http://localhost:3000'
     allowed_hosts: 'panel.example,panel.example:443'
+    config_write: false
 }
 ```
 
@@ -30,6 +31,70 @@ api {
 | `allow_origins` | empty | Exact HTTP(S) origins allowed for cross-origin browser access. |
 | `allowed_hosts` | empty | Additional Host authorities accepted by the listener. Omitted port means 80. |
 | `ui` | empty | Absolute directory holding a built frontend. Served at `/ui/` without credentials; other non-`/api` paths redirect there. Empty disables UI hosting. |
+| `config_write` | `false` | Allow API callers to replace configuration sources. Requires a non-empty `secret` and the directory layout below. |
+
+## Editing configuration through the API
+
+`config_write: true` is only a switch; whether writes are possible also depends on
+how the configuration **directory is structured**. dae never edits lines in
+place, it replaces a whole source file, so the configuration has to be split the
+standard way:
+
+```sh
+# tree /etc/dae
+/etc/dae
+├── config.dae          # entry: one include block only
+├── api.dae             # api block; hidden from the API, edit by hand only
+└── config.d
+    ├── global.dae
+    ├── subscription.dae
+    ├── node.dae
+    ├── group.dae
+    ├── routing.dae
+    └── dns.dae
+```
+
+```dae
+# config.dae
+include {
+    config.d/*.dae
+    api.dae
+}
+```
+
+Every condition below must hold. One failure disables writes entirely, so there
+is never a state where one file was replaced and another was not:
+
+| # | Condition |
+|---|---|
+| 1 | The entry file must be named `config.dae`. |
+| 2 | The entry may hold exactly one `include` block and no other section. |
+| 3 | The expanded include set must be exactly `config.d/*.dae` and `api.dae`. |
+| 4 | `api.dae` must exist, and `config.d/` must hold the six module files above. |
+| 5 | A module under `config.d/*.dae` must not `include` anything else. |
+| 6 | Each section may come from exactly one file, so `dns` belongs to `dns.dae`. |
+| 7 | No file may be group-writable or group-executable, nor accessible to other users; `0640` or `0600` is expected. |
+| 8 | `config.d/` must be writable, because a replacement writes `.bak` and a temp file. |
+
+With the layout in place, each edit replaces its module file: nodes replace
+`node.dae`, groups `group.dae`, routing `routing.dae`, DNS `dns.dae`,
+subscriptions `subscription.dae`, and so on. A configuration that is not split
+this way cannot be edited through the API.
+
+When a condition fails, writes answer `403 permission_denied` with the reason in
+`details.reason`, also visible as `resources.config.x-dae.layout.reason` in
+`GET /api/v1/capabilities` (`writes_disabled` or `layout_unmanaged`), while
+`layout.kind` stays `managed` or `unmanaged`.
+
+Further constraints:
+
+- `api.dae` is hidden from the API: it is absent from the source list and its ID
+  answers `404`. Changing the listen address, the port or the secret therefore
+  stays a manual edit plus a restart.
+- `config.dae` itself is read-only (`entry_source`) and a replacement may not
+  change the `api` block.
+- A replacement is validated with the same chain as `dae validate -c`; a rejected
+  candidate answers `422` with line numbers and nothing is written.
 
 ## Authentication
 

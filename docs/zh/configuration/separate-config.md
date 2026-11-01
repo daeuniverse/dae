@@ -144,3 +144,7 @@ routing {
 ```sh
 dae run -c /etc/dae/config.dae
 ```
+
+如果要通过[原生 API](api.md#通过-api-编辑配置) 编辑节点或其它配置，拆分还必须符合更
+严格的规范结构（固定文件名、每个 section 只能来自一个文件、入口只能是 `config.dae`
+等）；普通拆分不满足这些条件时，API 写入会被禁用。

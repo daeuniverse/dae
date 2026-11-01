@@ -54,6 +54,9 @@ func (a Api) AnonymousLoopbackActive() bool {
 
 // Validate checks the listener and authentication configuration.
 func (a Api) Validate() error {
+	if a.ConfigWrite && a.Secret == "" {
+		return fmt.Errorf("api.config_write requires api.secret")
+	}
 	if !a.Enabled {
 		return nil
 	}

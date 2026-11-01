@@ -83,6 +83,10 @@ func (i *Item) String(compact bool, quoteVal bool) string {
 type Section struct {
 	Name  string
 	Items []*Item
+	// StartLine and EndLine are the 1-based source lines of the section in the
+	// text it was parsed from. They are only meaningful for single-file parses.
+	StartLine int
+	EndLine   int
 }
 
 func (s *Section) String(compact bool, quoteVal bool) string {

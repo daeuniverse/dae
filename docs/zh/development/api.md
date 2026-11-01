@@ -51,9 +51,19 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 `DELETE /api/v1/nodes/{node_id}` 出于同样原因返回该错误码
 （`nodes.can_manage = false`）。
 
-`/api/v1/config*`、`/api/v1/runtime/settings`、`/api/v1/routing/trace`、
-`/api/v1/auth*` 仍未实现，因此需要就地编辑配置的前端页面（例如 lite 版 doona 的路由与
-DNS 编辑页）无法对 dae 使用；这里的规则与 DNS 规则是只读视图。
+`/api/v1/runtime/settings`、`/api/v1/routing/trace`、`/api/v1/auth*` 仍未实现。配置仅支持
+源级编辑：`GET /api/v1/config`、`GET /api/v1/config/sources[/{source_id}]`、
+`PUT /api/v1/config/sources/{source_id}`（需 `If-Match`）与 `POST /api/v1/config/validate`。
+仅当 `api.config_write = true` 且配置目录符合受管布局（`config.dae` 引入 `config.d/*.dae`
+与 `api.dae`）时才允许写入；否则返回 `403 permission_denied` 并附 `details.reason`，且不写盘。
+与契约的有意偏离：
+
+- `api.dae` 被隐藏：不出现在 `sources[]` 中，其 id 返回 `404 resource_not_found`，与未知 id 一致。
+  能力信息通过 `x-dae.hidden_sources` 体现。
+- `config.dae` 只读（`entry_source`）。替换时不得修改 `api` 段。
+- `GET` 读取磁盘文件，而非已接受的快照。
+
+规则与 DNS 规则通过替换其所属源文件（`routing.dae`、`dns.dae`）来编辑，API 不提供行级编辑。
 
 ### 组与运行时选择
 

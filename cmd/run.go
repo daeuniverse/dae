@@ -523,6 +523,14 @@ func (r *Runner) Run() (err error) {
 		server.SetEventProvider(provider)
 		server.SetOperationProvider(operations)
 		server.SetProbeProvider(operations)
+		configSource, err := newConfigEditor(cfgFile, conf.Api, operations, reloadManager, runtimeSupervisor, log)
+		if err != nil {
+			_ = listener.Close()
+			cancel()
+			_ = c.Close()
+			return fmt.Errorf("initialize config editor: %w", err)
+		}
+		server.SetConfigProvider(configSource)
 		reloadManager.setReloadObserver(operations.FollowReload)
 		if err := server.Start(); err != nil {
 			_ = listener.Close()

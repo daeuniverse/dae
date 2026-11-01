@@ -2,9 +2,14 @@
 
 > 目标契约：`github.com/daeuniverse/api-standardize`（branch `honk`，contract `0.1.0-draft`）
 >
-> 本文是实施计划，不是最终契约文档。契约以 `api-standardize/source/openapi.yaml` 为准。
+> 本文是实施计划，不是最终契约文档。契约以 `api-standardize/api/openapi.yaml` 为准
+> （分模块文件：`api/{config,discovery,nodes-groups,runtime,dns,rules,operations-probes,...}.yaml`；仓库 `source/` 下是文档站点，不含 schema）。
 >
 > 实现状态（2026-10-31）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。仍声明不可用的是配置读写（`config*`）、`runtime/settings`、`routing/trace`、`auth/*`；providers 的增删/refresh 与 geodata 的 update 按只读定位返回 `404 capability_not_supported`。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。**2026-10-31 的线上联调修复（直连流量归属、节点延迟、`/rules` 体积、`/policies` 选区、`purpose` 取值、内存 cgroup）见「10. 联调问题修复纪要」。**
+>
+> **P4（配置写入：DNS / Routing 模块编辑）已于 2026-11-01 立项，见 3 节 P4 章节。**
+> 在 P4 落地前，`config*` 与 nodes/groups 写端点保持 `404 capability_not_supported`；
+> P4 不引入 `global.data_dir`（订阅缓存仍在 `<配置目录>/persist.d/`），且 `api.dae` 对前端隐藏。
 
 ## 1. 结论与范围
 
@@ -615,6 +620,179 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 - [x] 所有新增写路径（flush/close/refresh/update/query）都要幂等键或明确非幂等说明，并评估是否需要 operation。
 - [x] 隐私与体积：`logs` / `dns/log` / `flows` 需要容量上限与脱敏规则后再开放。
 
+### P4 配置写入与 DNS / Routing 模块编辑
+
+> 2026-11-01 立项：dae 首次获得配置写入能力。目标是让前端能编辑配置文件的 `dns` 与 `routing`
+> 模块，`nodes` / `groups` 的写入复用同一底座。
+>
+> 契约依据：`api-standardize/api/config.yaml`（`/config`、`/config/sources*`、`/config/validate`）、
+> `api/discovery.yaml`（`resources.config` / `groups.config_patch` / `nodes.can_manage`）与
+> `api/nodes-groups.yaml`；行为基准：同组织 honk 的 `crates/honk-core/src/native_api/config.rs`。
+> 规则资源本身（`/rules`、`/dns/rules`）在契约里是只读的，规则编辑的唯一通道就是替换承载它的配置源。
+
+#### P4-0 范围与决策
+
+| # | 决策 | 依据 |
+|---|---|---|
+| P4-D1 | 只实现契约内的**源级**接口（`GET /config`、`GET /config/sources`、`GET`/`PUT /config/sources/{id}`、`POST /config/validate`）；**不做**模块级（`PUT /config/modules/{m}`）与规则级端点 | 目录规范让「文件即模块」成立：`config.d/routing.dae` 既是文件也是模块，源级 PUT 已经等价于模块级替换。旧提案的三个未决问题（模块跨多文件、body 形态、契约缺口）随之消失 |
+| P4-D2 | `PUT /config/sources/{id}` body 只收 `{content: 完整文本}` | 与 honk 一致；保真、不发明第二套语法、不需要反序列化再渲染 |
+| P4-D3 | 新增 `api.config_write`，默认 `false`，restart-required；置 true 时 `api.secret` 必须非空，否则 `dae validate` / 启动失败 | honk `experimental.native_api.config_write` + `credentialed()` 硬校验（`crates/honk-config/src/experimental.rs:181`） |
+| P4-D4 | 目录规范是唯一可写前提，不满足则**整体**禁用，不做逐文件降级 | 部分可写会产生「一个改成功、一个失败」的不可解释状态 |
+| P4-D5 | 可写源 = `config.d/*.dae`；`config.dae` 只读（`entry_source`）；**`api.dae` 对前端完全隐藏**（见 P4-4） | 用户约束 3 + 2026-11-01 决定 |
+| P4-D6 | **不引入 `global.data_dir`**：订阅缓存继续写在 `<配置目录>/persist.d/<tag>.sub`（`common/subscription/subscription.go:194,233`） | 2026-11-01 决定：保持现有部署兼容性，本次不做路径迁移。代价是配置目录里存在非 `.dae` 文件，可写判定必须只认 `config.d/*.dae`，不得假设「目录可写就等于整目录可写」 |
+| P4-D7 | 写盘前做 full 校验；写后 reload 失败**不回滚**已写字节，仅在写前保留 `<file>.bak` | honk 明确「激活失败不会自动回滚已写字节，应避免并发外部编辑」（`doc/zh/configuration.md:287`）；写前 full 校验是唯一防线，回滚会把「已写但激活失败」与「没写」两种状态混在一起 |
+| P4-D8 | `groups.config_patch` 与 `nodes.can_manage` 复用同一 `writable` 门禁 | 契约要求 `config_patch = true` 蕴含 `config.writable = true`（`api/discovery.yaml:749-758`） |
+
+> **实现状态（2026-11-01）**：已落地源级端点（`GET /config`、`GET /config/sources[/{id}]`、`PUT /config/sources/{id}`、`POST /config/validate`），布局闸门（`cmd/config_layout.go`，条件 1–8），`api.dae` 隐藏（404 / 400 与未知 id 行为一致），`config.dae` 与 `api` 段写保护，写前 full 校验，诊断带行号与列号，`.bak` 备份，`StartOperation` 失败时恢复原字节，`x-dae`（`layout`、`hidden_sources`、`read_only_reason`）已输出。
+>
+> **契约细节对齐（2026-11-01 补齐）**：
+> - `POST /config/validate` 的 `max_bytes` 按**候选源字节总和**判定（此前只逐源判定）；缺 `mode` 返回 `400 invalid_request`（`mode` 是必填字段），未广告的 mode 才是 `422 unsupported_value`；同一源在请求中出现两次返回 `400`（契约「duplicate effective source IDs」）。
+> - 写前 full 校验与 `dae validate -c` **同链**：`Api.Validate` → `validateRoutingRules` → `dns.ValidateRouting` → `validateFixedDomainTtl`。此前漏了前两项与 DNS 路由，会让 API 存下 daemon 启动不了的候选。
+>
+> **偏离 / 未完成（需后续对齐）**：
+> - `GET` 读取的是磁盘文件，不是进程内已接受快照；快照语义未实现。
+> - P4-D7 有例外：`StartOperation` 失败时会恢复写前字节（reload 未启动，磁盘不能保留被拒绝的编辑）；reload 已启动后的失败仍不回滚。
+> - 语义级端到端（改 `routing.dae` 后 `GET /rules` 与 `generation_id` 同步变化）需要运行时集成，未覆盖。
+> - `202` 之后 operation 走到 `succeeded` 未在本层断言（属 operations 层）。
+
+#### P4-1 编辑闸门（目录规范 + 显式开关）
+
+`detectManagedLayout(cfgFile) (ok bool, reason string)`：以下条件**全部**成立才 `writable = true`，任一不成立即整体禁用。
+
+| # | 条件 | 说明 |
+|---|---|---|
+| 1 | 入口文件名必须是 `config.dae`，`root = filepath.Dir(cfgFile)` | 固定约定，便于判定 |
+| 2 | 入口文件只允许一个 `include` 块，**不得**含其它 section | 用户约束 1 |
+| 3 | `include` 展开集合**精确等于** `{root/config.d/*.dae} ∪ {root/api.dae}` | 多一个或少一个都不接受；多出来说明有配置游离在管辖区外 |
+| 4 | `root/api.dae` 存在；`root/config.d/` 至少含 `global.dae`、`subscription.dae`、`node.dae`、`group.dae`、`routing.dae`、`dns.dae` | 用户约束 2 |
+| 5 | `config.d/*.dae` 内不得再出现 `include` | 禁止二级来源，否则「哪个文件是模块」重新变得不确定 |
+| 6 | 每个配置 section 只来自一个文件（`MergeWithOrigins`） | 规范是 1 文件 1 模块 |
+| 7 | 所有目标文件通过既有 `0037` 权限检查（`config/config_merger.go:83`），且父目录可写 | 复用现有校验，不新增第二套权限规则 |
+| 8 | `api.config_write = true` 且 `api.secret` 非空 | P4-D3 |
+
+> **include 参数个数**：Go `filepath.Glob`（`config/config_merger.go:129` `unsqueezeEntries` 使用）**不支持花括号** `{a,b}`，单个 pattern 无法同时覆盖 `config.d/*.dae` 与根目录 `api.dae`。
+> 因此「一个 include 块」在实现上允许 1~2 个 param，推荐写法：
+>
+> ```dae
+> include {
+>     _: './config.d/*.dae'
+>     _: './api.dae'
+> }
+> ```
+
+拒绝原因枚举，同时用于源列表的 `read_only_reason` 与错误响应的 `error.details.reason`：
+
+| reason | 触发条件 | 对外状态 |
+|---|---|---|
+| `writes_disabled` | 未开启 `api.config_write`，或 `secret` 为空 | 源列表 `writable:false`；写请求 `403 permission_denied` |
+| `layout_unmanaged` | 上表条件 1~7 任一不成立 | 源列表 `writable:false`；写请求 `403 permission_denied` |
+| `entry_source` | 目标是 `config.dae` | 同上（该源仍**可见**，便于用户看到结构） |
+| `listener_secret_in_content` | 目标源正文包含 `api.secret` 的值 | 同上（防把凭据写进可回读的源） |
+| `reload_in_progress` | 有 reload 在执行 | `409 state_conflict` |
+| `file_unwritable` | 目标文件不可写 / 目录只读 | `503 temporarily_unavailable` |
+
+`api.dae` 不在此表中：它对前端不可见（P4-4），不参与任何可达判定。
+
+能力声明（`GET /api/v1/capabilities`）：
+
+```json
+{
+  "config": {
+    "available": true,
+    "writable": "<gate>",
+    "create": false,
+    "max_bytes": 61440,
+    "max_sources": 16,
+    "x-dae": {"store": {"kind": "file"}, "layout": {"kind": "managed|unmanaged", "reason": "..."}}
+  },
+  "config_validate": {"available": true, "modes": ["syntax", "full"], "max_bytes": 61440, "max_sources": 16},
+  "groups": {"...": "...", "config_patch": "<gate>", "max_patch_operations": 32},
+  "nodes": {"available": true, "can_manage": "<gate>"}
+}
+```
+
+- `max_bytes = limits.max_json_body_bytes - 4096 = 61440`（与 honk `MAX_CONTENT_BYTES` 同款算式，`crates/honk-core/src/native_api/config.rs:47`）。
+- `max_sources` 含隐藏源在内计数，保证不小于已接受源总数；`sources[]` 只回显可见源（P4-4）。
+- `x-dae.layout` 是 dae 扩展：把「为什么不能写」变成可观测事实，前端据此隐藏编辑入口而不是反复试错。
+
+#### P4-2 只读端点
+
+- [ ] `GET /api/v1/config` → `EffectiveConfig{sources[], diagnostics[], secrets_redacted, generation_id, revision}`。
+  - [ ] 取自**已接受快照**（进程内保存的源文本），不是重新读盘。
+  - [ ] `api` section 的 `secret` 值一律掩码（契约 `api-config` 可见性表）。
+  - [ ] `sources[]` 过滤掉 `api.dae`（P4-4）。
+- [ ] `GET /api/v1/config/sources` → 源列表（`id`、`path`、`kind`、`content_sha256`、`bytes`、`line_count`、`writable`、`read_only_reason`、`loaded_at`）。
+- [ ] `GET /api/v1/config/sources/{source_id}` → `ConfigSourceContent`；`ETag` 为带引号的 `content_sha256`，**仅在内容未被掩码时下发**。
+- [ ] `POST /api/v1/config/validate`：
+  - [ ] `syntax` 模式只解析提交文本；`full` 模式额外跑语义校验，并从磁盘读取 include 依赖（**不联网**）。
+  - [ ] 200 表示「校验完成」，`valid` 字段区分结果；400（请求形态非法）、413（超 `max_bytes`/`max_sources`）、422（未声明的 mode）。
+  - [ ] 不写文件、不刷新缓存、不发布 generation、不产生 operation。
+
+#### P4-3 写端点
+
+- [ ] `PUT /api/v1/config/sources/{source_id}`：
+
+| 步骤 | 内容 |
+|---|---|
+| 1 | 门禁：layout + `config_write` + 目标可写（P4-1 各 reason） |
+| 2 | `Content-Type: application/json`，body 仅允许 `{content:string}`（`additionalProperties:false`） |
+| 3 | **`If-Match` 必需**（缺失 → `428 precondition_required`），比对的是源 `content_sha256`（不是 config revision），不符 → `412 stale_revision` |
+| 4 | 长度 ≤ `max_bytes`，否则 `413 request_too_large` |
+| 5 | 组装候选全树：用新文本覆盖目标源，其余源取已接受快照 |
+| 6 | **full 校验**：`config.New` 全树解析 → `conf.Api.Validate()` → `validateRoutingRules`（`cmd/validate.go:87`）→ `dns.ValidateRouting`（`component/dns/routing_validate.go:54`）→ `validateFixedDomainTtl`；geodata 目录取 `filepath.Dir(cfgFile)`。失败 → `422 unsupported_value` + `error.details.diagnostics[]`（带行号/列号），**不写盘、不启动 reload** |
+| 7 | 备份 `<file>.bak` → 原子写（同目录临时文件 + `fsync` + `rename`，保留原 mode）→ 复读确认字节一致 |
+| 8 | `queueReloadRequest`（复用 `cmd/reload_manager.go:78`）+ operation store，`kind: reload`；返回 `202` + `Location` + `Retry-After: 1` |
+
+- [ ] 额外拒绝（契约 403 描述）：替换文本**新增/修改 `api` section 内容**（listener 或 secret）→ `403 permission_denied`；监听配置永远只能人工改文件 + restart。
+- [ ] 不提供 `POST /config/sources`（`create: false`）：新增源文件需要改入口 `config.dae`，而入口不可写。
+- [ ] `Idempotency-Key` 与 reload operation 复用现有 store；同 key 同 body 返回原 202，同 key 不同 body → `409 idempotency_conflict`。
+- [ ] 语义边界：`routing` 模块 = `config.d/routing.dae`，`dns` 模块 = `config.d/dns.dae`。客户端改完整个文件文本再 PUT，daemon 不做行级手术，因此**注释、排版、行序完全由客户端保有**。
+
+#### P4-4 隐藏 `api.dae`（契约偏离，需留痕）
+
+目标：前端无法感知 `api.dae` 的存在，从而不可能直接编辑它。
+
+- [ ] `GET /config` 的 `sources[]` 与 `GET /config/sources` 的列表都过滤掉 `api.dae`。
+- [ ] `api.dae` 的 `source_id` **不可寻址**：`GET` / `PUT /config/sources/{id}` 一律返回 `404 resource_not_found`，与「未知 id」**不可区分**（避免通过状态码探测其存在）。
+- [ ] `POST /config/validate` 中引用隐藏源 id → `400 invalid_request`；请求体出现 `path`/`id` 指向 `api.dae` → `400 invalid_request`。
+- [ ] `diagnostics[]` 中属于隐藏源的条目一律丢弃（其内容仍进守护进程日志），避免通过诊断泄漏来源。
+- [ ] 错误 `error.message` 与访问日志**不得**出现 `api.dae` 名称或其绝对路径（日志本身已不记录查询串与 body，这里是额外要求）。
+- [ ] `revision` / `generation_id` 仍覆盖整份配置（含隐藏源），保证「配置变则 revision 变」不被破坏。
+- [ ] **契约偏离记录**：契约 `GET /config` 写明「The source set is complete and bounded by `max_sources`; never truncate it」，隐藏 `api.dae` 与之冲突。这是有意的产品决定（防止前端直接编辑监听配置），需同时在 `docs/{en,zh}/development/api.md` 记录，并在 `capabilities.config.x-dae` 暴露 `hidden_sources: ["api.dae"]` 让实现方明确知道源集合被人为裁剪。
+
+#### P4-5 前置改造
+
+- [x] `pkg/config_parser/walker.go`：`Section` 增加 `StartLine` / `EndLine`。`parseExpression`（`walker.go:317`）手里有 `dae_config.IExpressionContext`，用 `ctx.GetStart().GetLine()` / `ctx.GetStop().GetLine()` 填充；嵌套 section（`dns.routing.request`）同样可得。
+  - 位置信息必须来自**单文件解析**（`config_parser.Parse(单文件文本)`），不能用合并后的 AST——合并会把多个文件的行号混在一起。
+- [x] `config/config_merger.go`：新增 `MergeWithOrigins()`，返回 `section → {file, lineRange}`，用于判定「一 section 一文件」（P4-1 条件 6）。
+- [x] 复用校验链，不复制第二套：`readConfig` → `config.New` → `conf.Api.Validate` → `validateRoutingRules` → `dns.ValidateRouting` → `validateFixedDomainTtl`。
+- [x] `component/nativeapi`：新增 `ConfigProvider` / `ConfigSourceProvider` 接口 + `handlers_config.go`；`Server` 增加 `config` 字段；`handlers.go` 的 capabilities 按 gate 输出。
+- [x] `cmd/config_editor.go`：串行锁（`sync.Mutex`）+ 已接受快照（源文本、`content_sha256`、`loaded_at`）+ 写流程；`reload_in_progress` 由 `reloadManager.reloadActive` 判定。
+
+#### P4-6 测试
+
+- [x] 布局判定：合法目录通过；缺 `api.dae`、`config.d` 缺模块文件、入口含额外 section、`config.d` 内嵌套 `include`、section 跨文件重复、文件权限过宽 —— 逐项 `writable=false` 且 reason 正确。
+- [x] 开关：`config_write=true` + 空 `secret` 时 `dae validate` 失败（夹具必须带 secret 才能通过 full 校验）；`config_write=false` 时写端点 `403 writes_disabled` 且**磁盘字节不变**、`reloads == 0`。
+- [x] 隐藏：源列表不含 `api.dae`；其 id 的 GET/PUT 均 404；`diagnostics` 不泄漏；错误信息不含该名称。
+- [x] 写流程：`If-Match` 缺失 → 428；哈希不符 → 412；语法错误 → 422 且带 diagnostics 行号；超长 → 413；成功 → 202 + `Location` / `Retry-After`。
+- [ ] 语义：改 `routing.dae` 里的 fallback 后，`GET /rules` 的 fallback 变化且生成新 `generation_id`；改 `dns.dae` 的 upstream 与路由后，`GET /dns/rules` 同步变化。**未做**：需要运行时集成。
+- [x] 保真：含注释与特殊排版的文件经 PUT 往返后字节完全一致（daemon 不做重写）。
+- [x] 校验链等价：PUT 拒绝的候选，`dae validate -c` 也拒绝（防止 API 比 CLI 松）；已覆盖 DNS 路由与 `fixed_domain_ttl` 两类只被语义链拦下的候选。
+- [x] 契约偏离回归：断言 `sources[]` 数量 = 可见源数、`x-dae.hidden_sources` 存在。
+
+#### P4-7 后续复用（P5 / P6）
+
+- [ ] `POST /nodes` / `DELETE /nodes/{id}`：写 `config.d/node.dae`，复用 P4-3 的校验/备份/原子写/reload，另加来源判定（订阅节点不在配置树内 → `404 capability_not_supported`）与引用检查（`routing.fallback`、组 `fixed` → `409 state_conflict`）。
+- [ ] `PATCH /groups/{id}/config`：写 `config.d/group.dae`，RFC 6902 白名单 8 个路径，`If-Match` 对 config revision，`max_patch_operations: 32`。
+
+#### P4-8 不做与已知风险
+
+- 不做 `global.data_dir`（P4-D6）：订阅缓存留在 `<配置目录>/persist.d/`，因此**配置目录里必然存在非 `.dae` 文件**；可写判定只认 `config.d/*.dae`。
+- 不做配置修订历史 / DB 存储（honk 有 `revisions` 与 `SourceStore::Db`），dae 只有文件源。
+- 不做自动回滚（P4-D7）：人工外部编辑与 API 写并发时，靠 `If-Match` 拒绝而非合并。
+- `config.dae` / `api.dae` 不可写意味着「改监听地址、改 secret、改端口」永远只能人工改文件 + restart；前端必须把这些字段标为只读。
+- `max_bytes = 61440` 对大规则集可能不够：超限时返回 413 而非静默截断；如需更大，应提高 `limits.max_json_body_bytes` 而不是放宽该校验。
+
 ## 4. 端点清单
 
 ### 实现
@@ -681,10 +859,26 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 - 限流：`dns/query` 60 次/分钟；`probes` 同时运行 4 个、排队 16 个、120 次/分钟。超限分别返回 `429 rate_limited` / `503 temporarily_unavailable`，并带 `Retry-After`。
 - 只读定位：`providers` 的增删/refresh、`geodata/update`、`config*`、`nodes` 写操作全部 `404 capability_not_supported`。
 
+### P4 端点（已落地）
+
+P4 源级端点已落地，详见 3 节 P4 章节。`api.config_write` 关闭或布局不受管时，写端点返回 `403 permission_denied` 且不写盘。
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/config` | 已接受配置快照（`api.dae` 被隐藏） |
+| GET | `/api/v1/config/sources` | 源列表（含 `writable` / `read_only_reason`） |
+| GET | `/api/v1/config/sources/{source_id}` | 单个源正文；`ETag` = `content_sha256` |
+| PUT | `/api/v1/config/sources/{source_id}` | 整源替换 + reload（`If-Match` 必需，202 + operation） |
+| POST | `/api/v1/config/validate` | syntax / full 两种 dry-run 校验 |
+
+> 规则资源（`GET /rules`、`GET /dns/rules`）保持只读。编辑 `routing` / `dns` 模块的方式是替换
+> 对应的 `config.d/routing.dae`、`config.d/dns.dae` 源文本，契约里没有规则级写端点。
+
 ### 声明不可用（不在路线图内）
 
 以下已知契约资源没有实现计划，统一返回 `404 capability_not_supported`（不落入普通
-`404 resource_not_found`）：
+`404 resource_not_found`）。**其中 `/api/v1/config*` 与 `PATCH /groups/{id}/config` 在 P4
+落地后从本清单移除。**
 
 - `/api/v1/config*`（含 `/config/validate`、`/config/sources*`）
 - `/api/v1/runtime/settings`
@@ -709,6 +903,11 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 12. **不要声明 `full_transparency`**。
 13. **组/节点 ID 必须稳定**，不能从 name 直接推导，也不能 reload 后随机变化。
 14. **认证模式**：非 loopback 必须有 `secret`（token mode）；secretless 匿名仅限 loopback 且显式 `allow_anonymous_loopback: true`。TLS 是部署要求（listener 或受信任本机反向代理），不是 dae 配置校验项。
+15. **`PUT /config/sources/{id}` 的 `If-Match` 比的是源 `content_sha256`**，不是 `GET /groups/{id}/config` 那个 config revision；缺失 `If-Match` 返回 `428 precondition_required`（不是 412）。
+16. **`groups.config_patch = true` 蕴含 `config.available = true` 且 `config.writable = true`**（`api/discovery.yaml:749-758`）；只声明前者属于能力撒谎，契约测试会抓到。
+17. **`config.writable = false` 时写端点必须 `403 permission_denied`，不是 `404`**；`404 capability_not_supported` 只用于「资源整体未实现」。
+18. **full 校验失败的 `PUT` 返回 `422` + `error.details.diagnostics[]`**，不得返回 400/500，也不得先写盘再报错。
+19. **`GET /config` 的源集合契约要求「complete, never truncate」**；dae 隐藏 `api.dae` 是有意偏离，必须在 `x-dae.hidden_sources` 与文档中留痕（见 P4-4）。
 
 ## 6. 测试与 CI
 

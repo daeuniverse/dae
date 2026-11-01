@@ -50,6 +50,7 @@ type Server struct {
 
 	groups      GroupProvider
 	operations  OperationProvider
+	config      ConfigProvider
 	traffic     TrafficHistoryProvider
 	nodes       NodeProvider
 	outbounds   OutboundProvider
@@ -162,6 +163,13 @@ func (s *Server) SetOperationProvider(provider OperationProvider) {
 		return
 	}
 	s.operations = provider
+}
+
+func (s *Server) SetConfigProvider(provider ConfigProvider) {
+	if s == nil {
+		return
+	}
+	s.config = provider
 }
 
 func (s *Server) SetTrafficHistoryProvider(provider TrafficHistoryProvider) {
@@ -405,6 +413,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "resource is not supported by this engine")
 		return
 	}
+	if isConfigPath(r.URL.Path) {
+		s.handleConfig(w, r)
+		return
+	}
 
 	switch r.URL.Path {
 	case "/api":
@@ -512,7 +524,6 @@ func writeMethodNotAllowed(w http.ResponseWriter, requestID, allow string) {
 
 // unavailablePrefixes are contract resources this engine does not implement.
 var unavailablePrefixes = []string{
-	"/api/v1/config",
 	// Known contract resources with no implementation plan: answer
 	// capability_not_supported instead of the generic resource_not_found.
 	"/api/v1/geodata/update",
