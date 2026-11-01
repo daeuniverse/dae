@@ -115,6 +115,10 @@ jobs:
               # sync.OnceValues singleton; reads /proc/mounts, no BPF map needed).
               TestDetectCgroupPathCaching
               TestProductionProgramsLoad
+              # daeParam field offsets must match struct dae_param in
+              # kern/tproxy.c; a drift moves a kernel parameter instead of
+              # failing the load. Needs no BPF map.
+              TestDaeParamLayout
             )
             printf '%s\n' "${whitelist[@]}" | sort -u > /tmp/datapath-whitelist.txt
 
