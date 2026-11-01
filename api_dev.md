@@ -792,6 +792,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 - 不做自动回滚（P4-D7）：人工外部编辑与 API 写并发时，靠 `If-Match` 拒绝而非合并。
 - `config.dae` / `api.dae` 不可写意味着「改监听地址、改 secret、改端口」永远只能人工改文件 + restart；前端必须把这些字段标为只读。
 - `max_bytes = 61440` 对大规则集可能不够：超限时返回 413 而非静默截断；如需更大，应提高 `limits.max_json_body_bytes` 而不是放宽该校验。
+- **不做设备级流量统计**（2026-11-01 决定）：`GET /api/v1/connections` 的 `upload_bytes` / `download_bytes` 只对 userspace TCP 流有值（`control.FlowRuntime.snapshot` 置 `HasBytes: true`），UDP 流与内核直连流量都没有计数。任何按来源/域名聚合出的「流量排行」天生只覆盖一部分链路，补一套覆盖内核直包的 per-device 计量成本极高。因此提供 `api.disable_connection_bytes` 让部署方直接停发这两个字段（恒为 `null`），连接的其余字段不变，而不是去「适配」排行。
 
 ## 4. 端点清单
 

@@ -230,6 +230,14 @@ list, `total_tcp` / `total_udp` count matches before the limit, and
 to run without a filter unless `all=true` is explicit, and closes at most
 `max_bulk_close` (1000) flows per request.
 
+`upload_bytes` and `download_bytes` are only present for flows dae forwards in
+userspace and counts; UDP flows and everything the datapath handles directly
+leave them null. Nothing aggregated from these fields, such as a per-device or
+per-domain traffic ranking, therefore covers the whole link, and dae does not
+claim device-level totals. `api.disable_connection_bytes: true` drops the two
+fields entirely, so a client showing such a ranking has no partial figure to
+present; every other connection attribute is unaffected.
+
 `GET /api/v1/flows` reads the closed-flow history instead: a ring of 2048
 entries retained for 900 seconds, newest first, filtered by `network`, `state`
 and `connection_id`, with `limit` (default 100) and an opaque cursor. `GET

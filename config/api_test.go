@@ -70,6 +70,25 @@ func TestApiSectionDefaultsWhenAbsent(t *testing.T) {
 	if conf.Api.AllowAnonymousLoopback {
 		t.Fatal("allow_anonymous_loopback should default to false")
 	}
+	// Connection byte reporting stays on unless the operator drops it, because
+	// a frontend that shows per-connection traffic relies on it.
+	if conf.Api.DisableConnectionBytes {
+		t.Fatal("disable_connection_bytes should default to false")
+	}
+}
+
+func TestApiDisableConnectionBytesDecodes(t *testing.T) {
+	conf := parseAPIConfig(t, `
+api {
+    enabled: true
+    listen: '127.0.0.1:19527'
+    secret: 'operator-token-123456'
+    disable_connection_bytes: true
+}
+`)
+	if !conf.Api.DisableConnectionBytes {
+		t.Fatal("api.disable_connection_bytes not decoded")
+	}
 }
 
 func TestApiValidate(t *testing.T) {

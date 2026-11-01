@@ -178,6 +178,11 @@ type Api struct {
 	// ConfigWrite permits control callers to replace editable config sources
 	// over the native API. It requires a listener secret.
 	ConfigWrite bool `mapstructure:"config_write" default:"false"`
+	// DisableConnectionBytes stops the control API from reporting cumulative
+	// bytes per connection. Only userspace flows carry those counters, so a
+	// figure aggregated from them covers a fraction of the traffic; an operator
+	// who does not want that number reported can drop it here.
+	DisableConnectionBytes bool `mapstructure:"disable_connection_bytes" default:"false"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {

@@ -17,6 +17,7 @@ api {
     allow_origins: 'http://localhost:3000'
     allowed_hosts: 'panel.example,panel.example:443'
     config_write: false
+    disable_connection_bytes: false
 }
 ```
 
@@ -30,6 +31,7 @@ api {
 | `allowed_hosts` | 空 | 额外接受的 Host authority；省略端口按 80 处理。 |
 | `ui` | 空 | 存放已构建前端的绝对目录，在 `/ui/` 下无凭证访问；非 `/api` 路径会重定向到这里；留空表示不托管前端。 |
 | `config_write` | `false` | 是否允许通过 API 替换配置源。需要同时设置非空 `secret`，且配置目录符合下面的规范结构。 |
+| `disable_connection_bytes` | `false` | 不下发每条连接的累计上/下行字节（`upload_bytes` / `download_bytes`）。详见下面的流量统计口径。 |
 
 ## 通过 API 编辑配置
 
@@ -86,6 +88,26 @@ include {
 - `config.dae` 本身只读（`entry_source`），替换时不得改动 `api` 块。
 - 写入前会跑与 `dae validate -c` 相同的完整校验；不通过的候选返回 `422` 并附行号，磁盘
   不会变动。
+
+## 流量统计口径
+
+`GET /api/v1/connections` 的 `upload_bytes` / `download_bytes` 只对 dae 在用户态转发并计数
+的 TCP 流有值：UDP 流与内核直连（eBPF TCP direct）的流量都不在其中。因此按来源设备或
+目标域名聚合出的「流量排行」只能覆盖链路的一部分，dae 无法给出准确的设备级总量。
+
+不希望下发这个不完整的总量时，设置：
+
+```dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-a-long-random-token'
+    disable_connection_bytes: true
+}
+```
+
+此时 `upload_bytes` 与 `download_bytes` 恒为 `null`，连接列表的其余字段（来源、目标、
+域名、出站、链路）不受影响。
 
 ## 认证
 

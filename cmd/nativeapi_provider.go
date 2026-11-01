@@ -43,6 +43,11 @@ type nativeAPIProvider struct {
 	log        *logrus.Logger
 	geoDirs    []string
 
+	// connectionBytes reports cumulative bytes on connection entries. Only
+	// userspace flows carry them, so it can be turned off for deployments that
+	// would rather not publish a partial total.
+	connectionBytes bool
+
 	geoMu    sync.Mutex
 	geoCache map[string]geoAssetCache
 

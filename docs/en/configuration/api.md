@@ -19,6 +19,7 @@ api {
     allow_origins: 'http://localhost:3000'
     allowed_hosts: 'panel.example,panel.example:443'
     config_write: false
+    disable_connection_bytes: false
 }
 ```
 
@@ -32,6 +33,7 @@ api {
 | `allowed_hosts` | empty | Additional Host authorities accepted by the listener. Omitted port means 80. |
 | `ui` | empty | Absolute directory holding a built frontend. Served at `/ui/` without credentials; other non-`/api` paths redirect there. Empty disables UI hosting. |
 | `config_write` | `false` | Allow API callers to replace configuration sources. Requires a non-empty `secret` and the directory layout below. |
+| `disable_connection_bytes` | `false` | Stop reporting cumulative bytes per connection (`upload_bytes` / `download_bytes`). See the traffic accounting note below. |
 
 ## Editing configuration through the API
 
@@ -95,6 +97,28 @@ Further constraints:
   change the `api` block.
 - A replacement is validated with the same chain as `dae validate -c`; a rejected
   candidate answers `422` with line numbers and nothing is written.
+
+## Traffic accounting
+
+`upload_bytes` and `download_bytes` on `GET /api/v1/connections` only exist for
+the TCP flows dae forwards in userspace and counts: UDP flows and everything the
+datapath handles directly (eBPF TCP direct) are not part of it. A traffic ranking
+aggregated by source device or target domain therefore covers a fraction of the
+link, and dae cannot report an accurate per-device total.
+
+To stop publishing that incomplete total:
+
+```dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-a-long-random-token'
+    disable_connection_bytes: true
+}
+```
+
+The two fields then stay `null`; every other connection attribute (source,
+destination, domain, outbound, chain) is unaffected.
 
 ## Authentication
 

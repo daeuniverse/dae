@@ -187,6 +187,12 @@ DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可
 /api/v1/connections?type=…&src=…` 关闭一批。批量接口在没有任何过滤条件时拒绝执行，
 除非显式 `all=true`；单次最多关闭 `max_bulk_close`（1000）条。
 
+`upload_bytes` / `download_bytes` 只对 dae 在用户态转发并计数的 flow 有值：UDP 流与数据面
+直接处理的流量都留空（`null`）。因此任何由这两个字段聚合出的「按设备/域名流量排行」都只
+覆盖链路的一部分，dae 不提供设备级流量总量。`api.disable_connection_bytes: true` 会让这
+两个字段恒为空，使仅靠该数据绘制的面板没有可直接呈现的不完整数字；连接的其余字段不受
+影响。
+
 `GET /api/v1/flows` 读取已关闭 flow 的历史：2048 条、保留 900 秒的环形记录，最新在前，
 可按 `network`、`state`、`connection_id` 过滤，带 `limit`（默认 100）与不透明 cursor。
 `GET /api/v1/flows/{flow_id}` 返回单条，已过期返回 `410 flow_expired`。flow ID 为 `f_`

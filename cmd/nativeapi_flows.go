@@ -26,7 +26,7 @@ func connectionIDOfFlow(flowID string) string {
 	return "c_" + flowID
 }
 
-func nativeConnectionOf(flow control.SessionFlowSnapshot) nativeapi.Connection {
+func (p *nativeAPIProvider) nativeConnectionOf(flow control.SessionFlowSnapshot) nativeapi.Connection {
 	connection := nativeapi.Connection{
 		ID:             connectionIDOfFlow(flow.ID),
 		State:          "active",
@@ -62,7 +62,7 @@ func nativeConnectionOf(flow control.SessionFlowSnapshot) nativeapi.Connection {
 		connection.Chain = chain
 		connection.ChainSource = "evaluation"
 	}
-	if flow.HasBytes {
+	if flow.HasBytes && p.connectionBytes {
 		up := nativeAPIUInt64(flow.UploadBytes)
 		down := nativeAPIUInt64(flow.DownloadBytes)
 		connection.UploadBytes = up
@@ -102,7 +102,7 @@ func (p *nativeAPIProvider) ListConnections(ctx context.Context, filter nativeap
 		if filter.Src != "" && flow.Src.Addr().String() != filter.Src {
 			continue
 		}
-		connection := nativeConnectionOf(flow)
+		connection := p.nativeConnectionOf(flow)
 		if flow.Network == "udp" {
 			list.TotalUDP++
 			if len(list.UDP) < limit {

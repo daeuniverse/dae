@@ -488,12 +488,13 @@ func (r *Runner) Run() (err error) {
 		eventHub := newFrameHub(rtStatus.snapshot().InstanceID, "events", nativeapi.EventMaxBufferedEvents, nativeapi.EventRetentionSeconds*time.Second, nativeapi.EventMaxClients)
 		log.AddHook(&logHubHook{hub: logHub})
 		provider := &nativeAPIProvider{
-			supervisor: runtimeSupervisor,
-			status:     rtStatus,
-			log:        log,
-			geoDirs:    externGeoDataDirs,
-			logHub:     logHub,
-			eventHub:   eventHub,
+			supervisor:      runtimeSupervisor,
+			status:          rtStatus,
+			log:             log,
+			geoDirs:         externGeoDataDirs,
+			logHub:          logHub,
+			eventHub:        eventHub,
+			connectionBytes: !conf.Api.DisableConnectionBytes,
 		}
 		if active := runtimeSupervisor.activeSnapshot(); active != nil {
 			provider.lastGenerationID = active.id

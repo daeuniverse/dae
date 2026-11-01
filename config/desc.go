@@ -44,6 +44,8 @@ var ApiDesc = Desc{
 	"allow_origins":            "Exact HTTP(S) origins allowed for cross-origin browser access. Empty disables cross-origin access.",
 	"allowed_hosts":            "Additional Host authorities accepted by the listener, used behind a reverse proxy. Omitted port means 80.",
 	"ui":                       "Absolute path to a directory containing a built frontend (with index.html). It is served without credentials at /ui/, while API calls still require the token. Empty disables UI hosting.",
+	"config_write":             "Allow control callers to replace configuration sources over the API. Requires secret and a configuration directory split into config.dae, config.d/*.dae and api.dae.",
+	"disable_connection_bytes": "Stop reporting cumulative bytes per connection. Only userspace flows carry those counters, so anything aggregated from them covers a fraction of the traffic; enable this to leave upload_bytes and download_bytes null instead.",
 }
 
 var GlobalDesc = Desc{
