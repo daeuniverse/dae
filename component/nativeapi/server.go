@@ -303,9 +303,23 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// StreamCloser is implemented by a stream provider that can end its open
+// streams. Shutdown calls it first: an SSE handler only returns when its
+// context is cancelled or a frame arrives, so an idle client otherwise pins the
+// listener open for the whole graceful-shutdown grace period.
+type StreamCloser interface {
+	CloseStreams()
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.httpServer == nil {
 		return nil
+	}
+	if closer, ok := s.logs.(StreamCloser); ok {
+		closer.CloseStreams()
+	}
+	if closer, ok := s.events.(StreamCloser); ok {
+		closer.CloseStreams()
 	}
 	err := s.httpServer.Shutdown(ctx)
 	s.stopAccessSummary()

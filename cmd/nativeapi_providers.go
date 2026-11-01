@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -20,12 +21,62 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// inlineProviderID is the provider ID of the node section. It is the ID a node
+// carries when no subscription delivered it, so it is also the ownership test
+// for inline management.
+const inlineProviderID = "p_inline"
+
+// subscriptionHealth records the last refresh outcome per subscription tag.
+//
+// A refresh that fell back to the cached copy kept traffic alive but did not
+// refresh anything, and a failed fetch that had no cache produced no nodes at
+// all. Provider metadata is the only place a client can see either, so the
+// resolution loop records the outcome here and providers() reports it.
+type subscriptionHealthRecord struct {
+	err       string
+	updatedAt time.Time
+}
+
+var subscriptionHealthRegistry = struct {
+	mu      sync.Mutex
+	records map[string]subscriptionHealthRecord
+}{records: map[string]subscriptionHealthRecord{}}
+
+// publishSubscriptionHealth replaces the registry with one generation's outcome
+// map. Replacing rather than merging also forgets subscriptions the running
+// configuration no longer defines. A nil error marks a refreshed subscription.
+func publishSubscriptionHealth(outcomes map[string]error) {
+	now := time.Now()
+	records := make(map[string]subscriptionHealthRecord, len(outcomes))
+	for tag, err := range outcomes {
+		if tag == "" {
+			continue
+		}
+		record := subscriptionHealthRecord{updatedAt: now}
+		if err != nil {
+			record.err = sanitizeLogMessage(err.Error())
+		}
+		records[tag] = record
+	}
+	subscriptionHealthRegistry.mu.Lock()
+	defer subscriptionHealthRegistry.mu.Unlock()
+	subscriptionHealthRegistry.records = records
+}
+
+// subscriptionHealth returns the last recorded outcome for a tag.
+func subscriptionHealth(tag string) (subscriptionHealthRecord, bool) {
+	subscriptionHealthRegistry.mu.Lock()
+	defer subscriptionHealthRegistry.mu.Unlock()
+	record, ok := subscriptionHealthRegistry.records[tag]
+	return record, ok
+}
+
 // providerIDOf turns a subscription tag into the opaque, stable provider ID
 // shared with Node.provider_id. The empty tag is the inline provider that
 // carries the node section and any untagged subscription.
 func providerIDOf(tag string) string {
 	if tag == "" {
-		return "p_inline"
+		return inlineProviderID
 	}
 	sum := sha256.Sum256([]byte(tag))
 	return "p_" + hex.EncodeToString(sum[:8])
@@ -91,6 +142,17 @@ func (p *nativeAPIProvider) providers(active *nativeActiveGeneration) ([]nativea
 		}
 		if provider.NodeCount > 0 {
 			provider.Status = "ok"
+		}
+		// A refresh that fell back to the cached nodes, or failed outright, is
+		// not a success: the contract has last_error and updated_at so a client
+		// can tell the two apart.
+		if health, ok := subscriptionHealth(tag); ok {
+			updatedAt := health.updatedAt.UTC().Format(time.RFC3339)
+			provider.UpdatedAt = &updatedAt
+			if health.err != "" {
+				provider.Status = "stale"
+				provider.LastError = &nativeapi.SafeError{Code: "subscription_refresh_failed", Message: health.err}
+			}
 		}
 		if definition.url != "" {
 			url := definition.url

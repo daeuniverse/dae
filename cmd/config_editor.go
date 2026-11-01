@@ -44,12 +44,20 @@ const (
 )
 
 // apiSecretPattern matches the listener secret inside an api { } block.
-var apiSecretPattern = regexp.MustCompile(`(?s)(\bapi\s*\{[^}]*?\bsecret\s*:\s*)(?:'[^']*'|"[^"]*"|[^\s;}\n]+)`)
+//
+// The run up to "secret" treats a comment and a quoted literal as opaque units.
+// Without that, a "# }" comment ended the block early and left the real secret
+// in the output, and a commented-out "# secret: 'old'" was the match that got
+// redacted while the live one stayed visible.
+var apiSecretPattern = regexp.MustCompile(`(?s)(\bapi\s*\{(?:#[^\n]*\n|'[^'\n]*'|"[^"\n]*"|[^}#])*?\bsecret\s*:\s*)(?:'[^']*'|"[^"]*"|[^\s;}\n]+)`)
 
-// configOperationStarter is the subset of the operations adapter the editor
-// needs to queue a reload after a write.
-type configOperationStarter interface {
-	StartOperation(ctx context.Context, kind, idempotencyKey string) (nativeapi.OperationAccepted, error)
+// operationQueue is the subset of the operations adapter a write path needs: it
+// queues the reload and says what the completed operation must report.
+type operationQueue interface {
+	StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error)
+	// SetResultResolver registers the resource body a completed operation
+	// reports, replacing the reload's generation ids.
+	SetResultResolver(operationID string, resolver func() (any, error))
 }
 
 type configEditorIdem struct {
@@ -66,7 +74,7 @@ type configEditor struct {
 	baseDir    string
 	apiAtStart config.Api
 	enabled    bool
-	operations configOperationStarter
+	operations operationQueue
 	busy       func() bool
 	generation func() string
 	idem       map[string]configEditorIdem
@@ -83,7 +91,7 @@ type configSourceFile struct {
 	modTime time.Time
 }
 
-func newConfigEditor(cfgFile string, api config.Api, operations configOperationStarter,
+func newConfigEditor(cfgFile string, api config.Api, operations operationQueue,
 	reload *reloadManager, supervisor *runtimeSupervisor, log *logrus.Logger) (*configEditor, error) {
 	mainPath, err := filepath.Abs(cfgFile)
 	if err != nil {
@@ -311,7 +319,7 @@ func (e *configEditor) GetConfig(ctx context.Context) (nativeapi.EffectiveConfig
 	visible := e.visibleSources(all)
 	result := nativeapi.EffectiveConfig{
 		GenerationID: e.generation(),
-		Revision:     revisionOf(all),
+		Revision:     e.sourceRevision(all),
 		Sources:      make([]nativeapi.ConfigSource, 0, len(visible)),
 		Diagnostics:  []nativeapi.ConfigDiagnostic{},
 	}
@@ -325,14 +333,18 @@ func (e *configEditor) GetConfig(ctx context.Context) (nativeapi.EffectiveConfig
 	return result, nil
 }
 
-func revisionOf(visible []configSourceFile) string {
-	parts := make([]string, 0, len(visible))
-	for _, s := range visible {
-		parts = append(parts, s.id+":"+rawSHA256(s.raw))
+// sourceRevision returns the revision of the configuration these sources
+// describe. It uses the same function the running generation reports as
+// runtime.generation.config_revision, so a client can compare the two: they are
+// equal while the on-disk tree is what the engine loaded, and differ once a
+// write has not been reloaded yet. An earlier source-set hash could not be
+// reproduced by a client (it included the hidden api.dae) and never matched.
+func (e *configEditor) sourceRevision(all []configSourceFile) string {
+	candidate, err := e.buildCandidate(nil)
+	if err != nil {
+		return ""
 	}
-	sort.Strings(parts)
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
-	return hex.EncodeToString(sum[:])
+	return candidate.Revision()
 }
 
 // findSource returns the visible source with the given id, or 404. Hidden
@@ -613,18 +625,8 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 			Message: "config source changed since it was read",
 		}
 	}
-	if e.busy() {
-		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
-			Status: 409, Code: "state_conflict", Message: "a reload is already in progress",
-			Details: map[string]any{"reason": "reload_in_progress"},
-		}
-	}
-	// W_OK check: an unwritable file would fail after the backup was taken.
-	if syscall.Access(target.abs, 2) != nil {
-		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
-			Status: 503, Code: "temporarily_unavailable", Message: "config source is not writable right now",
-			Details: map[string]any{"reason": "file_unwritable"},
-		}
+	if err := e.guardConfigWrite(target, []byte(req.Content)); err != nil {
+		return nativeapi.OperationAccepted{}, err
 	}
 
 	// Validate the candidate with full checks before touching disk.
@@ -635,11 +637,8 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	if fullErr := e.fullValidate(candidate); fullErr != nil {
 		return nativeapi.OperationAccepted{}, e.unprocessable(fullErr, target)
 	}
-	if !reflect.DeepEqual(candidate.Api, e.apiAtStart) {
-		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
-			Status: 403, Code: "permission_denied",
-			Message: "api listener settings cannot be changed through the config API",
-		}
+	if err := e.guardApiUnchanged(candidate); err != nil {
+		return nativeapi.OperationAccepted{}, err
 	}
 	mode := os.FileMode(0o600)
 	if fi, statErr := os.Stat(target.abs); statErr == nil {
@@ -652,7 +651,7 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
 	}
 
-	accepted, err := e.operations.StartOperation(ctx, nativeapi.OperationKindReload, req.IdempotencyKey)
+	accepted, err := e.operations.StartOperation(ctx, nativeapi.OperationKindReload, target.abs, req.IdempotencyKey)
 	if err != nil {
 		// The reload never started, so the on-disk file must return to its
 		// previous state; otherwise the next reload would apply a rejected edit.
@@ -665,6 +664,43 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 		e.rememberIdem(req.IdempotencyKey, configEditorIdem{fingerprint: fingerprint, accepted: accepted})
 	}
 	return accepted, nil
+}
+
+// guardConfigWrite applies the checks every configuration write must pass before
+// it touches disk, so the config PUT path and the node write paths cannot drift
+// apart. A node write that skipped them could plant the listener secret in a
+// visible source or race a running reload.
+func (e *configEditor) guardConfigWrite(target configSourceFile, content []byte) error {
+	if e.apiAtStart.Secret != "" && strings.Contains(string(content), e.apiAtStart.Secret) {
+		return permissionDenied("source must not contain the listener secret", "listener_secret_in_content")
+	}
+	if e.busy() {
+		return &nativeapi.APIError{
+			Status: 409, Code: "state_conflict", Message: "a reload is already in progress",
+			Details: map[string]any{"reason": "reload_in_progress"},
+		}
+	}
+	// W_OK check: an unwritable file would fail after the backup was taken.
+	if syscall.Access(target.abs, 2) != nil {
+		return &nativeapi.APIError{
+			Status: 503, Code: "temporarily_unavailable", Message: "config source is not writable right now",
+			Details: map[string]any{"reason": "file_unwritable"},
+		}
+	}
+	return nil
+}
+
+// guardApiUnchanged refuses a candidate that would move the process-owned
+// listener settings. The API config cannot be changed through the config API, and
+// a node write is a config write too.
+func (e *configEditor) guardApiUnchanged(candidate *config.Config) error {
+	if candidate == nil || reflect.DeepEqual(candidate.Api, e.apiAtStart) {
+		return nil
+	}
+	return &nativeapi.APIError{
+		Status: 403, Code: "permission_denied",
+		Message: "api listener settings cannot be changed through the config API",
+	}
 }
 
 func (e *configEditor) unprocessable(err error, target configSourceFile) error {

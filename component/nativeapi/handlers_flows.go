@@ -57,6 +57,14 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, list)
 	case http.MethodDelete:
 		all := query.Get("all") == "true"
+		// `type=all` is not a filter: the provider matches only tcp and udp, so
+		// passing it fell through to "close everything" without the explicit
+		// all=true the bulk call requires. An unknown type had the same effect.
+		if filter.Type != "" && filter.Type != "tcp" && filter.Type != "udp" {
+			writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest,
+				"type must be tcp or udp; pass all=true to close every connection")
+			return
+		}
 		if !all && filter.Type == "" && filter.Src == "" {
 			writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest,
 				"Supply type=tcp, type=udp, or src, or explicitly pass all=true.")

@@ -25,7 +25,7 @@ func newFakeOperationProvider() *fakeOperationProvider {
 	return &fakeOperationProvider{operations: map[string]Operation{}}
 }
 
-func (p *fakeOperationProvider) StartOperation(ctx context.Context, kind, idempotencyKey string) (OperationAccepted, error) {
+func (p *fakeOperationProvider) StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (OperationAccepted, error) {
 	p.startedKind, p.startedKey = kind, idempotencyKey
 	if p.startErr != nil {
 		return OperationAccepted{}, p.startErr
@@ -150,14 +150,14 @@ func TestGetOperationStatus(t *testing.T) {
 
 func TestOperationStoreReplayAndRetention(t *testing.T) {
 	store := NewOperationStore(time.Minute, 2)
-	accepted, replayed, err := store.Accept(OperationKindReload, "key-1")
+	accepted, replayed, err := store.Accept(OperationKindReload, "", "key-1")
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
 	if replayed {
 		t.Fatal("first accept must not be a replay")
 	}
-	replay, replayed, err := store.Accept(OperationKindReload, "key-1")
+	replay, replayed, err := store.Accept(OperationKindReload, "", "key-1")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestOperationStoreReplayAndRetention(t *testing.T) {
 	if replay.OperationID != accepted.OperationID {
 		t.Fatalf("replay created %q, want %q", replay.OperationID, accepted.OperationID)
 	}
-	if _, _, err := store.Accept(OperationKindSuspend, "key-1"); err == nil {
+	if _, _, err := store.Accept(OperationKindSuspend, "", "key-1"); err == nil {
 		t.Fatal("key reuse with another kind must conflict")
 	} else {
 		apiErr := err.(*APIError)
@@ -195,14 +195,14 @@ func TestOperationStoreReplayAndRetention(t *testing.T) {
 	if _, ok := store.Get(accepted.OperationID); ok {
 		t.Fatal("expired operation must be evicted")
 	}
-	if _, _, err := store.Accept(OperationKindReload, "key-1"); err != nil {
+	if _, _, err := store.Accept(OperationKindReload, "", "key-1"); err != nil {
 		t.Fatalf("accept after expiry: %v", err)
 	}
 }
 
 func TestOperationStoreKeepsUnfinishedOperations(t *testing.T) {
 	store := NewOperationStore(time.Nanosecond, 1)
-	accepted, _, err := store.Accept(OperationKindReload, "")
+	accepted, _, err := store.Accept(OperationKindReload, "", "")
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestOperationStoreKeepsUnfinishedOperations(t *testing.T) {
 
 func TestOperationStoreFail(t *testing.T) {
 	store := NewOperationStore(time.Minute, 4)
-	accepted, _, _ := store.Accept(OperationKindReload, "")
+	accepted, _, _ := store.Accept(OperationKindReload, "", "")
 	store.Fail(accepted.OperationID, &SafeError{Code: "reload_rejected", Message: "boom"})
 	operation, ok := store.Get(accepted.OperationID)
 	if !ok || operation.Status != OperationStatusFailed || operation.Error == nil {
@@ -298,6 +298,37 @@ func TestTrafficHistoryParametersAndShape(t *testing.T) {
 		bad := doRequest(server, http.MethodGet, "/api/v1/runtime/traffic/history?"+query, remote, nil)
 		if bad.Code != http.StatusBadRequest {
 			t.Fatalf("%s status = %d, want 400", query, bad.Code)
+		}
+	}
+}
+
+func TestAcceptScopesKeysPerRequest(t *testing.T) {
+	// A key used to refresh one subscription must not replay that operation for
+	// another subscription: the caller would treat the target as refreshed while
+	// nothing was queued for it.
+	store := NewOperationStore(time.Hour, 64)
+
+	first, replayed, err := store.Accept(OperationKindProviderRefresh, "p_a", "key-1")
+	if err != nil || replayed {
+		t.Fatalf("first accept: replayed=%v err=%v", replayed, err)
+	}
+
+	// Same key, same request: replay.
+	replay, replayed, err := store.Accept(OperationKindProviderRefresh, "p_a", "key-1")
+	if err != nil || !replayed {
+		t.Fatalf("same request should replay: replayed=%v err=%v", replayed, err)
+	}
+	if replay.OperationID != first.OperationID {
+		t.Fatalf("replay operation = %q, want %q", replay.OperationID, first.OperationID)
+	}
+
+	// Same key, another target: conflict.
+	if _, _, err := store.Accept(OperationKindProviderRefresh, "p_b", "key-1"); err == nil {
+		t.Fatal("a key reused for another subscription must conflict")
+	} else {
+		apiErr, ok := err.(*APIError)
+		if !ok || apiErr.Code != codeIdempotencyConflict {
+			t.Fatalf("err = %v, want %s", err, codeIdempotencyConflict)
 		}
 	}
 }

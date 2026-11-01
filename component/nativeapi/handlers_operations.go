@@ -41,7 +41,7 @@ func (s *Server) handleStartOperation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, err.Error())
 		return
 	}
-	accepted, err := s.operations.StartOperation(r.Context(), kind, r.Header.Get("Idempotency-Key"))
+	accepted, err := s.operations.StartOperation(r.Context(), kind, r.Method+" "+r.URL.Path, r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		s.writeProviderFailure(w, requestID, err)
 		return

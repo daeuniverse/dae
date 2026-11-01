@@ -21,8 +21,6 @@ import (
 // token.
 const UIBasePath = "/ui/"
 
-// hasUI reports whether a frontend directory was configured. The frontend uses
-// hash routing, so only extensionless misses fall back to index.html.
 // uiRootDir normalizes the configured frontend directory. A directory that is
 // missing or has no index.html is not fatal: the listener starts, answers 404
 // under /ui/ and logs a warning, so a broken UI never keeps the proxy down.
@@ -46,6 +44,8 @@ func uiRootDir(dir string) (string, string) {
 	return root, ""
 }
 
+// hasUI reports whether a frontend directory was configured. The frontend uses
+// hash routing, so only extensionless misses fall back to index.html.
 func (s *Server) hasUI() bool {
 	return s.uiRoot != ""
 }

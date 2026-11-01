@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/component/nativeapi"
@@ -21,6 +22,40 @@ type nativeAPIOperations struct {
 	supervisor *runtimeSupervisor
 	events     *nativeAPIProvider
 	probes     *probeGate
+
+	// resultMu guards resultResolvers, which lets a write path say what its
+	// completed operation must report. The contract asks a node_create for the
+	// Node, a node_delete for the deletion count and a provider_refresh for the
+	// Provider; only the caller knows which resource it touched, and the value
+	// can only be read once the reload has published it.
+	resultMu        sync.Mutex
+	resultResolvers map[string]func() (any, error)
+}
+
+// SetResultResolver registers the body a completed operation reports.
+func (o *nativeAPIOperations) SetResultResolver(operationID string, resolver func() (any, error)) {
+	if o == nil || operationID == "" || resolver == nil {
+		return
+	}
+	o.resultMu.Lock()
+	defer o.resultMu.Unlock()
+	if o.resultResolvers == nil {
+		o.resultResolvers = map[string]func() (any, error){}
+	}
+	o.resultResolvers[operationID] = resolver
+}
+
+// takeResultResolver removes and returns the resolver for one operation, so a
+// completed or rejected operation cannot leak its closure.
+func (o *nativeAPIOperations) takeResultResolver(operationID string) func() (any, error) {
+	if o == nil || operationID == "" {
+		return nil
+	}
+	o.resultMu.Lock()
+	defer o.resultMu.Unlock()
+	resolver := o.resultResolvers[operationID]
+	delete(o.resultResolvers, operationID)
+	return resolver
 }
 
 func newNativeAPIOperations(manager *reloadManager, supervisor *runtimeSupervisor) *nativeAPIOperations {
@@ -32,7 +67,7 @@ func newNativeAPIOperations(manager *reloadManager, supervisor *runtimeSuperviso
 	}
 }
 
-func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, idempotencyKey string) (nativeapi.OperationAccepted, error) {
+func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error) {
 	if err := ctx.Err(); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
@@ -40,7 +75,7 @@ func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, idempote
 		return nativeapi.OperationAccepted{}, nativeapi.NewAPIError(503, "temporarily_unavailable",
 			"the reload manager is unavailable")
 	}
-	accepted, replayed, err := o.store.Accept(kind, idempotencyKey)
+	accepted, replayed, err := o.store.Accept(kind, scope, idempotencyKey)
 	if err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
@@ -99,15 +134,15 @@ func (o *nativeAPIOperations) FollowReload(operationID string, started bool, suc
 		return
 	}
 	// A signal-triggered reload owns no operation but still changes the
-	// generation, so it must publish the same invalidation events.
+	// generation, so it must publish the same invalidation events. Only the
+	// operation bookkeeping below is skipped when the id is unknown.
 	kind, known := "", false
 	if o.store != nil && operationID != "" {
 		kind, known = o.store.Kind(operationID)
-		if !known {
-			return
-		}
 	}
 	if !success {
+		// The operation never produced a resource, so its resolver must go.
+		o.takeResultResolver(operationID)
 		if known {
 			o.store.Fail(operationID, &nativeapi.SafeError{
 				Code:    "reload_rejected",
@@ -119,6 +154,7 @@ func (o *nativeAPIOperations) FollowReload(operationID string, started bool, suc
 		return
 	}
 	if known {
+		status := "succeeded"
 		switch kind {
 		case nativeapi.OperationKindSuspend:
 			state := "suspended"
@@ -127,21 +163,36 @@ func (o *nativeAPIOperations) FollowReload(operationID string, started bool, suc
 			state := "running"
 			o.store.Succeed(operationID, nativeapi.RuntimeStateResult{RuntimeState: &state})
 		default:
-			var activeGenerationID *string
-			var datapathGenerationID *string
-			if active := o.supervisor.activeSnapshot(); active != nil {
-				id := active.id
-				activeGenerationID = &id
-				if datapath := active.controlPlane.DatapathGenerationID(); datapath != "" {
-					datapathGenerationID = &datapath
+			// A write that names a resource reports that resource, not the
+			// reload's generation ids.
+			if resolver := o.takeResultResolver(operationID); resolver != nil {
+				result, resolveErr := resolver()
+				if resolveErr != nil {
+					o.store.Fail(operationID, &nativeapi.SafeError{
+						Code:    "result_unavailable",
+						Message: "the write completed but the resource it produced could not be read",
+					})
+					status = "failed"
+				} else {
+					o.store.Succeed(operationID, result)
 				}
+			} else {
+				var activeGenerationID *string
+				var datapathGenerationID *string
+				if active := o.supervisor.activeSnapshot(); active != nil {
+					id := active.id
+					activeGenerationID = &id
+					if datapath := active.controlPlane.DatapathGenerationID(); datapath != "" {
+						datapathGenerationID = &datapath
+					}
+				}
+				o.store.Succeed(operationID, nativeapi.ReloadResult{
+					ActiveGenerationID:   activeGenerationID,
+					DatapathGenerationID: datapathGenerationID,
+				})
 			}
-			o.store.Succeed(operationID, nativeapi.ReloadResult{
-				ActiveGenerationID:   activeGenerationID,
-				DatapathGenerationID: datapathGenerationID,
-			})
 		}
-		o.events.publishOperationUpdated(operationID, "succeeded")
+		o.events.publishOperationUpdated(operationID, status)
 	}
 	o.publishGenerationEvents()
 }

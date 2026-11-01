@@ -74,7 +74,7 @@ func (h *frameHub) publish(event string, data any) {
 	h.seq++
 	frame := storedFrame{
 		seq:   h.seq,
-		id:    fmt.Sprintf("%s:%d", h.prefix, h.seq),
+		id:    h.frameID(h.seq),
 		event: event,
 		data:  data,
 		at:    time.Now(),
@@ -123,6 +123,38 @@ func (h *frameHub) frameByIDLocked(id string) (storedFrame, bool) {
 	return storedFrame{}, false
 }
 
+// closeAll ends every open stream. A shutdown otherwise waits for each SSE
+// handler, which only returns when its context is cancelled or a frame arrives,
+// so an idle stream held the listener open for the whole shutdown grace period.
+func (h *frameHub) closeAll() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, sub := range h.subs {
+		close(sub.ch)
+		delete(h.subs, id)
+	}
+}
+
+// CloseStreams releases the open SSE streams so shutdown does not wait for
+// clients that keep an idle connection open.
+func (p *nativeAPIProvider) CloseStreams() {
+	if p == nil {
+		return
+	}
+	p.logHub.closeAll()
+	p.eventHub.closeAll()
+}
+
+// frameID names one frame. The instance is part of the ID so a cursor issued by
+// a previous process is rejected with event_cursor_expired instead of being
+// accepted against a fresh ring that happens to share the sequence numbers.
+func (h *frameHub) frameID(seq uint64) string {
+	return fmt.Sprintf("%s:%s:%d", h.instanceID, h.prefix, seq)
+}
+
 // open builds a resumable stream. An unknown or expired cursor reports
 // event_cursor_expired, as the contract requires.
 func (h *frameHub) open(lastEventID string, match func(event string, data any) bool) (*nativeapi.SSEStream, error) {
@@ -144,12 +176,21 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 		switch {
 		case ok:
 			readySeq = cursor.seq
-		case lastEventID == fmt.Sprintf("%s:0", h.prefix):
-			// The client attached before any record existed; resume from the
-			// retained frames instead of rejecting the cursor.
-			if h.length > 0 {
-				readySeq = h.frames[h.start].seq - 1
+		case lastEventID == h.frameID(0):
+			// The client attached before any record existed. Resuming from zero
+			// is only honest while nothing has been evicted: if the ring already
+			// dropped records, the client missed them and must resync instead of
+			// being told it is up to date.
+			if h.length == 0 {
+				if h.seq > 0 {
+					return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
+				}
+				break
 			}
+			if first := h.frames[h.start].seq; first > 1 {
+				return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
+			}
+			readySeq = h.frames[h.start].seq - 1
 		default:
 			return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
 		}
@@ -158,7 +199,7 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 	}
 
 	ready := nativeapi.SSEFrame{
-		ID:    fmt.Sprintf("%s:%d", h.prefix, readySeq),
+		ID:    h.frameID(readySeq),
 		Event: "stream.ready",
 		Data: nativeapi.StreamReadyEvent{
 			InstanceID: h.instanceID,

@@ -42,7 +42,9 @@ type fakeConfigOperations struct {
 	err   error
 }
 
-func (f *fakeConfigOperations) StartOperation(ctx context.Context, kind, idempotencyKey string) (nativeapi.OperationAccepted, error) {
+func (f *fakeConfigOperations) SetResultResolver(string, func() (any, error)) {}
+
+func (f *fakeConfigOperations) StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error) {
 	f.calls++
 	if f.err != nil {
 		return nativeapi.OperationAccepted{}, f.err
@@ -57,12 +59,12 @@ func (f *fakeConfigOperations) StartOperation(ctx context.Context, kind, idempot
 
 // newFlowEditor mirrors production startup: the api block is read from api.dae
 // and passed as the start-up snapshot, so the candidate api must match it.
-func newFlowEditor(t *testing.T, main string, enabled bool, ops configOperationStarter) *configEditor {
+func newFlowEditor(t *testing.T, main string, enabled bool, ops operationQueue) *configEditor {
 	t.Helper()
 	return newFlowEditorWithReload(t, main, enabled, ops, nil)
 }
 
-func newFlowEditorWithReload(t *testing.T, main string, enabled bool, ops configOperationStarter, reload *reloadManager) *configEditor {
+func newFlowEditorWithReload(t *testing.T, main string, enabled bool, ops operationQueue, reload *reloadManager) *configEditor {
 	t.Helper()
 	apiBody := "api {\n  secret: 'flow-secret'\n  config_write: false\n}\n"
 	if enabled {

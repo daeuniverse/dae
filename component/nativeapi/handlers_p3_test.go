@@ -403,3 +403,38 @@ type errorProbes struct{}
 func (errorProbes) StartProbe(context.Context, ProbeRequest, string) (OperationAccepted, error) {
 	return OperationAccepted{}, &APIError{Status: 503, Code: "temporarily_unavailable", Message: "probe queue is full", RetryAfterSeconds: 1}
 }
+
+func TestBulkCloseRequiresAnExplicitAllSwitch(t *testing.T) {
+	// The provider matches only tcp and udp, so `type=all` (or any unknown type)
+	// used to bypass the "no filter without all=true" guard and close every
+	// connection. Both have to be refused instead.
+	server := newTestServer(t, Config{AllowAnonymousLoopback: true}, fakeRuntimeProvider{runtime: testRuntime()})
+	withP3Providers(server)
+
+	for _, path := range []string{
+		"/api/v1/connections?type=all",
+		"/api/v1/connections?type=bogus",
+	} {
+		req := newRequestBody(http.MethodDelete, path, "")
+		req.Host = "127.0.0.1:9527"
+		req.RemoteAddr = "127.0.0.1:1234"
+		recorder := serveRequest(server, req)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400: %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+
+	// A real filter still works without all=true.
+	for _, path := range []string{
+		"/api/v1/connections?type=tcp",
+		"/api/v1/connections?src=10.0.0.1",
+	} {
+		req := newRequestBody(http.MethodDelete, path, "")
+		req.Host = "127.0.0.1:9527"
+		req.RemoteAddr = "127.0.0.1:1234"
+		recorder := serveRequest(server, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200: %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}

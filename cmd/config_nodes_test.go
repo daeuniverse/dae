@@ -7,11 +7,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/component/nativeapi"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
 )
 
@@ -32,9 +34,18 @@ func nodeIndexWith(refs ...map[string]nodeRef) nodeIndexFunc {
 	}
 }
 
+func insertNodeEntryOrFail(t *testing.T, text, name, link string) string {
+	t.Helper()
+	got, err := insertNodeEntry(text, name, link)
+	if err != nil {
+		t.Fatalf("insertNodeEntry(%q): %v", name, err)
+	}
+	return got
+}
+
 func TestInsertNodeEntryIntoExistingBlock(t *testing.T) {
 	text := "node {\n  existing: 'socks5://192.0.2.1:1080'\n}\n"
-	got := insertNodeEntry(text, "mock-01", mockLink)
+	got := insertNodeEntryOrFail(t, text, "mock-01", mockLink)
 	want := "node {\n  mock-01: '" + mockLink + "'\n  existing: 'socks5://192.0.2.1:1080'\n}\n"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
@@ -44,7 +55,7 @@ func TestInsertNodeEntryIntoExistingBlock(t *testing.T) {
 func TestInsertNodeEntryAppendsBlock(t *testing.T) {
 	// A module without a node block gets one, and the existing text is untouched.
 	text := "# nodes live here\n"
-	got := insertNodeEntry(text, "mock-01", mockLink)
+	got := insertNodeEntryOrFail(t, text, "mock-01", mockLink)
 	want := "# nodes live here\n\nnode {\n  mock-01: '" + mockLink + "'\n}\n"
 	if got != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
@@ -180,7 +191,7 @@ func TestConfigDeleteNodeRemovesLine(t *testing.T) {
 	}
 	ops.calls = 0
 
-	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: "inline"}})
+	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
 	outcome, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_mock"}, index)
 	if err != nil {
 		t.Fatal(err)
@@ -205,6 +216,35 @@ func TestConfigDeleteNodeRejectsProviderOwnedNode(t *testing.T) {
 	_, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_sub"}, index)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
 		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
+	}
+}
+
+func TestConfigDeleteNodeRejectsProviderNodeSharingInlineName(t *testing.T) {
+	// Names are global, so a subscription node and an inline node can carry the
+	// same name. Deleting the subscription node must not edit the file: the
+	// ownership check has to run before the edit by name.
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "dup", Link: mockLink}, emptyNodeIndex); err != nil {
+		t.Fatal(err)
+	}
+	ops.calls = 0
+	target := flowSource(t, e, "config.d/node.dae")
+	before, _ := os.ReadFile(target.abs)
+
+	index := nodeIndexWith(map[string]nodeRef{"n_sub": {Name: "dup", ProviderID: "p_sub"}})
+	_, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_sub"}, index)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
+		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
+	}
+	after, _ := os.ReadFile(target.abs)
+	if string(before) != string(after) {
+		t.Fatalf("the managed file changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if ops.calls != 0 {
+		t.Fatalf("StartOperation calls = %d, want 0", ops.calls)
 	}
 }
 
@@ -247,15 +287,161 @@ func TestValidateNodeLinkAcceptsRealShareLinks(t *testing.T) {
 func TestInsertNodeEntryMatchesFileIndentation(t *testing.T) {
 	// The real configuration uses four spaces; a new entry should look native.
 	text := "node {\n    keep: 'socks5://192.0.2.1:1080'\n}\n"
-	got := insertNodeEntry(text, "mock-01", mockLink)
+	got := insertNodeEntryOrFail(t, text, "mock-01", mockLink)
 	want := "node {\n    mock-01: '" + mockLink + "'\n    keep: 'socks5://192.0.2.1:1080'\n}\n"
 	if got != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
 	}
 
 	// An empty block falls back to two spaces, the style the fixtures use.
-	got = insertNodeEntry("node {\n}\n", "mock-01", mockLink)
+	got = insertNodeEntryOrFail(t, "node {\n}\n", "mock-01", mockLink)
 	if !strings.Contains(got, "\n  mock-01: ") {
 		t.Fatalf("empty block should use two spaces: %q", got)
+	}
+}
+
+func TestQuoteNodeValuePicksASafeQuote(t *testing.T) {
+	// A single quote inside the link must not close the literal: the parser has
+	// no escapes, so the whole value has to switch to double quotes.
+	quoted, err := quoteNodeValue(`socks5://u:pa'ss@192.0.2.10:1080`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(quoted, `"`) || !strings.HasSuffix(quoted, `"`) {
+		t.Fatalf("value with a single quote should use double quotes: %s", quoted)
+	}
+	if strings.Contains(quoted, "'\n") {
+		t.Fatal("the quote must not leak a line break")
+	}
+
+	// A value with both quote characters cannot be represented at all.
+	if _, err := quoteNodeValue(`socks5://u:"a'b"@192.0.2.10:1080`); err == nil {
+		t.Fatal("a value containing both quote characters must be refused")
+	}
+	// A newline would end the entry and let the rest become configuration.
+	if _, err := quoteNodeValue("socks5://192.0.2.10:1080\napi {\n  secret: x\n}"); err == nil {
+		t.Fatal("a value containing a newline must be refused")
+	}
+}
+
+func TestInsertNodeEntryRejectsInjectedSection(t *testing.T) {
+	// The link below previously closed the literal, ended the entry and started
+	// an api section of its own.
+	injected := "socks5://192.0.2.10:1080\n}\napi {\n  secret: 'own'\n}\nnode {"
+	if _, err := insertNodeEntry("node {\n}\n", "evil", injected); err == nil {
+		t.Fatal("a link carrying a newline must be refused")
+	}
+}
+
+func TestConfigNodeWriteSharesTheConfigPutGuards(t *testing.T) {
+	// The node write paths used to skip three checks the config PUT had: the
+	// listener secret, the API section and a running reload. They are one
+	// implementation now, so a node create must refuse all three.
+	main, _ := newManagedTree(t)
+	reload := newReloadManager(make(chan reloadRequest, 1), make(chan struct{}, 1), make(chan os.Signal, 1))
+
+	// A link that carries the listener secret would plant it in a visible file.
+	ops := &fakeConfigOperations{}
+	e := newFlowEditorWithReload(t, main, true, ops, reload)
+	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{
+		Name: "leak",
+		Link: "socks5://flow-secret@192.0.2.10:1080",
+	}, emptyNodeIndex)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 403 || apiErr.Code != "permission_denied" {
+		t.Fatalf("got %d %s, want 403 permission_denied", apiErr.Status, apiErr.Code)
+	}
+	if ops.calls != 0 {
+		t.Fatal("a refused write must not queue a reload")
+	}
+
+	// A reload in progress must refuse the write instead of racing it.
+	reload.reloadActive.Store(true)
+	defer reload.reloadActive.Store(false)
+	_, err = e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{
+		Name: "racy",
+		Link: mockLink,
+	}, emptyNodeIndex)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
+		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
+	}
+}
+
+func TestConfigNodeCreateRefusesAnApiSectionInjection(t *testing.T) {
+	// A newline in the link used to end the entry and start an api section,
+	// which flipped the tree to layout_unmanaged and made every later write 404.
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	injected := "socks5://192.0.2.10:1080\n}\napi {\n  secret: 'own'\n}\nnode {"
+	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "evil", Link: injected}, emptyNodeIndex)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 422 {
+		t.Fatalf("got %d %s, want 422 unsupported_value", apiErr.Status, apiErr.Code)
+	}
+	if ops.calls != 0 {
+		t.Fatal("a refused write must not queue a reload")
+	}
+}
+
+func TestPublishSubscriptionHealthReportsTheOutcome(t *testing.T) {
+	// A refresh that fell back to the cache must not read as a success, and the
+	// registry must forget subscriptions the running config no longer defines.
+	publishSubscriptionHealth(map[string]error{
+		"subA": errors.New("subscription answered HTTP 500"),
+		"subB": nil,
+	})
+	defer publishSubscriptionHealth(nil)
+
+	record, ok := subscriptionHealth("subA")
+	if !ok || record.err == "" {
+		t.Fatalf("subA should report a failure, got %+v", record)
+	}
+	if record, ok := subscriptionHealth("subB"); !ok || record.err != "" {
+		t.Fatalf("subB should report success, got %+v", record)
+	}
+
+	publishSubscriptionHealth(map[string]error{"subB": nil})
+	if _, ok := subscriptionHealth("subA"); ok {
+		t.Fatal("a subscription removed from the config must be forgotten")
+	}
+}
+
+func TestInsertNodeEntrySurvivesAParseRoundTrip(t *testing.T) {
+	// The fix has to hold at the parser, not just in the string: whatever
+	// quoteNodeValue picks must parse back to exactly the original link.
+	links := []string{
+		"socks5://192.0.2.10:1080",
+		`socks5://u:pa'ss@192.0.2.10:1080`,
+		`socks5://u:pa"ss@192.0.2.10:1080`,
+		`vless://id@192.0.2.10:443?security=tls&sni=example.com#tag'with"both`,
+	}
+	for _, link := range links {
+		text, err := insertNodeEntry("node {\n}\n", "n1", link)
+		if err == nil {
+			// The written text must parse and carry the value unchanged.
+			sections, parseErr := config_parser.Parse(text)
+			if parseErr != nil {
+				t.Fatalf("%q: written config does not parse: %v\n%s", link, parseErr, text)
+			}
+			got := ""
+			for _, s := range sections {
+				for _, item := range s.Items {
+					if item.Type != config_parser.ItemType_Param {
+						continue
+					}
+					if p := item.Value.(*config_parser.Param); p.Key == "n1" {
+						got = p.Val
+					}
+				}
+			}
+			if got != link {
+				t.Fatalf("value changed: got %q want %q\n%s", got, link, text)
+			}
+			continue
+		}
+		// A value the parser cannot express must be refused, never written.
+		if strings.Contains(err.Error(), "cannot be written") && strings.Count(link, `'`) > 0 && strings.Count(link, `"`) > 0 {
+			continue
+		}
+		t.Fatalf("%q: unexpected refusal: %v", link, err)
 	}
 }

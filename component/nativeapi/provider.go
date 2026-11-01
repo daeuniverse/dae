@@ -51,7 +51,7 @@ type GroupProvider interface {
 
 // OperationProvider starts and reports asynchronous control operations.
 type OperationProvider interface {
-	StartOperation(ctx context.Context, kind, idempotencyKey string) (OperationAccepted, error)
+	StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (OperationAccepted, error)
 	GetOperation(ctx context.Context, operationID string) (Operation, bool, error)
 }
 
@@ -197,8 +197,11 @@ type FlowProvider interface {
 }
 
 const (
-	LogRetentionSeconds    = 300
-	LogMaxBufferedRecords  = 1024
+	LogRetentionSeconds   = 300
+	LogMaxBufferedRecords = 1024
+	// LogMaxClients bounds concurrent /logs streams. Without it a client that
+	// reconnects in a loop pins one goroutine and one buffer slot per stream.
+	LogMaxClients          = 32
 	EventRetentionSeconds  = 300
 	EventMaxBufferedEvents = 1024
 	EventMaxClients        = 32

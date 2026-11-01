@@ -484,7 +484,7 @@ func (r *Runner) Run() (err error) {
 
 	var apiServer *nativeapi.Server
 	if conf.Api.Enabled {
-		logHub := newFrameHub(rtStatus.snapshot().InstanceID, "logs", nativeapi.LogMaxBufferedRecords, nativeapi.LogRetentionSeconds*time.Second, 0)
+		logHub := newFrameHub(rtStatus.snapshot().InstanceID, "logs", nativeapi.LogMaxBufferedRecords, nativeapi.LogRetentionSeconds*time.Second, nativeapi.LogMaxClients)
 		eventHub := newFrameHub(rtStatus.snapshot().InstanceID, "events", nativeapi.EventMaxBufferedEvents, nativeapi.EventRetentionSeconds*time.Second, nativeapi.EventMaxClients)
 		log.AddHook(&logHubHook{hub: logHub})
 		provider := &nativeAPIProvider{

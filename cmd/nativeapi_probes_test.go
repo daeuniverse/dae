@@ -6,11 +6,14 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/component/nativeapi"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/sirupsen/logrus"
 )
 
 func apiErrorOf(t *testing.T, err error) *nativeapi.APIError {
@@ -89,5 +92,39 @@ func TestProbeGateRunsAtMostActiveJobsConcurrently(t *testing.T) {
 	case <-started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("queued probe never started after slots were released")
+	}
+}
+
+func TestProbeNodeAddressUsesTheNodeServer(t *testing.T) {
+	// tcp_connect has to reach the node's own server, not a public address
+	// through the proxy: a reachable node whose exit cannot reach 1.1.1.1 used
+	// to answer unavailable.
+	d, err := dialer.NewFromLinkContext(context.Background(), &dialer.GlobalOption{Log: logrus.New()}, dialer.InstanceOption{DisableCheck: true}, "socks5://192.0.2.10:1080", "")
+	if err != nil {
+		t.Fatalf("build dialer: %v", err)
+	}
+	defer func() { _ = d.Close() }()
+	if got := probeNodeAddress(d); got != "192.0.2.10:1080" {
+		t.Fatalf("probeNodeAddress = %q, want the node server 192.0.2.10:1080", got)
+	}
+	// An outbound with no server address falls back to the well-known endpoint.
+	if got := probeNodeAddress(nil); got != "" {
+		t.Fatalf("probeNodeAddress(nil) = %q, want empty", got)
+	}
+	if got := probeDialAddress("tcp", "ipv4"); got != "1.1.1.1:443" {
+		t.Fatalf("probeDialAddress(tcp, ipv4) = %q", got)
+	}
+	if got := probeDialAddress("udp", "ipv6"); got != "[2606:4700:4700::1111]:53" {
+		t.Fatalf("probeDialAddress(udp, ipv6) = %q", got)
+	}
+}
+
+func TestProbeRejectsUnknownKind(t *testing.T) {
+	item := runProbeMember(context.Background(), probeMember{id: "n", dialer: nil}, nativeapi.ProbeRequest{Kind: "icmp"}, "tcp", 0, nil)
+	if item.State != "unavailable" {
+		t.Fatalf("state = %q, want unavailable", item.State)
+	}
+	if item.Error == nil || *item.Error != "dialer is unavailable" {
+		t.Fatalf("error = %v", item.Error)
 	}
 }

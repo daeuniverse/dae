@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,5 +161,55 @@ func TestEntryAndHiddenSourcesAreNotWritable(t *testing.T) {
 	}
 	if !e.sourceWritable(module) {
 		t.Fatalf("config.d module must be writable")
+	}
+}
+
+func TestMaskSourceIgnoresCommentsInsideTheApiBlock(t *testing.T) {
+	// A "}" inside a comment used to end the block early, so the real secret
+	// after it was returned verbatim by GET /config.
+	in := "api {\n  # closing brace in a comment: }\n  secret: 'hunter2'\n}\n"
+	out, masked := maskSource(in)
+	if !masked || strings.Contains(out, "hunter2") {
+		t.Fatalf("secret leaked: %q", out)
+	}
+
+	// A commented-out secret must not be what gets redacted.
+	in = "api {\n  # secret: 'commented-out'\n  secret: 'hunter2'\n}\n"
+	out, masked = maskSource(in)
+	if !masked || strings.Contains(out, "hunter2") {
+		t.Fatalf("live secret leaked: %q", out)
+	}
+	if !strings.Contains(out, "commented-out") {
+		t.Fatalf("a comment must be left alone: %q", out)
+	}
+
+	// A quoted value containing a brace must not end the block either.
+	in = "api {\n  note: 'a}b'\n  secret: 'hunter2'\n}\n"
+	out, masked = maskSource(in)
+	if !masked || strings.Contains(out, "hunter2") {
+		t.Fatalf("secret after a quoted brace leaked: %q", out)
+	}
+}
+
+func TestGetConfigRevisionMatchesTheGenerationFormula(t *testing.T) {
+	// GET /config and runtime.generation.config_revision used different
+	// algorithms, so a client could never tell whether disk was what the engine
+	// had loaded. They are the same function now.
+	main, _ := newManagedTree(t)
+	e := newFlowEditor(t, main, true, &fakeConfigOperations{})
+
+	got, err := e.GetConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := e.buildCandidate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision == "" {
+		t.Fatal("revision must not be empty for a parseable tree")
+	}
+	if got.Revision != candidate.Revision() {
+		t.Fatalf("revision = %q, want the generation formula %q", got.Revision, candidate.Revision())
 	}
 }

@@ -213,6 +213,10 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
+	// Health is reported only for a generation that actually becomes active: a
+	// candidate whose build is rejected must not make the running generation
+	// look stale.
+	subscriptionHealthUpdates := map[string]error{}
 	if !conf.Global.DisableWaitingNetwork {
 		networkWaitStart := time.Now()
 		epo := 5 * time.Second
@@ -250,11 +254,13 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// Parallelize subscription resolution to improve startup performance.
 	// Use a semaphore to limit concurrency and avoid overwhelming the network.
 	type subscriptionResult struct {
-		tag     string
-		nodes   []string
-		err     error
-		sub     config.KeyableString
-		elapsed time.Duration
+		tag      string
+		nodes    []string
+		err      error
+		sub      config.KeyableString
+		elapsed  time.Duration
+		stale    bool
+		fetchErr error
 	}
 	numSubscriptions := len(conf.Subscription)
 	if numSubscriptions > 0 {
@@ -277,7 +283,9 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 				if daeDNSRouter != nil {
 					wrappedDialer, wrapErr := daeDNSRouter.WrapSubscriptionDialer(subDialer, string(s))
 					if wrapErr != nil {
+						wrapTag, _ := common.GetTagFromLinkLikePlaintext(string(s))
 						results <- subscriptionResult{
+							tag: wrapTag,
 							err: wrapErr,
 							sub: s,
 						}
@@ -286,13 +294,15 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 					subDialer = wrappedDialer
 				}
 				client := newHTTPClientForDialer(subDialer, 30*time.Second, conf.Global.SoMarkFromDae, conf.Global.Mptcp)
-				tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(s))
+				resolved, err := subscription.Resolve(log, &client, filepath.Dir(cfgFile), string(s))
 				results <- subscriptionResult{
-					tag:     tag,
-					nodes:   nodes,
-					err:     err,
-					sub:     s,
-					elapsed: time.Since(subStart),
+					tag:      resolved.Tag,
+					nodes:    resolved.Nodes,
+					err:      err,
+					sub:      s,
+					elapsed:  time.Since(subStart),
+					stale:    resolved.CacheFallback,
+					fetchErr: resolved.FetchErr,
 				}
 			}(sub)
 		}
@@ -303,8 +313,16 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 			if result.err != nil {
 				log.Warnf(`failed to resolve subscription "%v" after %v: %v`, result.sub, result.elapsed, result.err)
 				resolvingfailed = true
+				subscriptionHealthUpdates[result.tag] = result.err
 			} else {
 				log.Infof(`subscription "%v" resolved %d node(s) in %v`, result.tag, len(result.nodes), result.elapsed)
+				if result.stale {
+					// Served from the last good copy: the nodes stay in the
+					// generation, but the subscription did not refresh.
+					subscriptionHealthUpdates[result.tag] = result.fetchErr
+				} else {
+					subscriptionHealthUpdates[result.tag] = nil
+				}
 			}
 			if len(result.nodes) > 0 {
 				tagToNodeList[result.tag] = append(tagToNodeList[result.tag], result.nodes...)
@@ -319,13 +337,22 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+	// Delete cached copies of subscriptions that are no longer configured. The
+	// key is derived from the configured list, not from tagToNodeList: a
+	// subscription that failed on its very first fetch has no nodes, and an
+	// untagged one is keyed by its URL, so neither shape appears there.
+	liveCacheKeys := make(map[string]struct{}, len(conf.Subscription))
+	for _, sub := range conf.Subscription {
+		tag, link := common.GetTagFromLinkLikePlaintext(string(sub))
+		liveCacheKeys[subscription.CacheKey(tag, link)] = struct{}{}
+	}
 	for _, file := range files {
-		tag := strings.TrimSuffix(file.Name(), ".sub")
-		if _, ok := tagToNodeList[tag]; !ok {
-			err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name()))
-			if err != nil {
-				return nil, err
-			}
+		key := strings.TrimSuffix(file.Name(), ".sub")
+		if _, ok := liveCacheKeys[key]; ok {
+			continue
+		}
+		if err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name())); err != nil {
+			return nil, err
 		}
 	}
 
@@ -399,6 +426,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	if err != nil {
 		return nil, err
 	}
+	publishSubscriptionHealth(subscriptionHealthUpdates)
 	log.Infof("Control plane built in %v", time.Since(stageStart))
 	log.Infof("Total startup time: %v", time.Since(startTime))
 

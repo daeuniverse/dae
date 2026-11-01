@@ -102,8 +102,8 @@ func TestFrameHubEmptyStreamCursorResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Cancel()
-	if stream.Ready.ID != "events:0" {
-		t.Fatalf("ready id = %q, want events:0", stream.Ready.ID)
+	if stream.Ready.ID != "instance-1:events:0" {
+		t.Fatalf("ready id = %q, want instance-1:events:0", stream.Ready.ID)
 	}
 	// A client that attached to an empty stream must be able to resume with the
 	// cursor it was given, even though no frame carries that ID.
@@ -118,7 +118,7 @@ func TestFrameHubEmptyStreamCursorResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resumed.Cancel()
-	if len(resumed.Replay) != 1 || resumed.Replay[0].ID != "events:1" {
+	if len(resumed.Replay) != 1 || resumed.Replay[0].ID != "instance-1:events:1" {
 		t.Fatalf("replay = %+v, want the frame published after the empty cursor", resumed.Replay)
 	}
 }
@@ -133,4 +133,73 @@ func TestFrameHubZeroCapacityDoesNotPanic(t *testing.T) {
 	if len(stream.Replay) != 1 {
 		t.Fatalf("replay = %d, want 1", len(stream.Replay))
 	}
+}
+
+func TestFrameHubCursorIsBoundToTheInstance(t *testing.T) {
+	// A cursor issued by a previous process must not be accepted: the sequence
+	// numbers restart, so the client would silently miss every record after the
+	// restart instead of resyncing.
+	oldHub := newFrameHub("instance-old", "events", 4, time.Minute, 2)
+	oldHub.publish("runtime.updated", map[string]any{})
+	cursor := oldHub.frameID(1)
+
+	hub := newFrameHub("instance-new", "events", 4, time.Minute, 2)
+	hub.publish("runtime.updated", map[string]any{})
+	if _, err := hub.open(cursor, nil); err == nil {
+		t.Fatal("a cursor from another instance must be rejected")
+	} else if apiErr, ok := err.(*nativeapi.APIError); !ok || apiErr.Code != "event_cursor_expired" {
+		t.Fatalf("err = %v, want event_cursor_expired", err)
+	}
+}
+
+func TestFrameHubZeroCursorIsRejectedAfterEviction(t *testing.T) {
+	// Two retained frames: publishing three evicts the first. A client that
+	// attached before anything existed (cursor 0) has now missed a record, so
+	// reporting it as up to date would drop an invalidation.
+	hub := newFrameHub("instance-1", "events", 2, time.Minute, 2)
+	zero := hub.frameID(0)
+	for i := 0; i < 3; i++ {
+		hub.publish("runtime.updated", map[string]any{})
+	}
+	if _, err := hub.open(zero, nil); err == nil {
+		t.Fatal("a zero cursor must expire once records have been evicted")
+	}
+}
+
+func TestFrameHubZeroCursorIsAcceptedWithoutEviction(t *testing.T) {
+	hub := newFrameHub("instance-1", "events", 4, time.Minute, 2)
+	zero := hub.frameID(0)
+	hub.publish("runtime.updated", map[string]any{})
+	stream, err := hub.open(zero, nil)
+	if err != nil {
+		t.Fatalf("zero cursor should resume while nothing was evicted: %v", err)
+	}
+	defer stream.Cancel()
+	if len(stream.Replay) != 1 {
+		t.Fatalf("replay = %d frames, want 1", len(stream.Replay))
+	}
+}
+
+func TestCloseStreamsReleasesOpenStreams(t *testing.T) {
+	// Shutdown waits for every open SSE handler. Closing the hubs first makes
+	// those handlers return immediately instead of holding the listener for the
+	// whole grace period.
+	hub := newFrameHub("instance-1", "events", 4, time.Minute, 4)
+	stream, err := hub.open("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &nativeAPIProvider{eventHub: hub, logHub: newFrameHub("instance-1", "logs", 4, time.Minute, 4)}
+	provider.CloseStreams()
+
+	select {
+	case _, ok := <-stream.Updates:
+		if ok {
+			t.Fatal("the subscriber channel should be closed, not delivering a frame")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CloseStreams did not release the stream")
+	}
+	// A cancelled stream must not panic when the handler's deferred Cancel runs.
+	stream.Cancel()
 }

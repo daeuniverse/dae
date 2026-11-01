@@ -15,20 +15,20 @@ import (
 func TestPageCursorRoundTrip(t *testing.T) {
 	now := time.Now()
 	bind := pageCursorBind("example.com.", []string{"A"}, "10.0.0.1", 100)
-	cursor := encodePageCursor("dns_log", bind, 7, now)
-	offset, err := decodePageCursor("dns_log", bind, cursor, now.Add(time.Minute))
+	cursor := encodePageCursor("dns_log", bind, "dl_7", now)
+	after, err := decodePageCursor("dns_log", bind, cursor, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if offset != 7 {
-		t.Fatalf("offset = %d, want 7", offset)
+	if after != "dl_7" {
+		t.Fatalf("anchor = %q, want dl_7", after)
 	}
 }
 
 func TestPageCursorRejectsForeignExpiredOrMalformed(t *testing.T) {
 	now := time.Now()
 	bind := pageCursorBind("example.com.", []string{"A"}, "", 100)
-	cursor := encodePageCursor("dns_log", bind, 7, now)
+	cursor := encodePageCursor("dns_log", bind, "dl_7", now)
 
 	cases := map[string]struct {
 		kind, bind, cursor string
@@ -54,21 +54,65 @@ func TestPageCursorRejectsForeignExpiredOrMalformed(t *testing.T) {
 	}
 }
 
-func TestPageOfMarksLastPage(t *testing.T) {
+func TestPageAfterResumesAfterTheAnchor(t *testing.T) {
 	now := time.Now()
 	bind := "bind"
-	start, end, next := pageOf(5, 0, 2, "flows", bind, now)
-	if start != 0 || end != 2 || next == nil {
-		t.Fatalf("first page = %d..%d next=%v", start, end, next)
+	items := []string{"a", "b", "c", "d", "e"}
+	key := func(item string) string { return item }
+
+	page, next, err := pageAfter(items, key, "", 2, "flows", bind, now)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
 	}
-	offset, err := decodePageCursor("flows", bind, *next, now)
-	if err != nil || offset != 2 {
-		t.Fatalf("next cursor offset = %d err = %v", offset, err)
+	if len(page) != 2 || page[0] != "a" || page[1] != "b" || next == nil {
+		t.Fatalf("first page = %v next=%v", page, next)
 	}
-	if _, _, next = pageOf(5, 4, 2, "flows", bind, now); next != nil {
-		t.Fatalf("last page must not issue a cursor, got %q", *next)
+	anchor, err := decodePageCursor("flows", bind, *next, now)
+	if err != nil || anchor != "b" {
+		t.Fatalf("next anchor = %q err = %v", anchor, err)
 	}
-	if start, end, _ = pageOf(5, 9, 2, "flows", bind, now); start != 5 || end != 5 {
-		t.Fatalf("out-of-range offset = %d..%d, want empty tail page", start, end)
+	page, _, err = pageAfter(items, key, anchor, 2, "flows", bind, now)
+	if err != nil || len(page) != 2 || page[0] != "c" {
+		t.Fatalf("second page = %v err=%v", page, err)
+	}
+
+	// The last page reports no cursor.
+	page, last, err := pageAfter(items, key, "d", 2, "flows", bind, now)
+	if err != nil || len(page) != 1 || page[0] != "e" || last != nil {
+		t.Fatalf("last page = %v next=%v err=%v", page, last, err)
+	}
+}
+
+func TestPageAfterIsStableWhenRecordsAppearAtTheHead(t *testing.T) {
+	// The reviewer's failure mode: an offset window repeats or skips records when
+	// the list grows at the head between pages. Resuming after a key must not.
+	now := time.Now()
+	bind := "bind"
+	key := func(item string) string { return item }
+
+	first := []string{"c", "b", "a"}
+	page, next, err := pageAfter(first, key, "", 1, "flows", bind, now)
+	if err != nil || len(page) != 1 || page[0] != "c" {
+		t.Fatalf("first page = %v err=%v", page, err)
+	}
+	anchor, _ := decodePageCursor("flows", bind, *next, now)
+
+	// A new record arrives at the head before the client asks for page two. With
+	// an offset this page would repeat "c"; after a key it continues at "b".
+	second := []string{"d", "c", "b", "a"}
+	page, _, err = pageAfter(second, key, anchor, 1, "flows", bind, now)
+	if err != nil || len(page) != 1 || page[0] != "b" {
+		t.Fatalf("second page = %v err=%v, want [b]", page, err)
+	}
+}
+
+func TestPageAfterRejectsAnEvictedAnchor(t *testing.T) {
+	now := time.Now()
+	// The anchor's record left the ring: the walk cannot continue on this
+	// snapshot, so the caller reports 410 instead of skipping the gap.
+	if _, _, err := pageAfter([]string{"y", "z"}, func(s string) string { return s }, "x", 2, "flows", "bind", now); err == nil {
+		t.Fatal("an evicted anchor must expire the cursor")
+	} else if apiErr, ok := err.(*nativeapi.APIError); !ok || apiErr.Status != 410 {
+		t.Fatalf("err = %v, want 410 snapshot_expired", err)
 	}
 }

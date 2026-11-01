@@ -60,7 +60,12 @@ type storedOperation struct {
 }
 
 type storedReplay struct {
-	kind     string
+	kind string
+	// scope identifies the request the key was first used for (method, path and
+	// body in the caller's terms). A key reused for another request of the same
+	// kind is a conflict, not a replay: the original body describes work that
+	// was never done for the second caller.
+	scope    string
 	accepted OperationAccepted
 }
 
@@ -85,15 +90,17 @@ func NewOperationStore(retention time.Duration, maxReplayKeys int) *OperationSto
 // Accept records a queued operation and returns the 202 body. A repeated
 // Idempotency-Key replays the original body when the request matches (replayed
 // is true, so the caller must not start the work twice), and reports a
-// conflict when it names another kind.
-func (s *OperationStore) Accept(kind, idempotencyKey string) (OperationAccepted, bool, error) {
+// conflict when the key names another request. Scope is the caller's identity
+// for the request: comparing the kind alone let a key used to refresh one
+// subscription replay that operation for another subscription.
+func (s *OperationStore) Accept(kind, scope, idempotencyKey string) (OperationAccepted, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
 
 	if idempotencyKey != "" {
 		if previous, ok := s.replay[idempotencyKey]; ok {
-			if previous.kind != kind {
+			if previous.kind != kind || previous.scope != scope {
 				return OperationAccepted{}, false, NewAPIError(http.StatusConflict, codeIdempotencyConflict,
 					"the Idempotency-Key was already used for a different request")
 			}
@@ -116,7 +123,7 @@ func (s *OperationStore) Accept(kind, idempotencyKey string) (OperationAccepted,
 	s.order = append(s.order, operationID)
 
 	if idempotencyKey != "" {
-		s.replay[idempotencyKey] = storedReplay{kind: kind, accepted: accepted}
+		s.replay[idempotencyKey] = storedReplay{kind: kind, scope: scope, accepted: accepted}
 		s.replayOrder = append(s.replayOrder, idempotencyKey)
 		s.evictReplayKeysLocked()
 	}

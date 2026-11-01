@@ -446,6 +446,14 @@ func (p *nativeAPIProvider) SetGroupSelection(ctx context.Context, groupID, memb
 		return nativeapi.GroupSelectionResult{}, nativeapi.NewAPIError(400, "invalid_request",
 			"network must be tcp, udp or both")
 	}
+	// The kernel gates admission on probe health for the automatic policies. A
+	// pin changes that decision without changing health, so the map has to be
+	// rewritten here or a pinned group with no healthy member stays blocked.
+	if canOverride {
+		if plane, planeErr := p.activeControlPlane(); planeErr == nil {
+			plane.RepublishOutboundConnectivity(item.group)
+		}
+	}
 	source := "runtime"
 	if canOverride {
 		source = "override"
@@ -513,6 +521,9 @@ func (p *nativeAPIProvider) ClearGroupSelection(ctx context.Context, groupID, ne
 	default:
 		return nativeapi.GroupOverrideCleared{}, nativeapi.NewAPIError(400, "invalid_request",
 			"network must be tcp, udp or both")
+	}
+	if plane, planeErr := p.activeControlPlane(); planeErr == nil {
+		plane.RepublishOutboundConnectivity(item.group)
 	}
 	// Automatic policies have no stable member to report once the pin is gone,
 	// matching how runtime.selection already reports them.

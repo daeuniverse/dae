@@ -68,9 +68,17 @@ func validateNodeLink(ctx context.Context, log *logrus.Logger, link string) (str
 	if scheme == "" {
 		return "", fmt.Errorf("the share link is not a URI")
 	}
+	// A share link is one line. A newline would end the entry early and let the
+	// rest of the value become configuration of its own.
+	if strings.ContainsAny(link, "\r\n\x00") {
+		return scheme, fmt.Errorf("the share link must not contain control characters")
+	}
 	d, err := dialer.NewFromLinkContext(ctx, &dialer.GlobalOption{Log: log}, dialer.InstanceOption{DisableCheck: true}, link, "")
 	if err != nil {
-		return scheme, fmt.Errorf("unsupported share link: %v", err)
+		// Parser errors quote the link, which carries the credential. Keep that
+		// detail in the log and answer with a reason that names only the scheme.
+		log.WithError(err).WithField("scheme", scheme).Debugln("node link rejected")
+		return scheme, fmt.Errorf("the share link is not a supported %s link", scheme)
 	}
 	if d == nil {
 		return scheme, fmt.Errorf("unsupported share link")
@@ -106,19 +114,39 @@ func shareLinkScheme(link string) string {
 	return scheme
 }
 
-// quoteNodeValue renders one configuration value in single quotes.
-func quoteNodeValue(value string) string {
-	return "'" + value + "'"
+// quoteNodeValue renders one configuration value as a quoted literal.
+//
+// The parser has no escape sequences: a `\` is data, and a quote character ends
+// the literal. So the value picks the quote style it does not contain, and a
+// value that contains both quote characters cannot be written at all. Writing it
+// bare was the previous behaviour and let a `'` in a password close the literal
+// so the rest of the link became configuration.
+func quoteNodeValue(value string) (string, error) {
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return "", fmt.Errorf("the node link must not contain control characters")
+	}
+	switch {
+	case !strings.Contains(value, "'"):
+		return "'" + value + "'", nil
+	case !strings.Contains(value, `"`):
+		return `"` + value + `"`, nil
+	default:
+		return "", fmt.Errorf(`the node link contains both ' and " and cannot be written as a configuration literal`)
+	}
 }
 
 // insertNodeEntry adds one node line. An existing node block gets the line first,
 // so the surrounding text, comments included, stays byte for byte as it was;
 // a file without a node block gets one appended.
-func insertNodeEntry(text, name, link string) string {
+func insertNodeEntry(text, name, link string) (string, error) {
+	quoted, err := quoteNodeValue(link)
+	if err != nil {
+		return "", err
+	}
 	// The name is written bare: validateNodeName has already restricted it to the
 	// characters a configuration key may hold, so quoting would only add noise.
 	entry := func(indent string) string {
-		return indent + name + ": " + quoteNodeValue(link) + "\n"
+		return indent + name + ": " + quoted + "\n"
 	}
 	if loc := nodeBlockPattern.FindStringIndex(text); loc != nil {
 		// Insert after the newline that ends the "node {" line, so the entry is
@@ -129,13 +157,13 @@ func insertNodeEntry(text, name, link string) string {
 		}
 		// Match the file's own indentation instead of imposing one, so a tree
 		// written with a different style keeps its shape.
-		return text[:insertAt] + entry(nodeBlockIndent(text, insertAt)) + text[insertAt:]
+		return text[:insertAt] + entry(nodeBlockIndent(text, insertAt)) + text[insertAt:], nil
 	}
 	trimmed := strings.TrimRight(text, "\n")
 	if trimmed == "" {
-		return "node {\n" + entry("  ") + "}\n"
+		return "node {\n" + entry("  ") + "}\n", nil
 	}
-	return trimmed + "\n\nnode {\n" + entry("  ") + "}\n"
+	return trimmed + "\n\nnode {\n" + entry("  ") + "}\n", nil
 }
 
 // nodeBlockIndent returns the indentation the entries inside a node block use,
@@ -262,12 +290,18 @@ func inlineNodeNames(text string) map[string]bool {
 // current bytes and queues kind. A failed start restores the previous bytes,
 // because no operation will ever read the rejected edit.
 func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSourceFile, content []byte, kind, idempotencyKey, fingerprint string) (nativeapi.OperationAccepted, error) {
+	if err := e.guardConfigWrite(target, content); err != nil {
+		return nativeapi.OperationAccepted{}, err
+	}
 	candidate, err := e.buildCandidate(map[string][]byte{target.abs: content})
 	if err != nil {
 		return nativeapi.OperationAccepted{}, e.unprocessable(err, target)
 	}
 	if err := e.fullValidate(candidate); err != nil {
 		return nativeapi.OperationAccepted{}, e.unprocessable(err, target)
+	}
+	if err := e.guardApiUnchanged(candidate); err != nil {
+		return nativeapi.OperationAccepted{}, err
 	}
 	mode := os.FileMode(0o600)
 	if fi, statErr := os.Stat(target.abs); statErr == nil {
@@ -279,7 +313,7 @@ func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSour
 	if err := writeFileAtomic(target.abs, content, mode); err != nil {
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
 	}
-	accepted, err := e.operations.StartOperation(ctx, kind, idempotencyKey)
+	accepted, err := e.operations.StartOperation(ctx, kind, target.abs+"\x00"+fingerprint, idempotencyKey)
 	if err != nil {
 		if restoreErr := writeFileAtomic(target.abs, target.raw, mode); restoreErr != nil {
 			e.log.WithError(restoreErr).Error("failed to restore config source after rejected operation")
@@ -353,8 +387,13 @@ func (e *configEditor) CreateNode(ctx context.Context, req nativeapi.NodeCreateR
 	if err := e.rejectDuplicateNodeName(index, target, req.Name); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
-	updated := []byte(insertNodeEntry(string(target.raw), req.Name, req.Link))
-	return e.commitSourceUpdate(ctx, target, updated, nativeapi.OperationKindNodeCreate, req.IdempotencyKey, fingerprint)
+	updated, err := insertNodeEntry(string(target.raw), req.Name, req.Link)
+	if err != nil {
+		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
+			Status: 422, Code: "unsupported_value", Message: err.Error(),
+		}
+	}
+	return e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeCreate, req.IdempotencyKey, fingerprint)
 }
 
 // rejectDuplicateNodeName enforces global uniqueness: a name may not collide
@@ -417,15 +456,20 @@ func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteR
 		// Idempotent: the id names nothing the engine knows.
 		return nativeapi.NodeDeleteOutcome{}, nil
 	}
+	// Check ownership before touching the file. Editing by name first would
+	// delete an inline node that merely shares the name with the subscription
+	// node the caller named, because names are global.
+	if ref.ProviderID != inlineProviderID {
+		// A subscription or file provider owns this node: refresh or delete
+		// that provider instead.
+		return nativeapi.NodeDeleteOutcome{}, &nativeapi.APIError{
+			Status: 404, Code: "capability_not_supported", Message: "Only inline nodes can be deleted; refresh or delete the provider instead",
+		}
+	}
 	updated, removed := removeNodeEntry(string(target.raw), ref.Name)
 	if !removed {
-		if ref.ProviderID != "inline" {
-			// A subscription or file provider owns this node: refresh or delete
-			// that provider instead.
-			return nativeapi.NodeDeleteOutcome{}, &nativeapi.APIError{
-				Status: 404, Code: "capability_not_supported", Message: "Only inline nodes can be deleted; refresh or delete the provider instead",
-			}
-		}
+		// The index came from the running generation, which may still hold a
+		// node the file no longer defines (an edit that has not reloaded yet).
 		return nativeapi.NodeDeleteOutcome{}, nil
 	}
 	accepted, err = e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeDelete, req.IdempotencyKey, fingerprint)

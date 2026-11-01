@@ -8,6 +8,7 @@ package cmd
 import (
 	"context"
 	stderrors "errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,16 +147,30 @@ func (p *nativeAPIProvider) DnsCache(ctx context.Context, filter nativeapi.DnsCa
 			ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
 		})
 	}
+	// The cache is a map, so the walk needs one deterministic order to make the
+	// keyset anchor meaningful.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Domain != entries[j].Domain {
+			return entries[i].Domain < entries[j].Domain
+		}
+		if entries[i].Type != entries[j].Type {
+			return entries[i].Type < entries[j].Type
+		}
+		return entries[i].EntryID < entries[j].EntryID
+	})
 	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit)
-	offset := 0
+	after := ""
 	if filter.Cursor != "" {
 		parsed, err := decodePageCursor("dns_cache", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsCacheList{}, err
 		}
-		offset = parsed
+		after = parsed
 	}
-	start, end, next := pageOf(len(entries), offset, filter.Limit, "dns_cache", bind, now)
+	page, next, err := pageAfter(entries, func(entry nativeapi.DnsCacheEntry) string { return entry.EntryID }, after, filter.Limit, "dns_cache", bind, now)
+	if err != nil {
+		return nativeapi.DnsCacheList{}, err
+	}
 	list := nativeapi.DnsCacheList{
 		ObservedAt: observed,
 		Coverage: nativeapi.DnsCacheCoverage{
@@ -163,7 +178,7 @@ func (p *nativeAPIProvider) DnsCache(ctx context.Context, filter nativeapi.DnsCa
 			Negative:   true,
 			Persistent: false,
 		},
-		Entries:    entries[start:end],
+		Entries:    page,
 		Total:      uint64(len(entries)),
 		NextCursor: next,
 	}
@@ -283,19 +298,22 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 	}
 	now := time.Now()
 	bind := pageCursorBind(name, filter.Types, filter.Src, filter.Limit)
-	offset := 0
+	after := ""
 	if filter.Cursor != "" {
 		parsed, err := decodePageCursor("dns_log", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsLogList{}, err
 		}
-		offset = parsed
+		after = parsed
 	}
-	start, end, next := pageOf(len(matched), offset, filter.Limit, "dns_log", bind, now)
+	page, next, err := pageAfter(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, filter.Limit, "dns_log", bind, now)
+	if err != nil {
+		return nativeapi.DnsLogList{}, err
+	}
 	list := nativeapi.DnsLogList{
 		ObservedAt: now.UTC().Format(time.RFC3339),
 		Total:      uint64(total),
-		Records:    matched[start:end],
+		Records:    page,
 		NextCursor: next,
 	}
 	return list, nil

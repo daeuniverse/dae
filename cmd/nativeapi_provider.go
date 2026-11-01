@@ -51,7 +51,7 @@ type nativeAPIProvider struct {
 	// node create or delete.
 	config *configEditor
 	// operations starts the reload a provider refresh needs.
-	operations configOperationStarter
+	operations operationQueue
 
 	geoMu    sync.Mutex
 	geoCache map[string]geoAssetCache
@@ -128,12 +128,12 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 		},
 		Traffic: nativeapi.TrafficSummary{
 			Scope: "visible",
-			// The byte totals mix two observation planes: the userspace relay
-			// (payload bytes) and the eBPF pass-through counters (link bytes for
-			// direct flows that never reach userspace). The contract's
-			// traffic.observed_by enum is userspace/ebpf/mixed, so a mixed total
-			// must say so, and Planes keeps the two separable.
-			ObservedBy:   "mixed",
+			// Every byte here was counted by the userspace relay, so the figure
+			// is payload bytes only: traffic the datapath forwards without
+			// userspace is not in it. Reporting it as "mixed" is what used to
+			// force the datapath to keep a per-packet counter and a 12 MiB map
+			// for every installation, including those that never read this API.
+			ObservedBy:   "userspace",
 			CounterSince: formatTime(counterSince),
 			SampledAt:    formatTime(stats.UpdatedAt),
 			Connections: nativeapi.Connections{
@@ -149,16 +149,6 @@ func (p *nativeAPIProvider) SnapshotRuntime(ctx context.Context, detail string) 
 				WindowSeconds:          1,
 				UploadBytesPerSecond:   stringPointer(strconv.FormatUint(stats.UploadRate, 10)),
 				DownloadBytesPerSecond: stringPointer(strconv.FormatUint(stats.DownloadRate, 10)),
-			},
-			Planes: &nativeapi.TrafficPlanes{
-				Userspace: nativeapi.Bytes{
-					Upload:   stringPointer(strconv.FormatUint(stats.UserspaceUploadTotal, 10)),
-					Download: stringPointer(strconv.FormatUint(stats.UserspaceDownloadTotal, 10)),
-				},
-				KernelDirect: nativeapi.Bytes{
-					Upload:   stringPointer(strconv.FormatUint(stats.DirectUploadTotal, 10)),
-					Download: stringPointer(strconv.FormatUint(stats.DirectDownloadTotal, 10)),
-				},
 			},
 		},
 		Process: nativeapi.Process{

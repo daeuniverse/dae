@@ -28,7 +28,21 @@ func (p *nativeAPIProvider) CreateNode(ctx context.Context, req nativeapi.NodeCr
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.OperationAccepted{}, errNodeManagementUnavailable
 	}
-	return p.config.CreateNode(ctx, req, p.nodeIndex)
+	accepted, err := p.config.CreateNode(ctx, req, p.nodeIndex)
+	if err != nil {
+		return nativeapi.OperationAccepted{}, err
+	}
+	// The contract asks a node_create operation for the Node it produced. The ID
+	// is derived the same way /nodes derives it, so the completed operation can
+	// read the resource from the generation the reload publishes.
+	p.operations.SetResultResolver(accepted.OperationID, func() (any, error) {
+		node, err := p.GetNode(context.Background(), nodeIDOfLink(req.Link, req.Name))
+		if err != nil {
+			return nil, err
+		}
+		return *node, nil
+	})
+	return accepted, nil
 }
 
 // DeleteNode removes one inline node. A node a subscription delivered is
@@ -40,7 +54,17 @@ func (p *nativeAPIProvider) DeleteNode(ctx context.Context, req nativeapi.NodeDe
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.NodeDeleteOutcome{}, errNodeManagementUnavailable
 	}
-	return p.config.DeleteNode(ctx, req, p.nodeIndex)
+	outcome, err := p.config.DeleteNode(ctx, req, p.nodeIndex)
+	if err != nil {
+		return nativeapi.NodeDeleteOutcome{}, err
+	}
+	if outcome.Accepted.OperationID != "" {
+		deleted := outcome.Deleted
+		p.operations.SetResultResolver(outcome.Accepted.OperationID, func() (any, error) {
+			return nativeapi.NodeDeleteResult{Deleted: deleted}, nil
+		})
+	}
+	return outcome, nil
 }
 
 var errNodeManagementUnavailable = &nativeapi.APIError{
@@ -62,7 +86,7 @@ func (p *nativeAPIProvider) nodeIndex() (map[string]nodeRef, error) {
 	}
 	index := make(map[string]nodeRef, len(nodes))
 	for _, node := range nodes {
-		providerID := "inline"
+		providerID := inlineProviderID
 		if node.ProviderID != nil {
 			providerID = *node.ProviderID
 		}
@@ -108,5 +132,17 @@ func (p *nativeAPIProvider) RefreshProvider(ctx context.Context, req nativeapi.P
 			Status: 404, Code: "capability_not_supported", Message: "This provider cannot be refreshed",
 		}
 	}
-	return p.operations.StartOperation(ctx, nativeapi.OperationKindProviderRefresh, req.IdempotencyKey)
+	accepted, err := p.operations.StartOperation(ctx, nativeapi.OperationKindProviderRefresh, req.ProviderID, req.IdempotencyKey)
+	if err != nil {
+		return nativeapi.OperationAccepted{}, err
+	}
+	// A refresh reports the Provider whose nodes the reload replaced.
+	p.operations.SetResultResolver(accepted.OperationID, func() (any, error) {
+		provider, err := p.GetProvider(context.Background(), req.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		return *provider, nil
+	})
+	return accepted, nil
 }
