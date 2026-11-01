@@ -45,14 +45,14 @@ func TestResolveSubscription_PersistFileKeepsGoodCacheOnEmptyFetch(t *testing.T)
 	url := "my:http-file://" + host
 	client := srv.Client()
 
-	// ResolveSubscription should refuse to resolve (0 nodes) and therefore
-	// NOT touch the persisted cache.
+	// The payload is unusable, so the last good nodes must be kept: dropping
+	// them would remove working nodes from the running generation.
 	_, nodes, err := ResolveSubscription(logrus.New(), client, dir, url)
-	if err == nil {
-		t.Fatalf("expected error for invalid subscription payload, got nodes=%v", nodes)
+	if err != nil {
+		t.Fatalf("a bad payload must fall back to the cache, got err=%v", err)
 	}
-	if len(nodes) != 0 {
-		t.Fatalf("expected 0 nodes, got %d", len(nodes))
+	if len(nodes) != 1 {
+		t.Fatalf("expected the 1 cached node, got %d: %v", len(nodes), nodes)
 	}
 
 	// The good cache must be intact.
@@ -62,6 +62,76 @@ func TestResolveSubscription_PersistFileKeepsGoodCacheOnEmptyFetch(t *testing.T)
 	}
 	if string(got) != cachedGood {
 		t.Fatalf("cache was clobbered: got %q want %q", string(got), cachedGood)
+	}
+}
+
+// TestResolveSubscription_KeepsCacheOnHTTPError verifies that an HTTP 500 is
+// treated as a failed refresh rather than as an empty subscription.
+func TestResolveSubscription_KeepsCacheOnHTTPError(t *testing.T) {
+	dir := t.TempDir()
+	persistDir := filepath.Join(dir, "persist.d")
+	if err := os.MkdirAll(persistDir, 0700); err != nil {
+		t.Fatalf("mkdir persist.d: %v", err)
+	}
+	const cachedGood = "vmess://c2VydmVyOjQ0Mwo=#good-node\n"
+	if err := os.WriteFile(filepath.Join(persistDir, "subA.sub"), []byte(cachedGood), 0600); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("upstream broke"))
+	}))
+	defer srv.Close()
+
+	tag, nodes, err := ResolveSubscription(logrus.New(), srv.Client(), dir, "subA:"+srv.URL)
+	if err != nil {
+		t.Fatalf("an HTTP 500 must fall back to the cache, got err=%v", err)
+	}
+	if tag != "subA" {
+		t.Fatalf("tag = %q, want subA", tag)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected the cached node, got %d", len(nodes))
+	}
+}
+
+// TestResolveSubscription_CachesUntaggedSubscription verifies the common case:
+// a plain http subscription with no tag still gets a cached copy, so the next
+// failed refresh can keep its nodes.
+func TestResolveSubscription_CachesUntaggedSubscription(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte(base64.StdEncoding.EncodeToString([]byte("vmess://c2VydmVyOjQ0Mwo=#node-a\n")))
+	replies := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		replies++
+		if replies > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	tag, nodes, err := ResolveSubscription(logrus.New(), srv.Client(), dir, srv.URL)
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("first fetch: nodes=%v err=%v", nodes, err)
+	}
+	if tag != "" {
+		t.Fatalf("untagged subscription reported tag %q", tag)
+	}
+
+	// The cache now exists under the URL-derived key.
+	cacheKey := CacheKey("", srv.URL)
+	if _, err := os.Stat(filepath.Join(dir, "persist.d", cacheKey+".sub")); err != nil {
+		t.Fatalf("expected a cache at %s.sub: %v", cacheKey, err)
+	}
+
+	// The second resolve fails over to the cache instead of dropping the node.
+	_, nodes, err = ResolveSubscription(logrus.New(), srv.Client(), dir, srv.URL)
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("second fetch: nodes=%v err=%v", nodes, err)
 	}
 }
 
