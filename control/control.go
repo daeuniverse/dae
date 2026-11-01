@@ -11,6 +11,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 // PolicyIdentity returns routing metadata without retaining the normalized rule tree.
@@ -46,6 +47,15 @@ func (c *ControlPlane) DatapathGenerationID() string {
 		return ""
 	}
 	return strconv.FormatUint(uint64(generation), 10)
+}
+
+// DirectDialer returns the generation-scoped direct dialer. A probe uses it to
+// reach a node's own server address without going through that node.
+func (c *ControlPlane) DirectDialer() netproxy.Dialer {
+	if c == nil {
+		return nil
+	}
+	return c.directDialer
 }
 
 // EgressDialers returns every node dialer this generation manages, including

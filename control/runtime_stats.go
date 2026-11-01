@@ -36,17 +36,11 @@ type RuntimeStatsSnapshot struct {
 	DownloadRate  uint64
 	UploadTotal   uint64
 	DownloadTotal uint64
-	// UserspaceUploadTotal/UserspaceDownloadTotal are the relay and DNS bytes.
-	// DirectUploadTotal/DirectDownloadTotal are the kernel pass-through bytes
-	// that never reach userspace. Their sum is UploadTotal/DownloadTotal, so the
-	// two planes stay separable without changing the total.
-	UserspaceUploadTotal   uint64
-	UserspaceDownloadTotal uint64
-	DirectUploadTotal      uint64
-	DirectDownloadTotal    uint64
-	ActiveConnections      int
-	UDPSessions            int
-	Samples                []RuntimeTrafficSample
+	// The totals are userspace payload bytes only: the datapath no longer
+	// counts the flows it forwards without the relay, so there is one plane.
+	ActiveConnections int
+	UDPSessions       int
+	Samples           []RuntimeTrafficSample
 }
 
 type runtimeBucket struct {
@@ -59,10 +53,6 @@ type runtimeBucket struct {
 type runtimeStats struct {
 	mu sync.Mutex
 
-	// now is time.Now in production; tests replace it to drive a simulated
-	// clock through record() and snapshot().
-	now func() time.Time
-
 	currentBucketStartUnixNano atomic.Int64
 	currentUploadBytes         atomic.Uint64
 	currentDownloadBytes       atomic.Uint64
@@ -70,19 +60,18 @@ type runtimeStats struct {
 	uploadTotal   atomic.Uint64
 	downloadTotal atomic.Uint64
 
-	// Per-plane splits of the lifetime totals. Every byte lands in exactly one
-	// plane, so userspace+direct always equals uploadTotal/downloadTotal.
-	userspaceUploadBytes   atomic.Uint64
-	userspaceDownloadBytes atomic.Uint64
-	directUploadBytes      atomic.Uint64
-	directDownloadBytes    atomic.Uint64
-
 	history      []runtimeBucket
 	historyStart int
 	historyLen   int
 }
 
 var (
+	// globalRuntimeStats is the single, process-lifetime store. Traffic history
+	// and lifetime totals are process facts, not generation facts: flows that
+	// survive a reload keep their recorders and must keep landing in the store
+	// the dashboard reads. A per-generation store made those flows write into an
+	// orphaned store, so `/runtime` froze at the handoff value and the rate read
+	// zero until the old flows closed.
 	globalRuntimeStats = newRuntimeStats()
 	activeRuntimeStats atomic.Pointer[runtimeStats]
 	// lastPublishedRuntimeStats keeps the previous generation's store reachable
@@ -90,15 +79,14 @@ var (
 	lastPublishedRuntimeStats atomic.Pointer[runtimeStats]
 )
 
-func newRuntimeStats() *runtimeStats {
-	return &runtimeStats{now: time.Now}
+// processRuntimeStatsStore returns the process-lifetime store every generation
+// records into.
+func processRuntimeStatsStore() *runtimeStats {
+	return globalRuntimeStats
 }
 
-func (s *runtimeStats) clock() time.Time {
-	if s == nil || s.now == nil {
-		return time.Now()
-	}
-	return s.now()
+func newRuntimeStats() *runtimeStats {
+	return &runtimeStats{}
 }
 
 func maxRuntimeHistoryBuckets() int {
@@ -136,10 +124,6 @@ func (s *runtimeStats) inheritTotalsFrom(prev *runtimeStats) {
 	}
 	s.uploadTotal.Add(prev.uploadTotal.Load())
 	s.downloadTotal.Add(prev.downloadTotal.Load())
-	s.userspaceUploadBytes.Add(prev.userspaceUploadBytes.Load())
-	s.userspaceDownloadBytes.Add(prev.userspaceDownloadBytes.Load())
-	s.directUploadBytes.Add(prev.directUploadBytes.Load())
-	s.directDownloadBytes.Add(prev.directDownloadBytes.Load())
 }
 
 func unpublishRuntimeStatsStore(s *runtimeStats) {
@@ -183,52 +167,51 @@ func (c *ControlPlane) unpublishRuntimeStats() {
 	unpublishRuntimeStatsStore(c.runtimeStats)
 }
 
+// record is the single writer of the bucket and the lifetime totals, so the two
+// can never drift apart.
 func (s *runtimeStats) record(upload uint64, download uint64) {
-	s.recordForPlane(upload, download, true)
-}
-
-// recordDirect folds kernel pass-through bytes into the same history and totals
-// as the relay while keeping them attributable under traffic.planes.
-func (s *runtimeStats) recordDirect(upload uint64, download uint64) {
-	s.recordForPlane(upload, download, false)
-}
-
-// recordForPlane is the single writer of the bucket, the lifetime totals and
-// the plane split, so the three can never drift apart.
-func (s *runtimeStats) recordForPlane(upload uint64, download uint64, userspace bool) {
 	if s == nil || (upload == 0 && download == 0) {
 		return
 	}
-	// Rotate here, not only in snapshot: a dashboard polls at its own cadence,
-	// so bytes recorded between two polls would otherwise all land in the
-	// first finished bucket. The one-second rate would then be scaled by that
-	// bucket's share of the window and under-report - or drop to zero once the
-	// bucket leaves the window.
-	s.advanceBucket(s.clock())
+	// No clock read here. A dedicated sampler rotates the in-flight bucket on a
+	// fixed cadence, so the forwarding path pays one atomic add per record
+	// instead of a time.Now() (and a possible lock) on every relay write. The
+	// sampler is the reason rotation no longer has to ride a dashboard poll.
 	if upload > 0 {
 		s.currentUploadBytes.Add(upload)
 		s.uploadTotal.Add(upload)
-		if userspace {
-			s.userspaceUploadBytes.Add(upload)
-		} else {
-			s.directUploadBytes.Add(upload)
-		}
 	}
 	if download > 0 {
 		s.currentDownloadBytes.Add(download)
 		s.downloadTotal.Add(download)
-		if userspace {
-			s.userspaceDownloadBytes.Add(download)
-		} else {
-			s.directDownloadBytes.Add(download)
-		}
 	}
 }
 
-// startRoller was removed: rollLocked is fully lazy. The bucket window only
-// advances when traffic is recorded or a snapshot is requested, so no
-// periodic goroutine is needed. An empty-window ticker previously woke up
-// ~4x/second on idle just to perform a no-op rotation.
+// startRuntimeStatsSampler rotates the in-flight bucket on a fixed cadence for
+// the process-lifetime store. It runs at most once per process and only rotates:
+// it adds no traffic, so an idle daemon does one atomic load per tick.
+//
+// Rotation has to be time-driven rather than poll-driven: a dashboard polls at
+// its own cadence, and bytes recorded between two polls would otherwise land in
+// the first finished bucket, which scales the one-second rate by that bucket's
+// share of the window and under-reports it. Snapshot still rotates as a guard
+// for the case where the sampler has not started yet.
+func startRuntimeStatsSampler(store *runtimeStats) {
+	if store == nil {
+		return
+	}
+	runtimeStatsSamplerOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(RuntimeSampleInterval)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				store.advanceBucket(now)
+			}
+		}()
+	})
+}
+
+var runtimeStatsSamplerOnce sync.Once
 
 // advanceBucket rotates the in-flight bucket once its boundary has passed.
 // The common case is one atomic load and compare; only a crossing takes the
@@ -299,18 +282,14 @@ func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSe
 	uploadRate, downloadRate := ratesFromBuckets(buckets, now, runtimeRateWindow)
 
 	return RuntimeStatsSnapshot{
-		UpdatedAt:              now,
-		UploadRate:             uploadRate,
-		DownloadRate:           downloadRate,
-		UploadTotal:            s.uploadTotal.Load(),
-		DownloadTotal:          s.downloadTotal.Load(),
-		UserspaceUploadTotal:   s.userspaceUploadBytes.Load(),
-		UserspaceDownloadTotal: s.userspaceDownloadBytes.Load(),
-		DirectUploadTotal:      s.directUploadBytes.Load(),
-		DirectDownloadTotal:    s.directDownloadBytes.Load(),
-		ActiveConnections:      activeConnections,
-		UDPSessions:            udpSessions,
-		Samples:                thinRuntimeSamples(samplesFromBuckets(buckets[:completedBuckets]), maxPoints),
+		UpdatedAt:         now,
+		UploadRate:        uploadRate,
+		DownloadRate:      downloadRate,
+		UploadTotal:       s.uploadTotal.Load(),
+		DownloadTotal:     s.downloadTotal.Load(),
+		ActiveConnections: activeConnections,
+		UDPSessions:       udpSessions,
+		Samples:           thinRuntimeSamples(samplesFromBuckets(buckets[:completedBuckets]), maxPoints),
 	}
 }
 

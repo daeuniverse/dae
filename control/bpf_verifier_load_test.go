@@ -52,18 +52,7 @@ func loadProductionProgramsForTest(t *testing.T, useRedirectPeer, hasBpfGetCurre
 	for _, m := range spec.Maps {
 		m.Pinning = ebpf.PinNone
 	}
-	param := struct {
-		tproxyPort           uint32
-		controlPlanePid      uint32
-		dae0Ifindex          uint32
-		daeNetnsId           uint32
-		dae0peerMac          [6]byte
-		paddingAfterMac      [2]uint8
-		useRedirectPeer      uint8
-		hasBpfGetCurrentTask uint8
-		datapathGeneration   uint16
-		daeSocketMark        uint32
-	}{
+	param := daeParam{
 		useRedirectPeer:      useRedirectPeer,
 		hasBpfGetCurrentTask: hasBpfGetCurrentTask,
 	}

@@ -425,7 +425,7 @@ func (c *ControlPlane) adoptTCPFlow(
 	if egress != nil {
 		runtime = c.egressRuntime
 	}
-	flow, err := manager.adoptTCP(ingress, egress, binding, runtime, keys)
+	flow, err := manager.adoptTCP(ingress, egress, binding, runtime, keys, src, dst)
 	var drainRelease func()
 	var failedEgress netproxy.Conn
 	if err == nil && ownership != nil {
@@ -440,13 +440,6 @@ func (c *ControlPlane) adoptTCPFlow(
 	}
 	if failedEgress != nil {
 		_ = failedEgress.Close()
-	}
-	if err == nil && flow != nil {
-		flow.src = src
-		flow.dst = dst
-		flow.network = "tcp"
-		flow.startedAt = time.Now()
-		flow.id = flowIDOf("tcp", src, dst, flow.startedAt)
 	}
 	return flow, err
 }
@@ -484,12 +477,18 @@ func (f *FlowRuntime) Binding() TcpFlowBinding {
 	return f.binding
 }
 
+// adoptTCP registers one flow. The identity fields are set before the flow is
+// published: /connections reads them without the generations lock, so a reader
+// that saw the flow registered used to be able to observe an empty id and zero
+// addresses.
 func (m *SessionManager) adoptTCP(
 	ingress net.Conn,
 	egress netproxy.Conn,
 	binding TcpFlowBinding,
 	runtime *egressRuntime,
 	pinKeys []bpfTuplesKey,
+	src netip.AddrPort,
+	dst netip.AddrPort,
 ) (*FlowRuntime, error) {
 	if m == nil {
 		return nil, ErrSessionManagerClosed
@@ -503,6 +502,7 @@ func (m *SessionManager) adoptTCP(
 	}
 	binding.Egress.Outbound = retainedOutbound
 	ctx, cancel := context.WithCancel(m.ctx)
+	startedAt := time.Now()
 	flow := &FlowRuntime{
 		manager:     m,
 		ingress:     ingress,
@@ -512,6 +512,11 @@ func (m *SessionManager) adoptTCP(
 		cancel:      cancel,
 		egressLease: lease,
 		counters:    binding.Egress.Outbound.Counters(),
+		src:         src,
+		dst:         dst,
+		network:     "tcp",
+		startedAt:   startedAt,
+		id:          flowIDOf("tcp", src, dst, startedAt),
 	}
 	if len(pinKeys) > len(flow.pinKeys) {
 		pinKeys = pinKeys[:len(flow.pinKeys)]

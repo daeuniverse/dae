@@ -25,8 +25,6 @@ func TestRuntimeStatsRateMatchesTrafficAtPollingCadence(t *testing.T) {
 		t.Run(pollInterval.String(), func(t *testing.T) {
 			store := newRuntimeStats()
 			start := time.Unix(1_700_000_000, 0)
-			current := start
-			store.now = func() time.Time { return current }
 			const bytesPerSecond = 1_000_000
 			const step = 10 * time.Millisecond
 
@@ -35,13 +33,16 @@ func TestRuntimeStatsRateMatchesTrafficAtPollingCadence(t *testing.T) {
 			var nextPoll time.Duration
 			checked := 0
 			for elapsed := time.Duration(0); elapsed <= 6*time.Second; elapsed += step {
-				current = start.Add(elapsed)
+				now := start.Add(elapsed)
+				// Production rotates the in-flight bucket from the sampler, not
+				// from the write path; the test drives that rotation explicitly.
+				store.advanceBucket(now)
 				store.record(uint64(bytesPerSecond*step/time.Second), 0)
 				if elapsed < nextPoll {
 					continue
 				}
 				nextPoll = elapsed + pollInterval
-				snapshot := store.snapshot(0, 0, 3600, 180, current)
+				snapshot := store.snapshot(0, 0, 3600, 180, now)
 				if elapsed < time.Second {
 					continue
 				}

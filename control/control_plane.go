@@ -839,6 +839,11 @@ func NewControlPlaneWithContextOptions(
 	log.Infof("Memory usage after routing build: Alloc=%vMiB, Sys=%vMiB, HeapObjects=%v",
 		m.Alloc/1024/1024, m.Sys/1024/1024, m.HeapObjects)
 
+	// Rotate the traffic buckets on a fixed cadence so the forwarding path never
+	// reads the clock to record a byte. Safe to call per generation: it starts
+	// one goroutine per process over the process-lifetime store.
+	startRuntimeStatsSampler(processRuntimeStatsStore())
+
 	// Transfer every dialer, group health registration and the shared transport
 	// cache namespace into structured runtime ownership. The constructor's
 	// defer stack remains responsible until this point.
@@ -862,9 +867,10 @@ func NewControlPlaneWithContextOptions(
 	// New control plane.
 	cctx, cancel := context.WithCancel(context.Background())
 	plane = &ControlPlane{
-		log:           log,
-		directDialer:  directDialer,
-		runtimeStats:  newRuntimeStats(),
+		log:          log,
+		directDialer: directDialer,
+		runtimeStats: processRuntimeStatsStore(),
+
 		memoryStats:   newMemoryStats(),
 		processCPU:    newProcessCPUStats(),
 		core:          core,
@@ -1059,14 +1065,6 @@ func validateRequiredBpfMapsLoaded(bpf *bpfObjects) error {
 		{name: "routing_map", m: bpf.RoutingMap},
 		{name: "routing_meta_map", m: bpf.RoutingMetaMap},
 		{name: "active_routing_epoch_map", m: bpf.ActiveRoutingEpochMap},
-		// The pass-through accounting map is unconditionally referenced by the
-		// datapath, so a load that skips it would leave userspace reading a nil
-		// map and silently reporting zero. It is easy to miss: the binding target
-		// is the hand-maintained bpfDataplaneMaps whitelist, not the generated
-		// struct, so forgetting to register a new map there fails open at runtime
-		// instead of failing at load.
-		{name: "direct_traffic_map", m: bpf.DirectTrafficMap},
-		{name: "direct_reverse_map", m: bpf.DirectReverseMap},
 	}
 	for _, r := range required {
 		if r.m == nil {
@@ -2125,12 +2123,19 @@ func (c *ControlPlane) allowDnsFastPathServfailLog(now time.Time) bool {
 }
 
 // readBpfStatsCounter reads a counter from the BPF stats map by key index.
+// readBpfStatsCounter sums the per-CPU copies of one datapath counter. The map
+// is PERCPU so that a per-packet increment never contends for a shared
+// cacheline; a single-value lookup would report only the first CPU.
 func readBpfStatsCounter(m *ebpf.Map, key uint32) (uint64, error) {
-	var value uint64
-	if err := m.Lookup(&key, &value); err != nil {
+	perCPU := make([]uint64, ebpf.MustPossibleCPU())
+	if err := m.Lookup(&key, &perCPU); err != nil {
 		return 0, err
 	}
-	return value, nil
+	var total uint64
+	for _, value := range perCPU {
+		total += value
+	}
+	return total, nil
 }
 
 type Listener struct {

@@ -49,11 +49,6 @@ func (c *ControlPlane) attachOutboundCounters(registry *ob.CounterRegistry) {
 		}
 		counters := registry.Acquire(group.Name)
 		group.SetCounters(counters)
-		if consts.OutboundIndex(i) == consts.OutboundDirect {
-			// The datapath counts pass-through bytes that never reach the relay;
-			// binding the direct row here is what lets that row report them.
-			setDirectTrafficCounters(counters)
-		}
 		byIndex[uint8(i)] = counters
 	}
 	c.outboundCounters = registry
@@ -133,7 +128,7 @@ func (c *ControlPlane) SnapshotOutboundCounters() OutboundCountersSnapshot {
 	return snapshot
 }
 
-// recordUploadTrafficFor accounts upload bytes both in the generation-bound
+// recordUploadTrafficFor accounts upload bytes both in the process-lifetime
 // runtime history and against the selected outbound. The counter pointer is
 // resolved once per flow, so the byte path never re-enters the registry.
 func (c *ControlPlane) recordUploadTrafficFor(counters *ob.Counters, n int64) {
