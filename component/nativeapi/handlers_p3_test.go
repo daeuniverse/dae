@@ -35,6 +35,14 @@ func (fakeProviders) GetProvider(context.Context, string) (*Provider, error) {
 	return &Provider{ID: "p_a", Name: "a", Kind: "subscription", NodeCount: 1, Status: "ok"}, nil
 }
 
+func (fakeProviders) ProviderCapabilities() ProviderCapabilities {
+	return ProviderCapabilities{CanRefresh: false}
+}
+
+func (fakeProviders) RefreshProvider(context.Context, ProviderRefreshRequest) (OperationAccepted, error) {
+	return OperationAccepted{}, &APIError{Status: 404, Code: "capability_not_supported", Message: "this provider cannot be refreshed"}
+}
+
 type fakeGeo struct{}
 
 func (fakeGeo) GeoData(context.Context) (GeoData, error) {

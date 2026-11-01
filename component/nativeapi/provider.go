@@ -62,6 +62,12 @@ type NodeProvider interface {
 	// unknown groupID is reported through *APIError.
 	ListNodes(ctx context.Context, groupID string, limit int, cursor string) (NodeList, error)
 	GetNode(ctx context.Context, nodeID string) (*Node, error)
+	// NodeCapabilities reports whether inline nodes are editable.
+	NodeCapabilities() NodeCapabilities
+	// CreateNode writes one inline node into the managed node source.
+	CreateNode(ctx context.Context, req NodeCreateRequest) (OperationAccepted, error)
+	// DeleteNode removes one inline node from the managed node source.
+	DeleteNode(ctx context.Context, req NodeDeleteRequest) (NodeDeleteOutcome, error)
 }
 
 // TrafficHistoryProvider serves recorded traffic samples.
@@ -73,6 +79,10 @@ type TrafficHistoryProvider interface {
 type ProviderProvider interface {
 	ListProviders(ctx context.Context, limit int, cursor string) (ProviderList, error)
 	GetProvider(ctx context.Context, providerID string) (*Provider, error)
+	// ProviderCapabilities reports whether a provider can be refreshed.
+	ProviderCapabilities() ProviderCapabilities
+	// RefreshProvider refetches one subscription and reloads.
+	RefreshProvider(ctx context.Context, req ProviderRefreshRequest) (OperationAccepted, error)
 }
 
 // GeoDataProvider serves the loaded geodata asset report.

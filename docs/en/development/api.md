@@ -45,14 +45,19 @@ Current implementation:
   through `GET /api/v1/operations/{operation_id}`
 
 `POST /api/v1/providers` (inline provider creation),
-`DELETE /api/v1/providers/{provider_id}`, `POST
-/api/v1/providers/{provider_id}/refresh` and `POST /api/v1/geodata/update`
-answer `404 capability_not_supported`, matching `providers.can_refresh`,
-`providers.can_manage` and `geodata.can_update` being `false`: dae never writes
-configuration or re-downloads assets through the API.
-`PATCH /api/v1/groups/{group_id}/config`, `POST /api/v1/nodes` and
-`DELETE /api/v1/nodes/{node_id}` answer the same code for the same reason
-(`nodes.can_manage = false`).
+`DELETE /api/v1/providers/{provider_id}` and `POST /api/v1/geodata/update`
+answer `404 capability_not_supported`, matching `providers.can_manage` and
+`geodata.can_update` being `false`: dae does not create or delete subscriptions
+through the API. `PATCH /api/v1/groups/{group_id}/config` remains unimplemented
+for the same reason.
+
+`POST /api/v1/nodes`, `DELETE /api/v1/nodes/{node_id}` and
+`POST /api/v1/providers/{provider_id}/refresh` are implemented, gated on the
+configuration write switch: `nodes.can_manage` and `providers.can_refresh` are
+true only with `api.config_write` and the managed layout. All three queue a
+reload and answer `202` with a `node_create`, `node_delete` or
+`provider_refresh` operation; `DELETE` stays idempotent for an unknown id
+(`200 {"deleted": 0}`).
 
 `/api/v1/runtime/settings`, `/api/v1/routing/trace` and `/api/v1/auth*` remain
 unimplemented. Configuration is editable at source level only:

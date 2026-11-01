@@ -24,10 +24,13 @@ const (
 
 // Operation kinds this engine starts.
 const (
-	OperationKindReload  = "reload"
-	OperationKindSuspend = "suspend"
-	OperationKindResume  = "resume"
-	OperationKindProbe   = "probe"
+	OperationKindReload          = "reload"
+	OperationKindSuspend         = "suspend"
+	OperationKindResume          = "resume"
+	OperationKindProbe           = "probe"
+	OperationKindNodeCreate      = "node_create"
+	OperationKindNodeDelete      = "node_delete"
+	OperationKindProviderRefresh = "provider_refresh"
 )
 
 // OperationStore is the bounded in-memory operation record. Unfinished

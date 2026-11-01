@@ -189,6 +189,20 @@ api {
 - 按本契约构建的前端（例如 [doona](https://github.com/Zakkaus/doona)）从 `/ui/` 提供时
   会把自己所在的 origin 当作后端，因此只需要填一次 token。
 
+## 节点与订阅
+
+启用配置写入后，面板可以直接增删**内联节点**、手动刷新订阅：
+
+- 内联节点只写入 `config.d/node.dae` 的 `node` 段；写入前走与 `dae validate -c`
+  相同的校验，并保留 `<文件>.bak`。
+- **订阅拉取的节点是只读的**：它们由订阅管理，只能通过刷新或删除该订阅才能变更，删除接口对
+  它们返回 `404 capability_not_supported`。
+- **节点名全局唯一**：新建时只要任意来源（内联或订阅）已用该名字就返回 `409 state_conflict`。
+- 分享链接必须能被引擎解析（`vless` / `vmess` / `trojan` / `ss` / `ssr` / `socks` / `http` /
+  `hysteria2` / `tuic` / `juicity` / `anytls` / `naive`），且带主机与端口；否则返回 `422`。
+- 手动刷新订阅（`POST /api/v1/providers/{id}/refresh`）会重新拉取并 reload；拉取失败时
+  保留上一次成功加载的节点。
+
 ## reload 行为
 
 `api` 的所有字段都是 restart-required。reload 检测到变化时会拒绝或保留旧 listener

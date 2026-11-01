@@ -144,7 +144,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if s.nodes != nil {
 		resources["nodes"] = map[string]any{
 			"available":  true,
-			"can_manage": false,
+			"can_manage": s.nodes.NodeCapabilities().CanManage,
 		}
 	} else {
 		resources["nodes"] = map[string]any{"available": false}
@@ -182,9 +182,10 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		resources["memory_history"] = map[string]any{"available": false}
 	}
 	if s.providers != nil {
+		caps := s.providers.ProviderCapabilities()
 		resources["providers"] = map[string]any{
 			"available":     true,
-			"can_refresh":   false,
+			"can_refresh":   caps.CanRefresh,
 			"can_manage":    false,
 			"max_page_size": NodeListMaxLimit,
 		}

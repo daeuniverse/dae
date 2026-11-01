@@ -17,10 +17,8 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "resource is not supported by this engine")
 		return
 	}
-	if r.Method == http.MethodPost || r.Method == http.MethodDelete {
-		// Not a missing route: this engine has no managed configuration to
-		// write into, which the capability document states as can_manage=false.
-		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "node management is not supported by this engine")
+	if r.Method == http.MethodPost {
+		s.handleCreateNode(w, r)
 		return
 	}
 	if !isReadMethod(r.Method) {
@@ -52,7 +50,7 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodDelete {
-		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "node management is not supported by this engine")
+		s.handleDeleteNode(w, r)
 		return
 	}
 	if !isReadMethod(r.Method) {
@@ -74,4 +72,69 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, node)
+}
+
+// handleCreateNode accepts one inline node. The engine writes it into the
+// managed node source and reloads, so the answer is the queued operation.
+func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
+	requestID := requestIDFromContext(r.Context())
+	if !s.nodes.NodeCapabilities().CanManage {
+		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "node management is not supported by this engine")
+		return
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+		Link string `json:"link"`
+	}
+	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &body); err != nil {
+		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if body.Name == "" || body.Link == "" {
+		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "name and link are required")
+		return
+	}
+	accepted, err := s.nodes.CreateNode(r.Context(), NodeCreateRequest{
+		Name:           body.Name,
+		Link:           body.Link,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+	})
+	if err != nil {
+		s.writeProviderFailure(w, requestID, err)
+		return
+	}
+	writeAccepted(w, accepted)
+}
+
+// handleDeleteNode removes one inline node. A node that a provider delivered is
+// not the caller's to delete, so it answers like an unknown id.
+func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
+	requestID := requestIDFromContext(r.Context())
+	nodeID := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	if nodeID == "" || strings.Contains(nodeID, "/") {
+		writeError(w, requestID, http.StatusNotFound, codeResourceNotFound, "resource not found")
+		return
+	}
+	if !s.nodes.NodeCapabilities().CanManage {
+		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "node management is not supported by this engine")
+		return
+	}
+	accepted, err := s.nodes.DeleteNode(r.Context(), NodeDeleteRequest{
+		NodeID:         nodeID,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+	})
+	if err != nil {
+		s.writeProviderFailure(w, requestID, err)
+		return
+	}
+	if accepted.Deleted == 0 {
+		// Idempotent: the id names nothing in the managed node source.
+		writeJSON(w, http.StatusOK, map[string]int{"deleted": 0})
+		return
+	}
+	writeAccepted(w, accepted.Accepted)
 }

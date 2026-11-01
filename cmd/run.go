@@ -532,6 +532,10 @@ func (r *Runner) Run() (err error) {
 			return fmt.Errorf("initialize config editor: %w", err)
 		}
 		server.SetConfigProvider(configSource)
+		// Node create and delete edit the same managed tree, and a provider
+		// refresh queues the reload the operations adapter owns.
+		provider.config = configSource
+		provider.operations = operations
 		reloadManager.setReloadObserver(operations.FollowReload)
 		if err := server.Start(); err != nil {
 			_ = listener.Close()

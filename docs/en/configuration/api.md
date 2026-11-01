@@ -213,6 +213,24 @@ api {
   [doona](https://github.com/Zakkaus/doona)) targets its own origin when it is
   served from `/ui/`, so the only thing left to enter is the token.
 
+## Nodes and subscriptions
+
+With configuration writes enabled, a panel can add and delete **inline nodes**
+and refresh a subscription by hand:
+
+- Inline nodes are written to the `node` section of `config.d/node.dae` only,
+  after the same validation `dae validate -c` runs, keeping `<file>.bak`.
+- Nodes a subscription delivered are **read-only**: the subscription owns them,
+  so a delete answers `404 capability_not_supported`. Refresh or delete that
+  subscription instead.
+- Node names are unique across the whole engine: a name any provider already
+  uses answers `409 state_conflict`.
+- A share link has to parse with host and port for `vless`, `vmess`, `trojan`,
+  `ss`, `ssr`, `socks`, `http`, `hysteria2`, `tuic`, `juicity`, `anytls` or
+  `naive`; anything else answers `422`.
+- A manual refresh (`POST /api/v1/providers/{id}/refresh`) refetches and
+  reloads; a failed fetch keeps the nodes that loaded successfully last time.
+
 ## Reload behavior
 
 All `api` fields are restart-required. A reload that changes them is rejected or

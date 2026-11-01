@@ -22,6 +22,18 @@ type fakeNodeProvider struct {
 	nodeID  string
 }
 
+func (p *fakeNodeProvider) NodeCapabilities() NodeCapabilities {
+	return NodeCapabilities{}
+}
+
+func (p *fakeNodeProvider) CreateNode(context.Context, NodeCreateRequest) (OperationAccepted, error) {
+	return OperationAccepted{}, &APIError{Status: 404, Code: "capability_not_supported", Message: "node management is not supported by this engine"}
+}
+
+func (p *fakeNodeProvider) DeleteNode(context.Context, NodeDeleteRequest) (NodeDeleteOutcome, error) {
+	return NodeDeleteOutcome{}, &APIError{Status: 404, Code: "capability_not_supported", Message: "node management is not supported by this engine"}
+}
+
 func (p *fakeNodeProvider) ListNodes(ctx context.Context, groupID string, limit int, cursor string) (NodeList, error) {
 	p.groupID, p.limit, p.cursor = groupID, limit, cursor
 	if p.err != nil {

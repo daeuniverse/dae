@@ -47,6 +47,11 @@ type nativeAPIProvider struct {
 	// userspace flows carry them, so it can be turned off for deployments that
 	// would rather not publish a partial total.
 	connectionBytes bool
+	// config edits the managed node source and queues the reloads that follow a
+	// node create or delete.
+	config *configEditor
+	// operations starts the reload a provider refresh needs.
+	operations configOperationStarter
 
 	geoMu    sync.Mutex
 	geoCache map[string]geoAssetCache

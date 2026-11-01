@@ -782,8 +782,57 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 
 #### P4-7 后续复用（P5 / P6）
 
-- [ ] `POST /nodes` / `DELETE /nodes/{id}`：写 `config.d/node.dae`，复用 P4-3 的校验/备份/原子写/reload，另加来源判定（订阅节点不在配置树内 → `404 capability_not_supported`）与引用检查（`routing.fallback`、组 `fixed` → `409 state_conflict`）。
+- [x] `POST /nodes` / `DELETE /nodes/{id}`：写 `config.d/node.dae`，复用 P4-3 的校验/备份/原子写/reload，另加来源判定（订阅节点不在配置树内 → `404 capability_not_supported`）与全局重名校验（`409 state_conflict`）。
+- [x] `POST /providers/{id}/refresh`：只允许订阅，排队 `provider_refresh`（reload 会重新拉取订阅）。
 - [ ] `PATCH /groups/{id}/config`：写 `config.d/group.dae`，RFC 6902 白名单 8 个路径，`If-Match` 对 config revision，`max_patch_operations: 32`。
+
+##### P4-7 研究结论（2026-11-01，以 demo 面板为准）
+
+**前端实际行为**（`https://demo.daeuniverse.org` 实测 + bundle `assets/index-*.js`、`assets/nodes-*.js` 分析）：
+
+- 入口在节点页的「粘贴节点链接」按钮；弹窗只有两个输入：`名称` + `节点链接`，单个链接必须填名称，多链接自动命名，一次最多 200 条。
+- 调用 `POST /api/v1/nodes`，body 为契约的 `NodeCreate { name, link }`；成功后弹「<name> 已添加」并刷新列表。删除走 `DELETE /api/v1/nodes/{node_id}`。
+- demo 后端是 honk，前端同时内置一份 **mock 后端**（`app.js` 的 `createNode` 实现），可直接当行为 oracle。实测三条 mock 链接（`vless://`、`trojan://`）均「已添加」成功，节点计数 6→8。
+
+**参考语义（mock 后端逐条）**：
+
+| 情形 | 行为 |
+|---|---|
+| `resources.nodes.can_manage == false` | `404 capability_not_supported`「Node management is unavailable」 |
+| 链接不匹配 `^([a-z][a-z0-9+.-]*):\/\/\S+$` 或 scheme 不在白名单 | `422 unsupported_value`「Unsupported share link scheme "X"」 |
+| 名称已被 inline 节点占用 | `409 state_conflict`「An inline node named X already exists」 |
+| 写入 | `Ht(source, "node", "  name: 'link'\n")`：源文本已有 `node {\n` 就在块首插入一行，否则在文件末尾追加一个 `node { … }` 块 |
+| 之后 | 触发 reload；同步模式返回节点，异步模式返回 `202` + `node_create` 操作 |
+| 删除 | 只允许 `provider_id == "inline"`，否则 `404` |
+
+**dae 现状与差距**：
+
+- `component/nativeapi/handlers_nodes.go` 对 `POST/DELETE` 硬编码 `404 capability_not_supported`，capabilities 里 `nodes.can_manage` 恒为 `false` —— 前端添加节点必然失败。
+- 无分享链接解析入口。可行方案：用 `daeuniverse/outbound` 的 dialer 注册表真实建一次 dialer（`D.NewFromLink`），能建即接受；只做 scheme 白名单会放过语法正确但内容坏的链接。
+- 节点模型：`node` 段是 `name → link` 的 `KeyableString` 映射；节点 API id 为 `n_` + `sha256(link)` 前 16 位（无 link 时用 name），创建响应必须用同一算法，否则前端刷新后找不到新节点。
+- 可复用件：P4 的 `configEditor`（读源、候选构造、full 校验、`.bak`、原子写、reload 排队）、`MergeWithOrigins`（section → 文件 + 行号）、`nodeIDOfLink`。
+
+**实现（2026-11-01 落地）**，按用户裁决的四条约束：
+
+1. 允许删除：`DELETE /nodes/{id}` 只删 `config.d/node.dae` 里的行；未知 id 幂等 `200 {"deleted": 0}`，订阅/文件来源的节点 `404 capability_not_supported`。
+2. 写入源固定为 `config.d/node.dae`（不取「node 段所在文件」），订阅节点只读。
+3. 允许面板手动刷新订阅：`POST /providers/{id}/refresh`，只接受 `kind == subscription`，排队 `provider_refresh` —— reload 本身会重新拉取订阅，失败保留上次成功的节点。
+4. 节点名全局唯一：与运行代次里所有来源（inline 与各订阅）比对，冲突 `409 state_conflict`。
+
+实现要点：
+
+- 闸门：`nodes.can_manage` 与 `providers.can_refresh` 跟 `config_write` + managed 布局同源；`providers.can_manage` 维持 `false`（不建订阅）。
+- 文本插入/删除按参考实现：有 `node {` 就在块首插一行，否则末尾追加整块；删除按行移除，注释与排版不动。
+- 链接校验：先 `shareLinkScheme`，再真实建一次 dialer 并要求解析出 `host:port` —— 只建 dialer 不够，协议 dialer 懒解析会放过 `vless://only-a-host`。
+- 写盘复用 P4 的 `.bak` + 原子写 + 全链校验 + reload 排队，返回 `202` + `node_create` / `node_delete`。
+
+**已知偏离**：契约允许 `201`（同步生效）或 `202` + 操作；dae 只有异步，统一 `202`。`provider_refresh` 的结果是 reload 结果而非契约里的 Provider 快照。
+
+**测试方案**：
+
+- mock 数据：`cmd` 包内用临时 managed 目录 + mock 分享链接（`vless://`、`trojan://`、`ss://`）覆盖：写入文本形态、重名 `409`、坏 scheme `422`、订阅节点 `404`、闸门关闭 `404`、写后 reload 只排队一次。
+- demo 对照：以 `https://demo.daeuniverse.org` 的提示文案与状态码为 oracle。
+- 端到端（手工）：本地起 dae（`config_write: true` + managed 布局），把 doona 后端地址指向它，走一遍「粘贴节点链接」。
 
 #### P4-8 不做与已知风险
 

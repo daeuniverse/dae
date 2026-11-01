@@ -187,8 +187,7 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/providers/")
 	if strings.HasSuffix(rest, "/refresh") {
-		// POST /providers/{id}/refresh is advertised as unavailable.
-		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "resource is not supported by this engine")
+		s.handleProviderRefresh(w, r, strings.TrimSuffix(rest, "/refresh"))
 		return
 	}
 	if rest == "" || strings.Contains(rest, "/") {
@@ -234,4 +233,28 @@ func (s *Server) handleGeoData(w http.ResponseWriter, r *http.Request) {
 		data.Assets = []GeoAsset{}
 	}
 	writeJSON(w, http.StatusOK, data)
+}
+
+// handleProviderRefresh refetches one subscription. Only a subscription can be
+// refreshed: an inline provider is the node section itself and a file provider
+// has nothing to fetch.
+func (s *Server) handleProviderRefresh(w http.ResponseWriter, r *http.Request, providerID string) {
+	requestID := requestIDFromContext(r.Context())
+	if providerID == "" || strings.Contains(providerID, "/") {
+		writeError(w, requestID, http.StatusNotFound, codeResourceNotFound, "resource not found")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, requestID, "POST")
+		return
+	}
+	accepted, err := s.providers.RefreshProvider(r.Context(), ProviderRefreshRequest{
+		ProviderID:     providerID,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+	})
+	if err != nil {
+		s.writeProviderFailure(w, requestID, err)
+		return
+	}
+	writeAccepted(w, accepted)
 }

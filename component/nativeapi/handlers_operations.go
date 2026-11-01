@@ -46,6 +46,11 @@ func (s *Server) handleStartOperation(w http.ResponseWriter, r *http.Request) {
 		s.writeProviderFailure(w, requestID, err)
 		return
 	}
+	writeAccepted(w, accepted)
+}
+
+// writeAccepted reports a queued operation with the headers every 202 carries.
+func writeAccepted(w http.ResponseWriter, accepted OperationAccepted) {
 	w.Header().Set("Location", accepted.Href)
 	w.Header().Set("Retry-After", operationPollRetryAfter)
 	writeJSON(w, http.StatusAccepted, accepted)

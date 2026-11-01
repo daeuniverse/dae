@@ -43,13 +43,16 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
   `GET /api/v1/operations/{operation_id}` 轮询结果
 
 `POST /api/v1/providers`（创建 inline provider）、
-`DELETE /api/v1/providers/{provider_id}`、
-`POST /api/v1/providers/{provider_id}/refresh`、`POST /api/v1/geodata/update`
-返回 `404 capability_not_supported`，与 `providers.can_refresh`、
-`providers.can_manage`、`geodata.can_update` 恒为 `false` 一致：dae 不通过 API 写配置
-或重新下载资源。`PATCH /api/v1/groups/{group_id}/config`、`POST /api/v1/nodes`、
-`DELETE /api/v1/nodes/{node_id}` 出于同样原因返回该错误码
-（`nodes.can_manage = false`）。
+`DELETE /api/v1/providers/{provider_id}`、`POST /api/v1/geodata/update`
+返回 `404 capability_not_supported`，与 `providers.can_manage`、
+`geodata.can_update` 恒为 `false` 一致：dae 不通过 API 创建或删除订阅。
+`PATCH /api/v1/groups/{group_id}/config` 同样未实现。
+
+`POST /api/v1/nodes`、`DELETE /api/v1/nodes/{node_id}` 与
+`POST /api/v1/providers/{provider_id}/refresh` 已实现，但受配置写入闸门约束：
+`nodes.can_manage` 与 `providers.can_refresh` 随 `api.config_write` 与受管目录布局一起为真。
+三者都排队一个 reload，分别以 `202` + `node_create` / `node_delete` / `provider_refresh`
+操作返回；`DELETE` 对未知 id 保持幂等（`200 {"deleted": 0}`）。
 
 `/api/v1/runtime/settings`、`/api/v1/routing/trace`、`/api/v1/auth*` 仍未实现。配置仅支持
 源级编辑：`GET /api/v1/config`、`GET /api/v1/config/sources[/{source_id}]`、
