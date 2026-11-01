@@ -74,7 +74,10 @@ deviations from the contract:
   `x-dae.hidden_sources`.
 - `config.dae` is read-only (`entry_source`). A replacement may not change the
   `api` section.
-- `GET` reads the files on disk, not an accepted snapshot.
+- `GET` reads the files on disk, not an accepted snapshot. Its `revision` is
+  the same function of the configuration that `runtime.generation.config_revision`
+  uses, so the two compare: they match while disk is what the engine loaded and
+  differ once a write has not been reloaded yet.
 
 Rules and DNS rules are edited by replacing their owning source (`routing.dae`,
 `dns.dae`). The API does not offer row-level edits.
@@ -186,9 +189,15 @@ provider ID (and its nodes' `provider_id`) survives a reload as long as the tag
 does. `node_count` comes from the running generation, and a provider whose
 subscription produced no dialer reports `status: "stale"` instead of an
 invented update time. Pagination reuses the generation-bound node cursor.
-`can_refresh` and `can_manage` are `false`, so `POST /api/v1/providers`,
-`DELETE /api/v1/providers/{provider_id}` and `POST
-/api/v1/providers/{provider_id}/refresh` answer `404 capability_not_supported`.
+
+`can_refresh` is true for a subscription and `can_manage` is true when
+configuration writes are enabled, so `POST /api/v1/providers/{provider_id}/refresh`
+queues a `provider_refresh` operation. A refresh refetches the subscription; when
+the fetch fails, the last good nodes are kept so the running generation is not
+cut, and the provider reports the failure instead of a success: `status` is
+`"stale"`, `last_error` carries the reason, and `updated_at` is the time of the
+last attempt. Otherwise `can_refresh`/`can_manage` are `false` and the endpoints
+answer `404 capability_not_supported`.
 
 `GET /api/v1/geodata` reports the geoip and geosite files dae loaded with size,
 mtime and SHA-256. The digest is cached until the file changes, so polling is
@@ -245,7 +254,11 @@ present; every other connection attribute is unaffected.
 
 `GET /api/v1/flows` reads the closed-flow history instead: a ring of 2048
 entries retained for 900 seconds, newest first, filtered by `network`, `state`
-and `connection_id`, with `limit` (default 100) and an opaque cursor. `GET
+and `connection_id`, with `limit` (default 100) and an opaque cursor. Like the
+DNS log and cache walks, the cursor names the last record the client received
+rather than an offset, so records arriving at the head of the list while a walk
+is in progress cannot make a later page repeat or skip entries. An anchor that
+has left the ring answers `410 snapshot_expired`. `GET
 /api/v1/flows/{flow_id}` returns one entry and answers `410 flow_expired` once
 it left the ring. Flow IDs are `f_` plus a hash of the endpoints and start time,
 and connections reference the same ID through `flow_id`. Flow detail carries a
@@ -258,7 +271,10 @@ and connections reference the same ID through `flow_id`. Flow detail carries a
 open with `stream.ready`, whose `id` is the resume cursor; a client that
 reconnects with `Last-Event-ID` continues after that frame, and an unknown or
 evicted cursor answers `409 event_cursor_expired` so the client drops it and
-establishes a new baseline. A slow client is disconnected rather than allowed
+establishes a new baseline. A cursor is also bound to the instance that issued
+it and to a position that is still retained: one from before a restart, or one
+whose records the ring has since dropped, expires instead of silently resuming
+and skipping invalidations. A slow client is disconnected rather than allowed
 to block the engine.
 
 The event stream publishes `runtime.updated`, `operation.updated` and
@@ -280,9 +296,18 @@ through `GET /api/v1/operations/{operation_id}`. `kind` is `tcp_connect`,
 (`direct` and `leaves` select the group itself).
 
 Each result reports `healthy` or `unavailable` with `latency_ms`, the transport
-and IP version that answered, and the destination ID in `member_id`. Probes run
-as userspace dials through the node's own dialer, so they measure the same path
-the proxy takes rather than the host's direct route. Work is bounded: 4 probes
+and IP version that answered, and the destination ID in `member_id`. Each kind
+measures what its name says:
+
+- `tcp_connect` opens a TCP connection to the node's own server address, using
+  the direct dialer rather than the node, so it reports whether that server
+  accepts connections. An outbound with no server address (the builtin `direct`
+  group) falls back to a dial through the node.
+- `http` sends a real `GET` through the node and requires a response below 500.
+- `dns` sends a real query through the node and requires a well-formed answer.
+
+Probes run as userspace dials through the node's own dialer, so they measure the
+same path the proxy takes rather than the host's direct route. Work is bounded: 4 probes
 run at once, 16 wait in the queue (`503 temporarily_unavailable` with
 `Retry-After` when both are full), callers are limited to 120 requests per
 minute (`429 rate_limited`), a job expands at most 256 members into 512 results,
@@ -291,12 +316,17 @@ forever. These numbers are what `capabilities.probes.limits` advertises.
 
 ### Runtime summary and per-outbound counters
 
-`GET /api/v1/runtime` mixes two observation planes and says so with
-`traffic.observed_by: "mixed"`: the userspace relay counts payload bytes, while
-the eBPF datapath counts link bytes for the flows it forwards without userspace.
-`traffic.planes.userspace` and `traffic.planes.kernel_direct` keep the two
-separable and sum exactly to `traffic.bytes`, so a reader that needs one
-consistent unit should use a plane instead of the mixed total.
+`GET /api/v1/runtime` reports `traffic.observed_by: "userspace"`: every byte in
+`traffic.bytes` was counted by the userspace relay, so the figure is payload
+bytes. Traffic the datapath forwards without userspace - a flow routed `direct`
+in the kernel, or `must_direct` traffic that never reaches the relay - is **not**
+counted, so the totals read lower than the real link speed on a direct-heavy
+deployment. That is deliberate: the alternative was a per-packet counter and a
+pass-through flow index in the datapath, paid for by every installation
+including the ones that never enable this API.
+
+Rates are produced by a sampler that runs once per second over the process
+totals, so the forwarding path only performs one atomic add per record.
 
 `process.cpu_percent` is the daemon's CPU usage over the latest one-second
 sampling interval, as a percentage of **one** CPU: `100` means one core fully
@@ -306,17 +336,16 @@ and briefly reports `null` again. `process.pid` is present only with
 `detail=full`.
 
 `traffic.counter_since` and `runtime/outbounds.counter_since` report the same
-process-level boundary and both survive a reload. The per-outbound registry is
-process-scoped while the traffic store is generation-scoped, so the totals are
-inherited across a generation handoff instead of restarting at zero.
+process-level boundary and both survive a reload. The traffic store is
+process-lifetime, like the per-outbound registry, so flows that survive a reload
+keep landing in the numbers `/runtime` reads: the totals and the rate do not
+freeze at the handoff and do not restart at zero.
 
 `GET /api/v1/runtime/outbounds` reports `active_connections`,
 `total_connections`, `upload_bytes`, `download_bytes` and `errors` per outbound.
-The builtin `direct` row covers the bytes the datapath forwards without
-userspace, so `sum(outbounds)` tracks `runtime.traffic.bytes` except for DNS
-traffic, which no outbound owns. Those bytes are link bytes for pass-through
-flows and payload bytes for `must_direct` flows that do reach userspace; the two
-are never mixed inside one flow.
+The builtin `direct` row covers the `must_direct` bytes that do reach userspace,
+so `sum(outbounds)` tracks `runtime.traffic.bytes` except for DNS traffic, which
+no outbound owns.
 
 ### Memory
 

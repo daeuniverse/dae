@@ -69,8 +69,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
     with validated `window_seconds` / `max_points` bounds.
   - `GET /api/v1/nodes` and `GET /api/v1/nodes/{node_id}` list every managed
     node with its group membership and typed health samples; pagination is
-    cursor-based and bound to one generation. Node management stays
-    `404 capability_not_supported` (`can_manage: false`).
+    cursor-based and bound to one generation. Node management
+    (`POST /api/v1/nodes`, `DELETE /api/v1/nodes/{node_id}`) and
+    `POST /api/v1/providers/{provider_id}/refresh` are gated on
+    `api.config_write` plus the managed layout; without both they answer
+    `404 capability_not_supported`.
   - Group `runtime.health` now reports per-member probe state, latency,
     10-sample average and moving average, plus the metric the group sorts by.
   - Automatic policies (`random`, `min`, `min_avg10`, `min_moving_avg`) accept
@@ -96,15 +99,16 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
   groups with their maximum (which invented peaks the recorder never measured).
 - Report `datapath.state = "disabled"` while the runtime is suspended instead of
   claiming the datapath is active.
-- Attribute kernel-direct traffic to the builtin `direct` outbound row and split
-  `runtime.traffic.bytes` into `planes.userspace` / `planes.kernel_direct`.
-  Pass-through bytes only ever reached the mixed total, so the `direct` row
-  stayed at zero and `sum(runtime/outbounds)` could never match the total
-  (measured 472 MB / 18% apart on a live router).
+- Scope `runtime.traffic` to visible traffic: `observed_by` is `"userspace"` and
+  the counters no longer include flows the datapath forwards without the relay.
+  The datapath used to keep a PERCPU counter and an LRU pass-through index for
+  them, costing about 12 MiB of memlock and one map update per packet on the
+  direct path on every installation, including those that never enable the API.
 - Keep `runtime.traffic` totals across a reload and share one `counter_since`
-  with `runtime/outbounds`: the traffic store is generation-scoped while the
-  per-outbound registry is process-scoped, so a reload zeroed one side and left
-  the other accumulating.
+  with `runtime/outbounds`: the traffic store is now process-lifetime like the
+  per-outbound registry, so surviving flows keep landing in the numbers a
+  dashboard reads. Rates come from a one-second sampler, so recording a byte
+  costs one atomic add and no clock read.
 - Report data-UDP health samples (borrowing the DNS sibling the engine ranks by),
   make `sorting_latency_ms` the value the alive set actually compares (policy
   metric + recovery penalty + `add_latency`), and fill `ranking` with

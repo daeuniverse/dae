@@ -64,7 +64,9 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 - `api.dae` 被隐藏：不出现在 `sources[]` 中，其 id 返回 `404 resource_not_found`，与未知 id 一致。
   能力信息通过 `x-dae.hidden_sources` 体现。
 - `config.dae` 只读（`entry_source`）。替换时不得修改 `api` 段。
-- `GET` 读取磁盘文件，而非已接受的快照。
+- `GET` 读取磁盘文件，而非已接受的快照。其 `revision` 与
+  `runtime.generation.config_revision` 使用同一个函数，因此两者可比：磁盘内容就是引擎已加载
+  的内容时二者相等，写入尚未 reload 时二者不同。
 
 规则与 DNS 规则通过替换其所属源文件（`routing.dae`、`dns.dae`）来编辑，API 不提供行级编辑。
 
@@ -149,10 +151,12 @@ provider（见下）。节点管理（`POST`、`DELETE`）返回
 `inline` provider（`p_inline`），其他 tag 为 `p_` 加 tag 哈希，因此只要 tag 不变，
 provider ID（以及节点的 `provider_id`）跨 reload 稳定。`node_count` 取自当前
 generation；订阅没有产出任何 dialer 时 `status` 为 `"stale"`，而不是编造更新时间。
-分页复用节点那套绑定 generation 的 cursor。`can_refresh`、`can_manage` 为 `false`，
-所以 `POST /api/v1/providers`、`DELETE /api/v1/providers/{provider_id}`、
-`POST /api/v1/providers/{provider_id}/refresh` 返回
-`404 capability_not_supported`。
+分页复用节点那套绑定 generation 的 cursor。订阅的 `can_refresh` 为 true，配置写入
+可用时 `can_manage` 为 true，因此 `POST /api/v1/providers/{provider_id}/refresh`
+会排队一个 `provider_refresh` 操作。刷新会重新拉取订阅；拉取失败时保留上一次成功的
+节点，避免切断正在运行的 generation，同时不把失败报成成功：`status` 为 `"stale"`，
+`last_error` 给出原因，`updated_at` 是最后一次尝试的时间。其余情况下
+`can_refresh`/`can_manage` 为 `false`，相关端点返回 `404 capability_not_supported`。
 
 `GET /api/v1/geodata` 报告 dae 实际加载的 geoip/geosite 文件大小、mtime 与 SHA-256。
 摘要会缓存到文件变化为止，因此轮询开销很小。`can_update` 为 `false`：资源来自安装包，
@@ -198,6 +202,8 @@ DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可
 
 `GET /api/v1/flows` 读取已关闭 flow 的历史：2048 条、保留 900 秒的环形记录，最新在前，
 可按 `network`、`state`、`connection_id` 过滤，带 `limit`（默认 100）与不透明 cursor。
+与 DNS 日志/缓存一样，cursor 记录的是客户端已收到的最后一条记录而不是偏移量，因此遍历期间
+在表头新增的记录不会让后续页重复或跳过；锚点记录已被挤出环时返回 `410 snapshot_expired`。
 `GET /api/v1/flows/{flow_id}` 返回单条，已过期返回 `410 flow_expired`。flow ID 为 `f_`
 加端点与开始时间的哈希，连接通过 `flow_id` 引用同一 ID。flow 详情里的 `trace` 在本
 引擎恒为 `disabled` 且 `missing: ["not_instrumented"]`：trace 所需证据未被记录。
@@ -206,8 +212,9 @@ DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可
 
 `GET /api/v1/events` 与 `GET /api/v1/logs` 是 SSE 流。两者都以 `stream.ready` 开场，
 其 `id` 就是续传 cursor；客户端带 `Last-Event-ID` 重连会从该帧之后继续，未知或已淘汰的
-cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基线。慢客户端会被断开，
-而不是允许它阻塞引擎。
+cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基线。cursor 还绑定到签发它
+的实例与仍然保留的位置：重启前的 cursor、或所指记录已被环形缓冲淘汰的 cursor 都会过期，
+而不是静默续传并漏掉失效通知。慢客户端会被断开，而不是允许它阻塞引擎。
 
 事件流发布 `runtime.updated`、`operation.updated`、`generation.changed`，记录在有界环中
 保留 300 秒。日志流镜像 dae 自身日志，级别 `trace`–`error`，`target` 可收窄到单个 logger。
@@ -224,7 +231,14 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 可用 `members` 收窄（`direct` 与 `leaves` 表示组本身）。
 
 每条结果给出 `healthy` 或 `unavailable`、`latency_ms`、实际应答的 transport 与 IP 版本，
-以及 `member_id` 中的目标 ID。探测通过节点自己的 dialer 在用户态发起，因此测的是代理
+以及 `member_id` 中的目标 ID。三种 kind 各自测它名字所说的东西：
+
+- `tcp_connect` 用直连 dialer 连节点自己的服务器地址（不经过该节点），报告该服务器是否
+  接受连接；没有服务器地址的出站（builtin `direct` 组）回退为经由节点发起一次拨号。
+- `http` 经由节点发出真实 `GET`，要求返回小于 500 的响应。
+- `dns` 经由节点发出真实查询，要求收到格式正确的应答。
+
+探测通过节点自己的 dialer 在用户态发起，因此测的是代理
 实际走的路径，而不是宿主机直连。工作量有上限：同时运行 4 个，最多排队 16 个（都满时返回
 `503 temporarily_unavailable` 并带 `Retry-After`），调用方限制为每分钟 120 次
 （`429 rate_limited`），单个任务最多展开 256 个成员、返回 512 条结果，并在 30 秒后停止，
@@ -232,10 +246,13 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 
 ### 运行时汇总与出站计数器
 
-`GET /api/v1/runtime` 混合了两个观测面，并用 `traffic.observed_by: "mixed"` 如实说明：
-用户态 relay 统计的是 payload 字节，eBPF 数据面统计的是不经用户态转发的流的链路字节。
-`traffic.planes.userspace` 与 `traffic.planes.kernel_direct` 把两者分开，且相加精确等于
-`traffic.bytes`；需要单一口径的读者应取 plane，而不是混合总量。
+`GET /api/v1/runtime` 的 `traffic.observed_by` 为 `"userspace"`：`traffic.bytes` 中的
+每个字节都由用户态 relay 统计，因此是 payload 字节。数据面不经用户态转发的流量（内核直接
+路由的流，或从未到达 relay 的 `must_direct` 流量）**不**计入。因此在直连为主的部署上，这个
+数字会低于真实链路速率。这是有意的取舍：另一条路是在数据面里维护每包计数与直连流索引，
+而所有安装（包括从不开启该 API 的）都要为它付费。
+
+速率由每秒运行一次的采样器基于进程总量计算，转发路径上的每次记账只需一次原子加。
 
 `process.cpu_percent` 是守护进程在最近一个 1 秒采样区间内的 CPU 占用，按**单核**百分比计：
 `100` 表示一个核心跑满，多核主机可能超过 100。它是区间增量而非生命周期均值，因此在拿到两次
@@ -243,14 +260,13 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 `detail=full` 时返回。
 
 `traffic.counter_since` 与 `runtime/outbounds.counter_since` 是同一个进程级边界，且都跨
-reload 保留。per-outbound 计数器是进程级、流量存储是 generation 级，因此 generation
-交接时会继承总量，而不是从零重来。
+reload 保留。流量存储与 per-outbound 计数器一样是进程级：reload 之后仍存活的连接继续计入
+`/runtime` 读取的数字，总量与速率既不会停在交接时刻，也不会从零重来。
 
 `GET /api/v1/runtime/outbounds` 按出站报告 `active_connections`、
 `total_connections`、`upload_bytes`、`download_bytes`、`errors`。builtin `direct`
-行涵盖数据面不经用户态转发的字节，因此 `sum(outbounds)` 与
-`runtime.traffic.bytes` 只差 DNS 流量（它不属于任何出站）。这些字节对旁路流是链路字节、
-对真正进入用户态的 `must_direct` 流是 payload 字节，单条流内部不会混合。
+行涵盖真正进入用户态的 `must_direct` 字节，因此 `sum(outbounds)` 与
+`runtime.traffic.bytes` 只差 DNS 流量（它不属于任何出站）。
 
 ### 内存
 

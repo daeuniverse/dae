@@ -328,8 +328,7 @@ group {
   - [x] `visibility: "partial"`。
   - [x] `ebpf: null` 一期即可。
 - [x] `traffic`：复用 `control.SnapshotRuntimeStats`
-  - [x] `scope: "visible"`、`observed_by: "mixed"`（契约 `ObservedBy` 枚举为 `userspace` / `ebpf` / `mixed`；dae 的合计来自 userspace relay 的 payload 字节与 eBPF 直连计数两个观测面，故为 `mixed`）。
-  - [x] `planes.userspace` / `planes.kernel_direct`（2026-10-31 新增）：把 `bytes` 拆回两个观测面。两者相加等于 `bytes`，需要单一口径的读者取 plane，不要用混合合计。`kernel_direct` 为链路字节（含 L2 头、重传重复计），`userspace` 为 relay + DNS payload 字节。
+  - [x] `scope: "visible"`、`observed_by: "userspace"`（2026-11-01 修订，取代此前的 `mixed` + `planes`）：数据面不再做直连计数，合计只含 userspace relay 的 payload 字节；不开启 API 的部署不再为每包计数与直连索引付成本。代价是内核直连流量不计入，直连为主时数字低于真实链路速率。
   - [x] `counter_since` = 进程级计数器起点（与 `runtime/outbounds.counter_since` 同一来源）。2026-10-31 修正：此前取 generation 激活时间，而 reload 后 totals 归零、`runtime/outbounds` 却继续累计，两个资源的"自何时起"和数字互相矛盾。
   - [x] `connections.tcp = ActiveTCPConnections`、`connections.udp = UDPSessions`、`total` 为二者之和。
   - [x] `bytes.upload/download` 为十进制字符串。
@@ -523,7 +522,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
   - [x] `active_connections`：flow 生命周期计数（establish +1 / finish -1）。
   - [x] `counter_since` 与进程启动/generation 激活对齐，reload 不重置（"retained across reloads"），仅进程重启或显式 reset 时变更。
 - [x] `kind`：`builtin`（direct/block）、`group`（用户组）；`node` 未按成员聚合（计数器在出站层）。
-- [x] builtin `direct` 行计的是**内核直连字节**（`direct_traffic_map`，链路字节）+ 走 userspace 的 `must_direct` payload 字节（2026-10-31 新增）。此前该行恒为 0，导致 `sum(outbounds)` 与 `runtime.traffic.bytes` 永久对不上（实测差 472 MB / 18%）。契约里 "visible traffic only" 的说明已按此扩展，见 `control/direct_traffic.go` 头注释。
+- [x] builtin `direct` 行只计走 userspace 的 `must_direct` payload 字节（2026-11-01 修订）。此前它靠内核直连计数补齐与 `runtime.traffic.bytes` 的差额（实测差 472 MB / 18%），但代价是每包 map 更新与约 12 MiB memlock，现改为如实报告"只统计可见流量"。
 - [x] 能力：`resources.runtime_outbounds = { available: true }`。
 - [x] 计数器使用原子加法（每次 record 仅一次 `atomic.Uint64.Add`，与现有全局计数器同量级）；基准结论：无需每 CPU 分片。
 - [x] 测试：单位计数、reload 后累计不回退、热路径记录归属。
