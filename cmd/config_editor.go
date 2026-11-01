@@ -81,7 +81,6 @@ type configSourceFile struct {
 	kind    string
 	raw     []byte
 	modTime time.Time
-	masked  bool
 }
 
 func newConfigEditor(cfgFile string, api config.Api, operations configOperationStarter,
