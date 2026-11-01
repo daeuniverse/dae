@@ -1,0 +1,18 @@
+dns {
+    upstream {
+        alidns: 'udp://dns.alidns.com:53'
+        googledns: 'tcp+udp://dns.google:53'
+    }
+    routing {
+        request {
+            qname(geosite:category-ads) -> reject
+            qname(geosite:category-ads-all) -> reject
+            fallback: alidns
+        }
+        response {
+            upstream(googledns) -> accept
+            !qname(geosite:cn) && ip(geoip:private) -> googledns
+            fallback: accept
+        }
+    }
+}

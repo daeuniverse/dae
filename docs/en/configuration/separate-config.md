@@ -146,3 +146,71 @@ Editing nodes or other configuration through the [native API](api.md#editing-con
 requires a stricter layout than plain splitting: fixed file names, one section per
 file, and `config.dae` as the entry. When the tree does not meet those conditions,
 API writes are disabled.
+
+## With the native API
+
+The layout the API accepts:
+
+```sh
+# tree /etc/dae
+/etc/dae
+├── config.dae
+├── api.dae
+└── config.d
+   ├── global.dae
+   ├── subscription.dae
+   ├── node.dae
+   ├── group.dae
+   ├── routing.dae
+   └── dns.dae
+```
+
+The entry carries the include block and nothing else:
+
+```jsonc
+# config.dae
+include {
+    config.d/*.dae
+    api.dae
+}
+```
+
+The listener lives in `api.dae`. `config_write` needs a secret, and both have to
+be set before a panel may add or delete nodes:
+
+```jsonc
+# api.dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-at-least-16-random-bytes'
+    config_write: true
+}
+```
+
+The group file carries the `select` group a panel switches when the user picks a
+node:
+
+```jsonc
+# group.dae
+group {
+    my_group {
+        filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
+        policy: min_moving_avg
+    }
+
+    manual_group {
+        filter: subtag(my_sub)
+        policy: select
+    }
+}
+```
+
+After copying the tree, tighten the permissions before starting dae: a file that
+is writable by its group or accessible to others is refused (`0640` or `0600` is
+expected), and `config.d/` has to stay writable for the API to store a
+replacement.
+
+`example-separated/` in the repository is this tree without comments, ready to
+copy to `/etc/dae`.
+

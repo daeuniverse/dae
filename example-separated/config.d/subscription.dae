@@ -1,0 +1,3 @@
+subscription {
+    my_sub: 'https://www.example.com/subscription/link'
+}
