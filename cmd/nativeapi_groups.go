@@ -298,12 +298,16 @@ func groupConfigOf(item userGroup) nativeapi.GroupConfig {
 	return config
 }
 
-func groupCapabilitiesOf(item userGroup) nativeapi.GroupCapabilities {
+func groupCapabilitiesOf(item userGroup, patchEnabled bool) nativeapi.GroupCapabilities {
+	mutableConfig := []string{}
+	if patchEnabled {
+		mutableConfig = []string{"check_interval", "tolerance"}
+	}
 	return nativeapi.GroupCapabilities{
 		CanSelect:            item.policy.Policy == consts.DialerSelectionPolicy_Select,
 		CanOverride:          item.policy.Policy.SupportsOverride(),
 		SupportsNestedGroups: false,
-		MutableConfig:        []string{},
+		MutableConfig:        mutableConfig,
 		ProbeTransports:      []string{},
 	}
 }
@@ -369,7 +373,7 @@ func (p *nativeAPIProvider) GetGroup(ctx context.Context, groupID string) (*nati
 			Selection: selectionPair(item),
 			Health:    groupMemberHealth(item),
 		},
-		Capabilities: groupCapabilitiesOf(item),
+		Capabilities: groupCapabilitiesOf(item, p.GroupConfigPatchAvailable()),
 	}
 	return group, nil
 }
@@ -390,6 +394,50 @@ func (p *nativeAPIProvider) GetGroupConfig(ctx context.Context, groupID string) 
 		Policy: groupPolicyOf(item.policy),
 		Config: groupConfigOf(item),
 	}, active.configRevision(), nil
+}
+
+func (p *nativeAPIProvider) GroupConfigPatchAvailable() bool {
+	return p != nil && p.config != nil && p.config.GroupConfigPatchAvailable()
+}
+
+func (p *nativeAPIProvider) PatchGroupConfig(
+	ctx context.Context,
+	groupID string,
+	request nativeapi.GroupConfigPatchRequest,
+) (nativeapi.GroupConfigDocument, string, *nativeapi.OperationAccepted, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.GroupConfigDocument{}, "", nil, err
+	}
+	if !p.GroupConfigPatchAvailable() {
+		return nativeapi.GroupConfigDocument{}, "", nil, nativeapi.NewAPIError(404, "capability_not_supported", "group configuration patch is not supported by this engine")
+	}
+	active, err := p.activeGeneration()
+	if err != nil {
+		return nativeapi.GroupConfigDocument{}, "", nil, err
+	}
+	item, ok := active.findGroup(groupID)
+	if !ok {
+		return nativeapi.GroupConfigDocument{}, "", nil, nativeapi.NewAPIError(404, "resource_not_found", "group not found")
+	}
+	current := nativeapi.GroupConfigDocument{
+		Policy: groupPolicyOf(item.policy),
+		Config: groupConfigOf(item),
+	}
+	document, revision, accepted, err := p.config.PatchGroupConfig(
+		ctx, item.group.Name, current, active.configRevision(), request,
+	)
+	if err != nil || accepted == nil {
+		return document, revision, accepted, err
+	}
+	if resolver, ok := p.operations.(interface {
+		SetResultResolver(string, func() (any, error))
+	}); ok {
+		resolver.SetResultResolver(accepted.OperationID, func() (any, error) {
+			updated, _, getErr := p.GetGroupConfig(context.Background(), groupID)
+			return updated, getErr
+		})
+	}
+	return document, revision, accepted, nil
 }
 
 func (p *nativeAPIProvider) SetGroupSelection(ctx context.Context, groupID, memberID, network string) (nativeapi.GroupSelectionResult, error) {

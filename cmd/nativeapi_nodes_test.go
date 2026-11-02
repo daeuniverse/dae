@@ -151,7 +151,7 @@ func TestGroupCapabilitiesForAutomaticPolicies(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		item := newMappedGroup(t, "g", outbound.DialerSelectionPolicy{Policy: testCase.policy}, properties...)
-		capabilities := groupCapabilitiesOf(item)
+		capabilities := groupCapabilitiesOf(item, false)
 		require.Equal(t, testCase.canSelect, capabilities.CanSelect, "can_select for %v", testCase.policy)
 		require.Equal(t, testCase.canOverride, capabilities.CanOverride, "can_override for %v", testCase.policy)
 		require.Equal(t, testCase.kind, groupPolicyOf(item.policy).Kind)

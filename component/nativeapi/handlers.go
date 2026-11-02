@@ -50,6 +50,7 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request, full bo
 			"logs":                 "/api/v1/logs",
 			"providers":            "/api/v1/providers",
 			"rules":                "/api/v1/rules",
+			"routing_trace":        "/api/v1/routing/trace",
 			"operations":           "/api/v1/operations/{operation_id}",
 			"geodata":              "/api/v1/geodata",
 			"auth_setup":           nil,
@@ -133,11 +134,15 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.groups != nil {
+		configPatch := false
+		if provider, ok := s.groups.(GroupConfigPatchCapabilities); ok {
+			configPatch = provider.GroupConfigPatchAvailable()
+		}
 		resources["groups"] = map[string]any{
 			"available":            true,
-			"config_patch":         false,
+			"config_patch":         configPatch,
 			"selection":            true,
-			"max_patch_operations": 1,
+			"max_patch_operations": MaxGroupPatchOperations,
 		}
 	} else {
 		resources["groups"] = map[string]any{"available": false}
@@ -316,8 +321,22 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"available": true,
 			"max_rules": MaxRuleDictionarySize,
 		}
+		traceAvailable := true
+		if provider, ok := s.rules.(interface{ RoutingTraceAvailable() bool }); ok {
+			traceAvailable = provider.RoutingTraceAvailable()
+		}
+		resources["routing_trace"] = map[string]any{
+			"available":                         traceAvailable,
+			"resolve_modes":                     []string{"none"},
+			"max_addresses":                     16,
+			"max_rule_steps":                    MaxRoutingTraceRuleSteps,
+			"timeout_ms":                        RoutingTraceTimeoutMs,
+			"per_principal_requests_per_minute": routingTraceRequestsPerPrincipalPerMinute,
+			"global_requests_per_minute":        routingTraceGlobalRequestsPerMinute,
+		}
 	} else {
 		resources["rules"] = map[string]any{"available": false}
+		resources["routing_trace"] = map[string]any{"available": false}
 	}
 	if s.datapath != nil {
 		resources["datapath"] = map[string]any{

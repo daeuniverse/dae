@@ -91,6 +91,10 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		Link string `json:"link"`
 	}
 	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &body); err != nil {
+		if err == errLimitedJSONBodyTooLarge {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body: "+err.Error())
 		return
 	}

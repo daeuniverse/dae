@@ -24,7 +24,10 @@ const (
 	NodeListDefaultLimit = 100
 	NodeListMaxLimit     = 1000
 
-	MaxRuleDictionarySize = 1 << 20
+	MaxRuleDictionarySize    = 1 << 20
+	MaxGroupPatchOperations  = 16
+	MaxRoutingTraceRuleSteps = 4096
+	RoutingTraceTimeoutMs    = 5000
 
 	MaxMemoryHistoryWindowSeconds = 3600
 	MaxMemoryHistoryPoints        = 180
@@ -35,7 +38,7 @@ const (
 // OperationRetention is OperationRetentionSeconds as a duration.
 var OperationRetention = time.Duration(OperationRetentionSeconds) * time.Second
 
-// GroupProvider serves the read-only group resources and runtime selection.
+// GroupProvider serves group resources and runtime selection.
 // A nil provider makes the resource unavailable in capabilities.
 type GroupProvider interface {
 	ListGroups(ctx context.Context) ([]GroupSummary, error)
@@ -43,10 +46,15 @@ type GroupProvider interface {
 	// GetGroupConfig returns the configuration document and the
 	// configuration-wide revision used for ETag and If-Match.
 	GetGroupConfig(ctx context.Context, groupID string) (GroupConfigDocument, string, error)
+	PatchGroupConfig(ctx context.Context, groupID string, request GroupConfigPatchRequest) (GroupConfigDocument, string, *OperationAccepted, error)
 	SetGroupSelection(ctx context.Context, groupID, memberID, network string) (GroupSelectionResult, error)
 	// ClearGroupSelection either clears a pinned member or reports why the
 	// policy cannot be overridden, through *APIError.
 	ClearGroupSelection(ctx context.Context, groupID, network string) (GroupOverrideCleared, error)
+}
+
+type GroupConfigPatchCapabilities interface {
+	GroupConfigPatchAvailable() bool
 }
 
 // OperationProvider starts and reports asynchronous control operations.
@@ -93,6 +101,7 @@ type GeoDataProvider interface {
 // RulesProvider serves the running generation's routing rule dictionary.
 type RulesProvider interface {
 	RoutingRules(ctx context.Context) (RuleList, error)
+	TraceRouting(ctx context.Context, request RoutingTraceRequest) (RoutingTraceResponse, error)
 }
 
 // OutboundProvider serves the per-outbound counter projection.

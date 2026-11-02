@@ -15,6 +15,7 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 - `GET /api/v1/groups`
 - `GET /api/v1/groups/{group_id}`
 - `GET /api/v1/groups/{group_id}/config`（只读，`ETag` 为配置 revision）
+- `PATCH /api/v1/groups/{group_id}/config`（受配置写入闸门约束）
 - `PUT /api/v1/groups/{group_id}/selection` — 切换 `select` 组成员，或在自动策略上
   pin 一个成员
 - `DELETE /api/v1/groups/{group_id}/selection` — 取消 pin；`select` 组返回
@@ -31,6 +32,7 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 - `POST /api/v1/operations/resume`
 - `GET /api/v1/operations/{operation_id}`
 - `GET /api/v1/rules` — 当前 generation 的配置态路由规则
+- `POST /api/v1/routing/trace` — 按当前 generation 模拟路由；仅支持 `resolve: "none"`
 - `GET /api/v1/providers`、`GET /api/v1/providers/{provider_id}`
 - `GET /api/v1/geodata` — geoip/geosite 资源指纹
 - `GET /api/v1/dns/cache`、`DELETE /api/v1/dns/cache?name=`、
@@ -47,7 +49,6 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 `DELETE /api/v1/providers/{provider_id}`、`POST /api/v1/geodata/update`
 返回 `404 capability_not_supported`，与 `providers.can_manage`、
 `geodata.can_update` 恒为 `false` 一致：dae 不通过 API 创建或删除订阅。
-`PATCH /api/v1/groups/{group_id}/config` 同样未实现。
 
 `POST /api/v1/nodes`、`DELETE /api/v1/nodes/{node_id}` 与
 `POST /api/v1/providers/{provider_id}/refresh` 已实现，但受配置写入闸门约束：
@@ -55,11 +56,22 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 三者都排队一个 reload，分别以 `202` + `node_create` / `node_delete` / `provider_refresh`
 操作返回；`DELETE` 对未知 id 保持幂等（`200 {"deleted": 0}`）。
 
-`/api/v1/runtime/settings`、`/api/v1/routing/trace`、`/api/v1/auth*` 仍未实现。配置仅支持
-源级编辑：`GET /api/v1/config`、`GET /api/v1/config/sources[/{source_id}]`、
+`/api/v1/runtime/settings` 与 `/api/v1/auth*` 返回 `404 capability_not_supported`。
+路由模拟的能力随当前 generation 提供；超过 4096 个规则步骤时不会构建模拟器。
+`routing_trace.available` 为 `false` 时，
+`POST /api/v1/routing/trace` 返回同一错误。它只模拟、不执行连接或 DNS 查询，且当前仅支持
+`resolve: "none"`；`resolve: "live"` 返回 `422 unsupported_value`。每主体每分钟最多 30 次，
+全局每分钟最多 120 次，超限返回 `429 rate_limited` 和 `Retry-After`。
+
+配置支持源级编辑及受限的组配置编辑：`GET /api/v1/config`、
+`GET /api/v1/config/sources[/{source_id}]`、
 `PUT /api/v1/config/sources/{source_id}`（需 `If-Match`）与 `POST /api/v1/config/validate`。
 仅当 `api.config_write = true` 且配置目录符合受管布局（`config.dae` 引入 `config.d/*.dae`
 与 `api.dae`）时才允许写入；否则返回 `403 permission_denied` 并附 `details.reason`，且不写盘。
+组配置补丁使用 `application/json-patch+json`，需要从组配置 `ETag` 传入强 `If-Match`；
+目前仅允许修改 `/config/check_interval`（秒）和 `/config/tolerance`（毫秒）。
+成功修改会排队 reload，返回 `202` 与 `group_update` operation；`groups.config_patch` 和组的
+`capabilities.mutable_config` 会反映当前是否可写。
 与契约的有意偏离：
 
 - `api.dae` 被隐藏：不出现在 `sources[]` 中，其 id 返回 `404 resource_not_found`，与未知 id 一致。
@@ -286,6 +298,26 @@ builtin `block` 行不再暴露：被封锁的流量在数据面被直接丢弃�
 观测计数会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读既有
 资源的控制台无需认识本端点也能看到直连流量。该行此时是混合口径：内核直连的链路字节
 加上 relay 统计到的 `must_direct` payload 字节。
+
+#### 开销
+
+直连流量不会进入用户态，所以直连吞吐再高也不会增加用户态 CPU 或堆内存。开销有上界，
+且都在内核里：
+
+- 内存是与流量无关的固定上限。`direct_stats_map` 是 4 个 `u64` 的 per-CPU 数组；
+  `direct_reverse_map` 是 LRU 哈希，上限 131072 条（key 24 字节、value 8 字节，外加内核
+  哈希开销，最多约十 MB 量级），流量暴增时淘汰旧条目而不是继续增长；`conn_state_map`
+  是 tproxy 自己的表，通过 map replacement 复用，不会再分配一份。
+- CPU 与包速率成正比，而不是字节速率。每个被观测的包会做一次 `conn_state_map` 查找、
+  一次 per-CPU 计数更新（无原子操作，不共享 cacheline），直连流还会对 `direct_reverse_map`
+  做一次更新或查找；WAN 角色多运行一个 egress 程序。只有在极高包速率的小包场景下开销才
+  可能变得可见；大包的批量传输主要受网卡与协议栈支配。
+- 失败被隔离：对象加载失败时 dae 只打印告警、跳过钩子并继续转发，API 返回 0。
+- `api.direct_stats` 关闭时不会加载对象，也不挂任何钩子。
+
+以上结论来自阅读程序本身，不是基准测试结果。要在真实系统上度量，可设置
+`sysctl kernel.bpf_stats_enabled=1`，再用 `bpftool prog show` 读取 `dae_direct_stats_*`
+程序的 `run_cnt` 与 `run_time_ns`；`bpftool map show` 可查看 map 占用的内存。
 
 ### 内存
 

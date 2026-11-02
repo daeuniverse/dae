@@ -31,6 +31,7 @@ const (
 	OperationKindNodeCreate      = "node_create"
 	OperationKindNodeDelete      = "node_delete"
 	OperationKindProviderRefresh = "provider_refresh"
+	OperationKindGroupUpdate     = "group_update"
 )
 
 // OperationStore is the bounded in-memory operation record. Unfinished

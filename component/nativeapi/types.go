@@ -203,6 +203,19 @@ type GroupConfigDocument struct {
 	Config GroupConfig `json:"config"`
 }
 
+type GroupConfigPatchOperation struct {
+	Op    string          `json:"op"`
+	Path  string          `json:"path"`
+	Value json.RawMessage `json:"value,omitempty"`
+	From  string          `json:"from,omitempty"`
+}
+
+type GroupConfigPatchRequest struct {
+	IfMatch        string
+	IdempotencyKey string
+	Operations     []GroupConfigPatchOperation
+}
+
 type GroupSelection struct {
 	MemberID           string  `json:"member_id"`
 	ResolvedLeafNodeID *string `json:"resolved_leaf_node_id"`
@@ -447,6 +460,75 @@ type RuleSource struct {
 type RuleFallback struct {
 	Outbound string      `json:"outbound"`
 	Source   *RuleSource `json:"source"`
+}
+
+type RuleCondition struct {
+	ID            string   `json:"id"`
+	Expression    *string  `json:"expression"`
+	Result        string   `json:"result"`
+	MissingInputs []string `json:"missing_inputs"`
+}
+
+type RuleEvaluation struct {
+	RuleID        string          `json:"rule_id"`
+	Expression    *string         `json:"expression"`
+	Result        string          `json:"result"`
+	MissingInputs []string        `json:"missing_inputs"`
+	Conditions    []RuleCondition `json:"conditions"`
+}
+
+type RoutingEvaluation struct {
+	DstIP         *string          `json:"dst_ip"`
+	Decision      string           `json:"decision"`
+	Outbound      *string          `json:"outbound"`
+	MissingInputs []string         `json:"missing_inputs"`
+	Rules         []RuleEvaluation `json:"rules"`
+}
+
+type RoutingTraceInput struct {
+	Network string  `json:"network"`
+	Domain  *string `json:"domain"`
+	DstIP   *string `json:"dst_ip"`
+	DstPort uint16  `json:"dst_port"`
+	SrcIP   *string `json:"src_ip"`
+	SrcPort *uint16 `json:"src_port"`
+	Pname   *string `json:"pname"`
+	Dscp    *uint8  `json:"dscp"`
+	Mark    *uint32 `json:"mark"`
+}
+
+type RoutingTraceRequest struct {
+	Input   RoutingTraceInput `json:"input"`
+	Resolve string            `json:"resolve"`
+}
+
+type RoutingTraceResponse struct {
+	Mode         string              `json:"mode"`
+	InstanceID   string              `json:"instance_id"`
+	GenerationID string              `json:"generation_id"`
+	ObservedAt   string              `json:"observed_at"`
+	Evaluations  []RoutingEvaluation `json:"evaluations"`
+	DNS          []SimulationDNSData `json:"dns"`
+}
+
+type SimulationDNSData struct {
+	LookupID           string   `json:"lookup_id"`
+	ParentLookupID     *string  `json:"parent_lookup_id"`
+	AttemptID          *string  `json:"attempt_id"`
+	Purpose            string   `json:"purpose"`
+	Name               string   `json:"name"`
+	QType              string   `json:"qtype"`
+	Source             string   `json:"source"`
+	UpstreamTransport  *string  `json:"upstream_transport"`
+	CarrierTransport   *string  `json:"carrier_transport"`
+	Cache              any      `json:"cache"`
+	CacheEntryID       *string  `json:"cache_entry_id"`
+	Upstream           *string  `json:"upstream"`
+	RouteEvaluationIDs []string `json:"route_evaluation_ids"`
+	Status             string   `json:"status"`
+	Addresses          []string `json:"addresses"`
+	SelectedIP         *string  `json:"selected_ip"`
+	Error              *string  `json:"error"`
 }
 
 // RuntimeOutbounds is the per-outbound counter projection.

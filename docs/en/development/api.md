@@ -22,6 +22,7 @@ Current implementation:
 - `GET /api/v1/groups`
 - `GET /api/v1/groups/{group_id}`
 - `GET /api/v1/groups/{group_id}/config` (read-only, `ETag` is the config revision)
+- `PATCH /api/v1/groups/{group_id}/config` (gated on configuration writes)
 - `PUT /api/v1/groups/{group_id}/selection` — switch a `select` group member, or
   pin one on an automatic policy
 - `DELETE /api/v1/groups/{group_id}/selection` — drop the pin; a selector answers
@@ -33,6 +34,7 @@ Current implementation:
 - `POST /api/v1/operations/resume`
 - `GET /api/v1/operations/{operation_id}`
 - `GET /api/v1/rules` — configured routing rules of the running generation
+- `POST /api/v1/routing/trace` — simulate routing against the running generation; `resolve: "none"` only
 - `GET /api/v1/providers` and `GET /api/v1/providers/{provider_id}`
 - `GET /api/v1/geodata` — geoip/geosite asset fingerprints
 - `GET /api/v1/dns/cache`, `DELETE /api/v1/dns/cache?name=`,
@@ -49,8 +51,7 @@ Current implementation:
 `DELETE /api/v1/providers/{provider_id}` and `POST /api/v1/geodata/update`
 answer `404 capability_not_supported`, matching `providers.can_manage` and
 `geodata.can_update` being `false`: dae does not create or delete subscriptions
-through the API. `PATCH /api/v1/groups/{group_id}/config` remains unimplemented
-for the same reason.
+through the API.
 
 `POST /api/v1/nodes`, `DELETE /api/v1/nodes/{node_id}` and
 `POST /api/v1/providers/{provider_id}/refresh` are implemented, gated on the
@@ -60,15 +61,31 @@ reload and answer `202` with a `node_create`, `node_delete` or
 `provider_refresh` operation; `DELETE` stays idempotent for an unknown id
 (`200 {"deleted": 0}`).
 
-`/api/v1/runtime/settings`, `/api/v1/routing/trace` and `/api/v1/auth*` remain
-unimplemented. Configuration is editable at source level only:
-`GET /api/v1/config`, `GET /api/v1/config/sources[/{source_id}]`,
+`/api/v1/runtime/settings` and `/api/v1/auth*` answer
+`404 capability_not_supported`. Routing trace availability follows the running
+generation; when `routing_trace.available` is false, its endpoint answers the
+same error. Trace is disabled when the generation exceeds 4096 rule steps. It simulates
+routing only: it does not connect or perform DNS
+queries, and currently supports `resolve: "none"` only; `resolve: "live"` answers
+`422 unsupported_value`. Limits are 30 requests per principal per minute and
+120 globally per minute; excess requests answer `429 rate_limited` with
+`Retry-After`.
+
+Configuration supports source-level editing plus restricted group-config
+editing: `GET /api/v1/config`, `GET /api/v1/config/sources[/{source_id}]`,
 `PUT /api/v1/config/sources/{source_id}` (requires `If-Match`) and
 `POST /api/v1/config/validate`. Writes are available only when
 `api.config_write = true` and the config directory follows the managed layout
 (`config.dae` includes `config.d/*.dae` and `api.dae`); otherwise they answer
 `403 permission_denied` with `details.reason`, and nothing is written. Deliberate
 deviations from the contract:
+
+Group config patches use `application/json-patch+json` and require the strong
+`If-Match` revision from the config `ETag`. Only `/config/check_interval`
+(seconds) and `/config/tolerance` (milliseconds) are mutable. A successful
+change queues a reload and answers `202` with a `group_update` operation;
+`groups.config_patch` and each group's `capabilities.mutable_config` reflect
+whether writes are currently available.
 
 - `api.dae` is hidden. It is omitted from `sources[]`, and its id answers
   `404 resource_not_found`, the same as an unknown id. Capabilities report it in
@@ -371,6 +388,32 @@ The counters are folded into the builtin `direct` row of
 resources shows direct traffic without knowing this endpoint. The row then mixes
 units: kernel-direct link bytes plus the `must_direct` payload bytes the relay
 counted.
+
+#### Overhead
+
+Direct traffic never reaches userspace, so a high direct throughput does not add
+userspace CPU or heap. The cost is bounded and lives in the kernel:
+
+- Memory is a fixed ceiling independent of traffic. `direct_stats_map` is a
+  per-CPU array of four `u64` counters. `direct_reverse_map` is an LRU hash
+  capped at 131072 entries (24-byte key, 8-byte value, plus kernel hash
+  overhead; on the order of ten MB at most), so a flood of flows evicts old
+  entries instead of growing. `conn_state_map` is tproxy's own map, reused via a
+  map replacement, and is not allocated again.
+- CPU scales with packet rate, not byte rate. Each observed packet costs one
+  `conn_state_map` lookup, a per-CPU counter update (no atomics, no
+  cross-CPU cacheline sharing) and, for direct flows, an update or lookup in
+  `direct_reverse_map`. The WAN role runs one extra egress program. Expect the
+  cost to become visible only at very high packet rates with small packets;
+  large-packet bulk transfers are dominated by the NIC and the stack.
+- Failure is isolated: if the object cannot load, dae logs a warning, skips the
+  hooks and keeps forwarding; the API reports zeros.
+- With `api.direct_stats` off the object is never loaded and nothing is attached.
+
+These figures are derived from reading the program, not from a benchmark. To
+measure on a real system, set `sysctl kernel.bpf_stats_enabled=1` and read
+`run_cnt` and `run_time_ns` for the `dae_direct_stats_*` programs from
+`bpftool prog show`; `bpftool map show` reports the map memory.
 
 ### Memory
 

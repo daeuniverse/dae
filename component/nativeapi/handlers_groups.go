@@ -6,8 +6,10 @@
 package nativeapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -71,10 +73,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 
 	case "config":
 		if r.Method == http.MethodPatch {
-			// dae has no configuration write path; the capability document
-			// advertises config_patch=false, so PATCH is a missing capability,
-			// never a missing route or method.
-			writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "group configuration patch is not supported by this engine")
+			s.handlePatchGroupConfig(w, r, groupID)
 			return
 		}
 		if !isReadMethod(r.Method) {
@@ -106,6 +105,83 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handlePatchGroupConfig(w http.ResponseWriter, r *http.Request, groupID string) {
+	requestID := requestIDFromContext(r.Context())
+	provider, ok := s.groups.(GroupConfigPatchCapabilities)
+	if !ok || !provider.GroupConfigPatchAvailable() {
+		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "group configuration patch is not supported by this engine")
+		return
+	}
+	if !isJSONPatchContentType(r.Header.Get("Content-Type")) {
+		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json-patch+json")
+		return
+	}
+	operations, err := decodeGroupConfigPatch(r, s.cfg.MaxJSONBodyBytes)
+	if err != nil {
+		if errors.Is(err, errGroupPatchTooLarge) {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
+		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON patch: "+err.Error())
+		return
+	}
+	if len(operations) == 0 || len(operations) > MaxGroupPatchOperations {
+		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, fmt.Sprintf("patch must contain between 1 and %d operations", MaxGroupPatchOperations))
+		return
+	}
+	if strings.TrimSpace(r.Header.Get("If-Match")) == "" {
+		writeError(w, requestID, http.StatusPreconditionRequired, "precondition_required", "If-Match is required")
+		return
+	}
+	document, revision, accepted, err := s.groups.PatchGroupConfig(r.Context(), groupID, GroupConfigPatchRequest{
+		IfMatch:        r.Header.Get("If-Match"),
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+		Operations:     operations,
+	})
+	if err != nil {
+		s.writeProviderFailure(w, requestID, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if accepted != nil {
+		w.Header().Set("Location", accepted.Href)
+		w.Header().Set("Retry-After", operationPollRetryAfter)
+		writeJSON(w, http.StatusAccepted, accepted)
+		return
+	}
+	if revision != "" {
+		w.Header().Set("ETag", `"`+revision+`"`)
+	}
+	writeJSON(w, http.StatusOK, document)
+}
+
+var errGroupPatchTooLarge = errors.New("request body is too large")
+var errLimitedJSONBodyTooLarge = errors.New("request body is too large")
+
+func decodeGroupConfigPatch(r *http.Request, limit int) ([]GroupConfigPatchOperation, error) {
+	if r.Body == nil {
+		return nil, errors.New("request body is required")
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > limit {
+		return nil, errGroupPatchTooLarge
+	}
+	var operations []GroupConfigPatchOperation
+	if err := json.Unmarshal(body, &operations); err != nil {
+		return nil, err
+	}
+	return operations, nil
+}
+
+func isJSONPatchContentType(value string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+	return mediaType == "application/json-patch+json"
+}
+
 func (s *Server) handlePutSelection(w http.ResponseWriter, r *http.Request, groupID string) {
 	requestID := requestIDFromContext(r.Context())
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
@@ -114,6 +190,10 @@ func (s *Server) handlePutSelection(w http.ResponseWriter, r *http.Request, grou
 	}
 	var request GroupSelectionRequest
 	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &request); err != nil {
+		if err == errLimitedJSONBodyTooLarge {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -190,13 +270,24 @@ func decodeLimitedJSON(r *http.Request, limit int, target any) error {
 	if r.Body == nil {
 		return errors.New("request body is required")
 	}
-	decoder := json.NewDecoder(io.LimitReader(r.Body, int64(limit)+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > limit {
+		return errLimitedJSONBodyTooLarge
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
-	if decoder.More() {
-		return errors.New("unexpected trailing data")
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing data")
+		}
+		return err
 	}
 	return nil
 }

@@ -19,6 +19,9 @@ type fakeGroupProvider struct {
 	group     *Group
 	document  GroupConfigDocument
 	revision  string
+	patchable bool
+	patchReq  GroupConfigPatchRequest
+	accepted  *OperationAccepted
 
 	selectionResult GroupSelectionResult
 	setErr          error
@@ -48,6 +51,16 @@ func (p *fakeGroupProvider) GetGroup(ctx context.Context, groupID string) (*Grou
 func (p *fakeGroupProvider) GetGroupConfig(ctx context.Context, groupID string) (GroupConfigDocument, string, error) {
 	p.configGroupID = groupID
 	return p.document, p.revision, nil
+}
+
+func (p *fakeGroupProvider) PatchGroupConfig(ctx context.Context, groupID string, request GroupConfigPatchRequest) (GroupConfigDocument, string, *OperationAccepted, error) {
+	p.configGroupID = groupID
+	p.patchReq = request
+	return p.document, p.revision, p.accepted, nil
+}
+
+func (p *fakeGroupProvider) GroupConfigPatchAvailable() bool {
+	return p.patchable
 }
 
 func (p *fakeGroupProvider) SetGroupSelection(ctx context.Context, groupID, memberID, network string) (GroupSelectionResult, error) {
@@ -181,6 +194,43 @@ func TestGroupConfigETagAndPatchCapability(t *testing.T) {
 	}
 	if got := decodeJSON(t, patch)["error"].(map[string]any)["code"]; got != codeCapabilityNotSupported {
 		t.Fatalf("patch error code = %v", got)
+	}
+}
+
+func TestGroupConfigPatchAcceptedOperation(t *testing.T) {
+	checkInterval := 30
+	provider := &fakeGroupProvider{
+		document:  GroupConfigDocument{Config: GroupConfig{CheckInterval: &checkInterval}},
+		revision:  "rev-42",
+		patchable: true,
+		accepted: &OperationAccepted{
+			OperationID: "op-1",
+			Kind:        OperationKindGroupUpdate,
+			Status:      "queued",
+			Href:        "/api/v1/operations/op-1",
+		},
+	}
+	server := newGroupTestServer(t, provider)
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/groups/g_1/config", strings.NewReader(
+		`[{"op":"replace","path":"/config/check_interval","value":30}]`,
+	))
+	request.Host = "127.0.0.1:9527"
+	request.RemoteAddr = "127.0.0.1:1234"
+	request.Header.Set("Content-Type", "application/json-patch+json")
+	request.Header.Set("If-Match", `"rev-42"`)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("patch status = %d: %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Location") != provider.accepted.Href ||
+		response.Header().Get("Retry-After") != operationPollRetryAfter {
+		t.Fatalf("operation headers = %#v", response.Header())
+	}
+	if provider.configGroupID != "g_1" || provider.patchReq.IfMatch != `"rev-42"` ||
+		len(provider.patchReq.Operations) != 1 || provider.patchReq.Operations[0].Op != "replace" {
+		t.Fatalf("patch provider request = %#v", provider.patchReq)
 	}
 }
 

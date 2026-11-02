@@ -23,5 +23,6 @@ type controlPlaneGenerationState struct {
 	dialMode            consts.DialMode
 	policyIdentity      routing.PolicyIdentity
 	routingMatcher      *RoutingMatcher
+	routingTraceMatcher *RoutingMatcher
 	bootstrapResolvers  []netip.AddrPort
 }

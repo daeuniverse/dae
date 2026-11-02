@@ -134,7 +134,7 @@ func TestSelectGroupMapping(t *testing.T) {
 	require.Equal(t, "HEAD", groupConfig.XDae.TCPCheckHTTPMethod)
 	require.Equal(t, []string{"dns.example"}, groupConfig.XDae.UDPCheckDNS)
 
-	capabilities := groupCapabilitiesOf(item)
+	capabilities := groupCapabilitiesOf(item, false)
 	require.True(t, capabilities.CanSelect)
 	require.False(t, capabilities.CanOverride)
 	require.False(t, capabilities.SupportsNestedGroups)

@@ -25,6 +25,17 @@ func (fakeRules) RoutingRules(context.Context) (RuleList, error) {
 	}, nil
 }
 
+func (fakeRules) TraceRouting(context.Context, RoutingTraceRequest) (RoutingTraceResponse, error) {
+	return RoutingTraceResponse{
+		Mode:         "simulation",
+		InstanceID:   "i",
+		GenerationID: "1",
+		ObservedAt:   "2026-01-01T00:00:00Z",
+		Evaluations:  []RoutingEvaluation{},
+		DNS:          []SimulationDNSData{},
+	}, nil
+}
+
 type fakeProviders struct{}
 
 func (fakeProviders) ListProviders(context.Context, int, string) (ProviderList, error) {

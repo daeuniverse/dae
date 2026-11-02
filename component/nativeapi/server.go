@@ -77,6 +77,7 @@ type Server struct {
 	allowedOrigins     map[string]struct{}
 	allowedHosts       []hostAuthority
 	uiRoot             string
+	traceRateLimiter   routingTraceRateLimiter
 
 	served    atomic.Uint64
 	refused   atomic.Uint64
@@ -131,6 +132,7 @@ func NewServer(cfg Config, provider RuntimeProvider, log *logrus.Logger) (*Serve
 		listenerIsLoopback: ip.IsLoopback(),
 		wildcardListen:     ip.IsUnspecified(),
 		allowedOrigins:     make(map[string]struct{}, len(cfg.AllowOrigins)),
+		traceRateLimiter:   routingTraceRateLimiter{principals: make(map[[32]byte]int)},
 	}
 	for _, origin := range cfg.AllowOrigins {
 		s.allowedOrigins[origin] = struct{}{}
@@ -479,6 +481,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleDatapath(w, r)
 	case "/api/v1/rules":
 		s.handleRules(w, r)
+	case "/api/v1/routing/trace":
+		s.handleRoutingTrace(w, r)
 	case "/api/v1/providers":
 		s.handleProviders(w, r)
 	case "/api/v1/geodata":
@@ -552,7 +556,6 @@ var unavailablePrefixes = []string{
 	// capability_not_supported instead of the generic resource_not_found.
 	"/api/v1/geodata/update",
 	"/api/v1/runtime/settings",
-	"/api/v1/routing/trace",
 	"/api/v1/auth",
 }
 

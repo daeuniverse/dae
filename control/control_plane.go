@@ -742,9 +742,23 @@ func NewControlPlaneWithContextOptions(
 	if err := checkCtx("optimize routing rules"); err != nil {
 		return nil, err
 	}
+	datReader := &routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder}
+	var routingTraceProgram *routing.NormalizedProgram
+	if len(routingA.Rules) <= MaxRoutingTraceRuleSteps {
+		traceProgram, traceErr := routing.NewNormalizedProgram(routingA.Rules, routingA.Fallback,
+			&routing.AliasOptimizer{},
+			datReader,
+			&routing.DeduplicateParamsOptimizer{},
+		)
+		if traceErr != nil {
+			log.Warnf("Routing trace is unavailable: failed to prepare trace rules: %v", traceErr)
+		} else {
+			routingTraceProgram = traceProgram
+		}
+	}
 	routingProgram, err := routing.NewNormalizedProgram(routingA.Rules, routingA.Fallback,
 		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder},
+		datReader,
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	)
@@ -812,6 +826,21 @@ func NewControlPlaneWithContextOptions(
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
+	}
+	var routingTraceMatcher *RoutingMatcher
+	if routingTraceProgram != nil {
+		traceBuilder, traceErr := NewRoutingMatcherBuilderFromProgram(log, routingTraceProgram, outboundName2Id, core.bpf.Load())
+		if traceErr == nil && len(traceBuilder.ruleSpans) != len(routingRules) {
+			traceErr = fmt.Errorf("trace matcher has %d rules, configured snapshot has %d", len(traceBuilder.ruleSpans), len(routingRules))
+		}
+		if traceErr == nil && traceBuilder.traceStepCount() <= MaxRoutingTraceRuleSteps {
+			routingTraceMatcher, traceErr = traceBuilder.BuildUserspace()
+		}
+		if traceErr != nil {
+			log.Warnf("Routing trace is unavailable: failed to build trace matcher: %v", traceErr)
+		} else if traceBuilder.traceStepCount() > MaxRoutingTraceRuleSteps {
+			log.Warnf("Routing trace is unavailable: trace exceeds the %d rule-step limit", MaxRoutingTraceRuleSteps)
+		}
 	}
 
 	// Get referenced outbounds to limit health checks.
@@ -887,6 +916,7 @@ func NewControlPlaneWithContextOptions(
 			dialMode:            dialMode,
 			policyIdentity:      policyIdentity,
 			routingMatcher:      routingMatcher,
+			routingTraceMatcher: routingTraceMatcher,
 			bootstrapResolvers:  bootstrapResolvers,
 		},
 		controlPlaneDNSRuntime: newControlPlaneDNSRuntime(buildOpts.DelayDNSListenerStart),

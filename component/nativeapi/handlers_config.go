@@ -112,6 +112,10 @@ func (s *Server) handleReplaceConfigSource(w http.ResponseWriter, r *http.Reques
 		Content *string `json:"content"`
 	}
 	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &body); err != nil {
+		if err == errLimitedJSONBodyTooLarge {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -146,6 +150,10 @@ func (s *Server) handleValidateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	var request ConfigValidationRequest
 	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &request); err != nil {
+		if err == errLimitedJSONBodyTooLarge {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body: "+err.Error())
 		return
 	}
