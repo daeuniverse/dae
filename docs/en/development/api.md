@@ -17,6 +17,7 @@ Current implementation:
 - `GET /api/v1/runtime/outbounds` — per-outbound counters, retained across reloads
 - `GET /api/v1/runtime/memory` — process, cgroup v2 and eBPF memory
 - `GET /api/v1/runtime/memory/history?window_seconds=&max_points=`
+- `GET /api/v1/runtime/direct-stats` — opt-in direct-traffic counters
 - `GET /api/v1/datapath` — eBPF attachments, routing generation and map occupancy
 - `GET /api/v1/groups`
 - `GET /api/v1/groups/{group_id}`
@@ -345,7 +346,31 @@ freeze at the handoff and do not restart at zero.
 `total_connections`, `upload_bytes`, `download_bytes` and `errors` per outbound.
 The builtin `direct` row covers the `must_direct` bytes that do reach userspace,
 so `sum(outbounds)` tracks `runtime.traffic.bytes` except for DNS traffic, which
-no outbound owns.
+no outbound owns. With `api.direct_stats` on, that row additionally carries
+kernel-direct link bytes, so the sum exceeds `runtime.traffic.bytes` by that
+amount. The builtin `block` row is not exposed: blocked traffic is dropped in the
+datapath and never reaches a counter, so the row could only ever report zeros.
+
+### Direct traffic
+
+`GET /api/v1/runtime/direct-stats` reports `enabled`, `up_bytes`, `up_packets`,
+`down_bytes` and `down_packets` (decimal strings). It is meaningful only when
+`api.direct_stats` is on: the opt-in observer in `control/kern/direct_stats.c`
+runs beside tproxy on the WAN/LAN interfaces dae binds, reads
+`conn_state_map` without writing it, and counts flows already flagged as direct
+pass-through. When the switch is off the hooks are absent and every counter is
+zero.
+
+The figure is link bytes and a lower bound: the observer runs before tproxy, so
+the first packet of each flow and flows that predate a restart are missed,
+ICMP/fragments are skipped, and the reply side of a one-request exchange on a
+NAT gateway is only recognised once a second upload re-populates the LRU flow
+index. It is not summed into `runtime.traffic`, whose total stays userspace-only.
+The counters are folded into the builtin `direct` row of
+`GET /api/v1/runtime/outbounds`, so a panel that only reads the existing
+resources shows direct traffic without knowing this endpoint. The row then mixes
+units: kernel-direct link bytes plus the `must_direct` payload bytes the relay
+counted.
 
 ### Memory
 

@@ -22,6 +22,7 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 - `GET /api/v1/runtime/outbounds` — 按出站统计，reload 后继续累计
 - `GET /api/v1/runtime/memory` — 进程、cgroup v2 与 eBPF 内存
 - `GET /api/v1/runtime/memory/history?window_seconds=&max_points=`
+- `GET /api/v1/runtime/direct-stats` — 需开启的直连流量计数
 - `GET /api/v1/datapath` — eBPF 挂载点、routing generation 与 map 占用
 - `GET /api/v1/nodes?group_id=&limit=&cursor=`
 - `GET /api/v1/nodes/{node_id}`
@@ -266,7 +267,25 @@ reload 保留。流量存储与 per-outbound 计数器一样是进程级：reloa
 `GET /api/v1/runtime/outbounds` 按出站报告 `active_connections`、
 `total_connections`、`upload_bytes`、`download_bytes`、`errors`。builtin `direct`
 行涵盖真正进入用户态的 `must_direct` 字节，因此 `sum(outbounds)` 与
-`runtime.traffic.bytes` 只差 DNS 流量（它不属于任何出站）。
+`runtime.traffic.bytes` 只差 DNS 流量（它不属于任何出站）。开启 `api.direct_stats`
+时该行还会带上内核直连的链路字节，此时总和会比 `runtime.traffic.bytes` 多出这部分。
+builtin `block` 行不再暴露：被封锁的流量在数据面被直接丢弃，永远不会进入任何计数器，
+该行只可能恒为 0。
+
+### 直连流量
+
+`GET /api/v1/runtime/direct-stats` 返回 `enabled`、`up_bytes`、`up_packets`、
+`down_bytes` 与 `down_packets`（十进制字符串）。只有开启 `api.direct_stats` 时才有意义：
+`control/kern/direct_stats.c` 里的观测程序在 dae 已绑定的 WAN/LAN 接口上紧挨 tproxy 运行，
+只读 `conn_state_map`、不写入，统计已经被标记为直连 passthrough 的流。开关关闭时钩子不存在，
+计数器恒为 0。
+
+数字是链路字节且只是下界：观测程序在 tproxy 之前运行，每条流的第一个包和重启前已存在的流
+都会漏计，ICMP/分片被跳过；NAT 网关上单请求交互的回包侧，要等第二次上行重新填充 LRU 流索引
+后才能识别。该数字不会并入 `runtime.traffic`，后者仍然只统计 userspace 可见流量。
+观测计数会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读既有
+资源的控制台无需认识本端点也能看到直连流量。该行此时是混合口径：内核直连的链路字节
+加上 relay 统计到的 `must_direct` payload 字节。
 
 ### 内存
 

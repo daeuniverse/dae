@@ -20,6 +20,7 @@ api {
     allowed_hosts: 'panel.example,panel.example:443'
     config_write: false
     disable_connection_bytes: false
+    direct_stats: false
 }
 ```
 
@@ -34,6 +35,7 @@ api {
 | `ui` | empty | Absolute directory holding a built frontend. Served at `/ui/` without credentials; other non-`/api` paths redirect there. Empty disables UI hosting. |
 | `config_write` | `false` | Allow API callers to replace configuration sources. Requires a non-empty `secret` and the directory layout below. |
 | `disable_connection_bytes` | `false` | Stop reporting cumulative bytes per connection (`upload_bytes` / `download_bytes`). See the traffic accounting note below. |
+| `direct_stats` | `false` | Attach a read-only eBPF observer to the WAN/LAN interfaces dae binds and count traffic routed directly. See the traffic accounting note below. |
 
 ## Editing configuration through the API
 
@@ -119,6 +121,38 @@ api {
 
 The two fields then stay `null`; every other connection attribute (source,
 destination, domain, outbound, chain) is unaffected.
+
+### Direct traffic
+
+Traffic dae routes directly never reaches the userspace relay, so none of the
+connection counters see it. Set `direct_stats: true` to attach an
+observation-only TC program beside tproxy on the same WAN/LAN interfaces dae
+already binds; no other interface is touched, and it never changes a mark or a
+forwarding verdict.
+
+```dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-a-long-random-token'
+    direct_stats: true
+}
+```
+
+`GET /api/v1/runtime/direct-stats` then reports cumulative `up_bytes`,
+`up_packets`, `down_bytes` and `down_packets`, with `enabled` mirroring the
+switch. The figures are link bytes, not payload bytes, and are a lower bound:
+the observer runs before tproxy, so the first packet of every flow (and flows
+that predate a restart) is not counted, and non-TCP/UDP traffic is skipped. Turn
+the switch off to remove the hooks and stop paying for the observation.
+
+The counters are also folded into the builtin `direct` row of
+`GET /api/v1/runtime/outbounds`, so an existing panel that reads only that
+resource (the doona activity page, for example) shows direct traffic without
+knowing this endpoint. That row then mixes units: kernel-direct link bytes plus
+the `must_direct` payload bytes the userspace relay counted. The traffic chart
+itself stays userspace-only, because `runtime.traffic` and its history are
+unchanged.
 
 ## Authentication
 

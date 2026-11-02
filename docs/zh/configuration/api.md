@@ -18,6 +18,7 @@ api {
     allowed_hosts: 'panel.example,panel.example:443'
     config_write: false
     disable_connection_bytes: false
+    direct_stats: false
 }
 ```
 
@@ -32,6 +33,7 @@ api {
 | `ui` | 空 | 存放已构建前端的绝对目录，在 `/ui/` 下无凭证访问；非 `/api` 路径会重定向到这里；留空表示不托管前端。 |
 | `config_write` | `false` | 是否允许通过 API 替换配置源。需要同时设置非空 `secret`，且配置目录符合下面的规范结构。 |
 | `disable_connection_bytes` | `false` | 不下发每条连接的累计上/下行字节（`upload_bytes` / `download_bytes`）。详见下面的流量统计口径。 |
+| `direct_stats` | `false` | 在 dae 已绑定的 WAN/LAN 接口上挂只读 eBPF 观测钩子，统计直连流量。详见下面的流量统计口径。 |
 
 ## 通过 API 编辑配置
 
@@ -108,6 +110,31 @@ api {
 
 此时 `upload_bytes` 与 `download_bytes` 恒为 `null`，连接列表的其余字段（来源、目标、
 域名、出站、链路）不受影响。
+
+### 直连流量
+
+dae 直连转发的流量不经过 userspace relay，连接计数器看不到它。设置
+`direct_stats: true` 后，dae 会在**自己已经绑定的** WAN/LAN 接口上、紧挨 tproxy 的位置
+挂一个纯观测 TC 程序：不改 mark、不改转发判决，也不会碰 dae 没有接管的接口。
+
+```dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-a-long-random-token'
+    direct_stats: true
+}
+```
+
+之后 `GET /api/v1/runtime/direct-stats` 会返回累计的 `up_bytes`、`up_packets`、
+`down_bytes` 与 `down_packets`，`enabled` 对应开关状态。数字是链路字节而不是 payload
+字节，且只是下界：观测钩子在 tproxy 之前运行，所以每条流的第一个包（以及重启前就存在的
+流）不会被统计，非 TCP/UDP 流量也不计。关闭开关即移除钩子，不再付出观测成本。
+
+观测计数同时会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读该资源的
+既有面板（例如 doona 的活动页）无需认识本端点即可看到直连流量。该行此时是混合口径：
+内核直连的链路字节加上 relay 统计到的 `must_direct` payload 字节。流量曲线本身仍只含
+userspace 可见流量，因为 `runtime.traffic` 与其历史序列没有改变。
 
 ## 认证
 
