@@ -513,6 +513,7 @@ func (r *Runner) Run() (err error) {
 		server.SetTrafficHistoryProvider(provider)
 		server.SetOutboundProvider(provider)
 		server.SetMemoryProvider(provider)
+		server.SetDirectStatsProvider(provider)
 		server.SetDatapathProvider(provider)
 		server.SetRulesProvider(provider)
 		server.SetProviderProvider(provider)

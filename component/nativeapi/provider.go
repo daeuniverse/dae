@@ -108,6 +108,11 @@ type MemoryProvider interface {
 	MemoryMetrics(ctx context.Context) []string
 }
 
+// DirectStatsProvider serves the cumulative direct-traffic observation.
+type DirectStatsProvider interface {
+	SnapshotDirectStats(ctx context.Context) (RuntimeDirectStats, error)
+}
+
 // DatapathProvider serves the detailed datapath state.
 type DatapathProvider interface {
 	SnapshotDatapath(ctx context.Context, detail string) (Datapath, error)

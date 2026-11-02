@@ -183,6 +183,10 @@ type Api struct {
 	// figure aggregated from them covers a fraction of the traffic; an operator
 	// who does not want that number reported can drop it here.
 	DisableConnectionBytes bool `mapstructure:"disable_connection_bytes" default:"false"`
+	// DirectStats attaches a read-only observer to the WAN/LAN hooks that
+	// counts traffic dae routes directly, the part the userspace relay cannot
+	// see. It is off by default and never changes forwarding.
+	DirectStats bool `mapstructure:"direct_stats" default:"false"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {

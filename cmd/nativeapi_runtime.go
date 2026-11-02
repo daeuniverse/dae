@@ -91,10 +91,21 @@ func (p *nativeAPIProvider) RuntimeOutbounds(ctx context.Context) (nativeapi.Run
 	result := nativeapi.RuntimeOutbounds{
 		ObservedAt:   snapshot.ObservedAt.UTC().Format(time.RFC3339),
 		CounterSince: since.UTC().Format(time.RFC3339),
-		Outbounds:    make([]nativeapi.OutboundCounters, 0, len(snapshot.Outbounds)),
+		Outbounds:    projectOutboundCounters(snapshot, plane),
 	}
+	return result, nil
+}
+
+// projectOutboundCounters projects the internal snapshot into API rows. The
+// builtin block row is omitted: blocked traffic is dropped in the datapath and
+// never reaches a counter, so the row could only ever report zeros.
+func projectOutboundCounters(snapshot control.OutboundCountersSnapshot, plane *control.ControlPlane) []nativeapi.OutboundCounters {
+	outbounds := make([]nativeapi.OutboundCounters, 0, len(snapshot.Outbounds))
 	for _, outbound := range snapshot.Outbounds {
-		result.Outbounds = append(result.Outbounds, nativeapi.OutboundCounters{
+		if outbound.Kind == "builtin" && outbound.Name == "block" {
+			continue
+		}
+		outbounds = append(outbounds, nativeapi.OutboundCounters{
 			Name:              outbound.Name,
 			Kind:              outbound.Kind,
 			ActiveConnections: nativeAPISafeUInt(outbound.ActiveConnections),
@@ -104,7 +115,66 @@ func (p *nativeAPIProvider) RuntimeOutbounds(ctx context.Context) (nativeapi.Run
 			Errors:            *nativeAPIUInt64(outbound.Errors),
 		})
 	}
-	return result, nil
+	attributeDirectStats(plane, outbounds)
+	return outbounds
+}
+
+// attributeDirectStats folds the opt-in kernel-direct observer into the builtin
+// direct row. Without it the row only carries the must_direct bytes the
+// userspace relay happened to see, so a deployment that routes by direct
+// outbound shows zero there. Kernel-direct bytes are link bytes, while the row's
+// userspace contribution is payload bytes: the row is a total, not a single
+// unit, and the projection is only applied when api.direct_stats is on.
+func attributeDirectStats(plane *control.ControlPlane, outbounds []nativeapi.OutboundCounters) {
+	if plane == nil || !control.DirectStatsEnabled() {
+		return
+	}
+	counters, err := plane.DirectStatsSnapshot()
+	if err != nil {
+		return
+	}
+	for i := range outbounds {
+		if outbounds[i].Kind != "builtin" || outbounds[i].Name != "direct" {
+			continue
+		}
+		outbounds[i].UploadBytes = addDecimalBytes(outbounds[i].UploadBytes, counters.UpBytes)
+		outbounds[i].DownloadBytes = addDecimalBytes(outbounds[i].DownloadBytes, counters.DownBytes)
+		return
+	}
+}
+
+func addDecimalBytes(existing string, delta uint64) string {
+	base, err := strconv.ParseUint(existing, 10, 64)
+	if err != nil {
+		return existing
+	}
+	if ^uint64(0)-base < delta {
+		return strconv.FormatUint(^uint64(0), 10)
+	}
+	return strconv.FormatUint(base+delta, 10)
+}
+
+// SnapshotDirectStats reads the cumulative direct-traffic observation.
+func (p *nativeAPIProvider) SnapshotDirectStats(ctx context.Context) (nativeapi.RuntimeDirectStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.RuntimeDirectStats{}, err
+	}
+	plane, err := p.activeControlPlane()
+	if err != nil {
+		return nativeapi.RuntimeDirectStats{}, err
+	}
+	counters, err := plane.DirectStatsSnapshot()
+	if err != nil {
+		return nativeapi.RuntimeDirectStats{}, err
+	}
+	return nativeapi.RuntimeDirectStats{
+		ObservedAt:  time.Now().UTC().Format(time.RFC3339),
+		Enabled:     control.DirectStatsEnabled(),
+		UpBytes:     strconv.FormatUint(counters.UpBytes, 10),
+		UpPackets:   strconv.FormatUint(counters.UpPackets, 10),
+		DownBytes:   strconv.FormatUint(counters.DownBytes, 10),
+		DownPackets: strconv.FormatUint(counters.DownPackets, 10),
+	}, nil
 }
 
 // SnapshotMemory reads the current process and cgroup memory.

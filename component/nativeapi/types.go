@@ -469,6 +469,19 @@ type OutboundCounters struct {
 	Errors            string `json:"errors"`
 }
 
+// RuntimeDirectStats is the cumulative direct-traffic observation. Enabled
+// reflects api.direct_stats; when it is false the counters stay at zero.
+// Counter values are decimal strings because they are UInt64 in the contract.
+// Up is LAN or host to WAN; down is WAN to LAN or host.
+type RuntimeDirectStats struct {
+	ObservedAt  string `json:"observed_at"`
+	Enabled     bool   `json:"enabled"`
+	UpBytes     string `json:"up_bytes"`
+	UpPackets   string `json:"up_packets"`
+	DownBytes   string `json:"down_bytes"`
+	DownPackets string `json:"down_packets"`
+}
+
 // RuntimeMemory is the process, cgroup and kernel memory snapshot.
 type RuntimeMemory struct {
 	ObservedAt string         `json:"observed_at"`
@@ -800,7 +813,6 @@ type FlowCoverage struct {
 	UserspaceTCP string `json:"userspace_tcp"`
 	UserspaceUDP string `json:"userspace_udp"`
 	KernelDirect string `json:"kernel_direct"`
-	KernelBlock  string `json:"kernel_block"`
 	DNSIntercept string `json:"dns_intercept"`
 	KernelBypass string `json:"kernel_bypass"`
 }

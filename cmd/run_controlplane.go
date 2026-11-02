@@ -405,6 +405,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// Start timing the control plane creation
 	log.Infoln("Building control plane and routing rules...")
 	stageStart = time.Now()
+	control.ConfigureDirectStats(conf.Api.DirectStats)
 	c, err = buildControlPlaneRuntime(
 		ctx,
 		log,

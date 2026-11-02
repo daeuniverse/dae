@@ -46,6 +46,7 @@ var ApiDesc = Desc{
 	"ui":                       "Absolute path to a directory containing a built frontend (with index.html). It is served without credentials at /ui/, while API calls still require the token. Empty disables UI hosting.",
 	"config_write":             "Allow control callers to replace configuration sources over the API. Requires secret and a configuration directory split into config.dae, config.d/*.dae and api.dae.",
 	"disable_connection_bytes": "Stop reporting cumulative bytes per connection. Only userspace flows carry those counters, so anything aggregated from them covers a fraction of the traffic; enable this to leave upload_bytes and download_bytes null instead.",
+	"direct_stats":             "Count traffic that dae routes directly (the direct outbound) with a read-only eBPF observer on the WAN/LAN interfaces dae already binds. Off by default; it does not change forwarding or marks.",
 }
 
 var GlobalDesc = Desc{

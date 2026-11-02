@@ -38,22 +38,23 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request, full bo
 		APIMajor: APIMajor,
 		BasePath: BasePath,
 		Links: map[string]any{
-			"version":           "/api/v1/version",
-			"capabilities":      "/api/v1/capabilities",
-			"config":            "/api/v1/config",
-			"config_validate":   "/api/v1/config/validate",
-			"runtime":           "/api/v1/runtime",
-			"runtime_outbounds": "/api/v1/runtime/outbounds",
-			"traffic_history":   "/api/v1/runtime/traffic/history",
-			"memory_history":    "/api/v1/runtime/memory/history",
-			"logs":              "/api/v1/logs",
-			"providers":         "/api/v1/providers",
-			"rules":             "/api/v1/rules",
-			"operations":        "/api/v1/operations/{operation_id}",
-			"geodata":           "/api/v1/geodata",
-			"auth_setup":        nil,
-			"auth_login":        nil,
-			"auth_logout":       nil,
+			"version":              "/api/v1/version",
+			"capabilities":         "/api/v1/capabilities",
+			"config":               "/api/v1/config",
+			"config_validate":      "/api/v1/config/validate",
+			"runtime":              "/api/v1/runtime",
+			"runtime_outbounds":    "/api/v1/runtime/outbounds",
+			"runtime_direct_stats": "/api/v1/runtime/direct-stats",
+			"traffic_history":      "/api/v1/runtime/traffic/history",
+			"memory_history":       "/api/v1/runtime/memory/history",
+			"logs":                 "/api/v1/logs",
+			"providers":            "/api/v1/providers",
+			"rules":                "/api/v1/rules",
+			"operations":           "/api/v1/operations/{operation_id}",
+			"geodata":              "/api/v1/geodata",
+			"auth_setup":           nil,
+			"auth_login":           nil,
+			"auth_logout":          nil,
 		},
 		Auth: auth,
 	})
@@ -162,6 +163,11 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		resources["runtime_outbounds"] = map[string]any{"available": true}
 	} else {
 		resources["runtime_outbounds"] = map[string]any{"available": false}
+	}
+	if s.directStats != nil {
+		resources["runtime_direct_stats"] = map[string]any{"available": true}
+	} else {
+		resources["runtime_direct_stats"] = map[string]any{"available": false}
 	}
 	if s.memory != nil {
 		metrics := s.memory.MemoryMetrics(r.Context())

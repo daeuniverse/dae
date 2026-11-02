@@ -55,6 +55,15 @@ func (p *fakeDatapathProvider) SnapshotDatapath(ctx context.Context, detail stri
 	return p.datapath, p.err
 }
 
+type fakeDirectStatsProvider struct {
+	stats RuntimeDirectStats
+	err   error
+}
+
+func (p fakeDirectStatsProvider) SnapshotDirectStats(ctx context.Context) (RuntimeDirectStats, error) {
+	return p.stats, p.err
+}
+
 func withRuntimeProviders(server *Server) *fakeMemoryProvider {
 	memory := &fakeMemoryProvider{
 		memory: RuntimeMemory{ObservedAt: "2026-01-01T00:00:00Z"},
@@ -79,6 +88,14 @@ func withRuntimeProviders(server *Server) *fakeMemoryProvider {
 		}},
 	}})
 	server.SetMemoryProvider(memory)
+	server.SetDirectStatsProvider(fakeDirectStatsProvider{stats: RuntimeDirectStats{
+		ObservedAt:  "2026-01-01T00:00:00Z",
+		Enabled:     true,
+		UpBytes:     "10",
+		UpPackets:   "2",
+		DownBytes:   "20",
+		DownPackets: "3",
+	}})
 	server.SetDatapathProvider(&fakeDatapathProvider{datapath: Datapath{
 		ObservedAt: "2026-01-01T00:00:00Z",
 		Kind:       "ebpf",
@@ -214,5 +231,37 @@ func TestRuntimeCapabilitiesAdvertiseNewResources(t *testing.T) {
 	datapath := resources["datapath"].(map[string]any)
 	if datapath["available"] != true {
 		t.Fatalf("datapath = %#v", datapath)
+	}
+	direct := resources["runtime_direct_stats"].(map[string]any)
+	if direct["available"] != true {
+		t.Fatalf("runtime_direct_stats = %#v", direct)
+	}
+}
+
+func TestRuntimeDirectStats(t *testing.T) {
+	server := newTestServer(t, Config{AllowAnonymousLoopback: true}, fakeRuntimeProvider{runtime: testRuntime()})
+	withRuntimeProviders(server)
+	remote := "127.0.0.1:1234"
+
+	response := doRequest(server, http.MethodGet, "/api/v1/runtime/direct-stats", remote, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	body := decodeJSON(t, response)
+	if body["enabled"] != true {
+		t.Fatalf("enabled = %#v", body["enabled"])
+	}
+	if body["up_bytes"] != "10" || body["down_bytes"] != "20" {
+		t.Fatalf("counters = %#v", body)
+	}
+}
+
+func TestRuntimeDirectStatsUnsupportedWithoutProvider(t *testing.T) {
+	server := newTestServer(t, Config{AllowAnonymousLoopback: true}, fakeRuntimeProvider{runtime: testRuntime()})
+	remote := "127.0.0.1:1234"
+
+	response := doRequest(server, http.MethodGet, "/api/v1/runtime/direct-stats", remote, nil)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
 	}
 }

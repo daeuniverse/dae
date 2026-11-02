@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/control"
 )
 
@@ -121,5 +122,61 @@ func TestNativeAPISafeUIntClampsNegative(t *testing.T) {
 	}
 	if got := nativeAPISafeUInt(9); got != 9 {
 		t.Fatalf("positive = %d, want 9", got)
+	}
+}
+
+func TestAddDecimalBytes(t *testing.T) {
+	for _, tc := range []struct {
+		existing string
+		delta    uint64
+		want     string
+	}{
+		{"0", 0, "0"},
+		{"0", 1234, "1234"},
+		{"500", 250, "750"},
+		{"not-a-number", 10, "not-a-number"},
+		{"18446744073709551615", 1, "18446744073709551615"},
+	} {
+		if got := addDecimalBytes(tc.existing, tc.delta); got != tc.want {
+			t.Errorf("addDecimalBytes(%q, %d) = %q, want %q", tc.existing, tc.delta, got, tc.want)
+		}
+	}
+}
+
+func TestAttributeDirectStatsDisabledIsNoop(t *testing.T) {
+	previous := control.DirectStatsEnabled()
+	control.ConfigureDirectStats(false)
+	t.Cleanup(func() { control.ConfigureDirectStats(previous) })
+
+	outbounds := []nativeapi.OutboundCounters{{Name: "direct", Kind: "builtin", UploadBytes: "7", DownloadBytes: "9"}}
+	attributeDirectStats(nil, outbounds)
+	if outbounds[0].UploadBytes != "7" || outbounds[0].DownloadBytes != "9" {
+		t.Fatalf("disabled observer changed the row: %#v", outbounds[0])
+	}
+}
+
+func TestProjectOutboundCountersOmitsBlock(t *testing.T) {
+	previous := control.DirectStatsEnabled()
+	control.ConfigureDirectStats(false)
+	t.Cleanup(func() { control.ConfigureDirectStats(previous) })
+
+	snapshot := control.OutboundCountersSnapshot{
+		Outbounds: []control.OutboundCounterSnapshot{
+			{Name: "direct", Kind: "builtin", UploadBytes: 11, DownloadBytes: 22},
+			{Name: "block", Kind: "builtin"},
+			{Name: "proxy", Kind: "group", UploadBytes: 33, DownloadBytes: 44},
+		},
+	}
+	rows := projectOutboundCounters(snapshot, nil)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %#v, want direct and proxy only", rows)
+	}
+	for _, row := range rows {
+		if row.Name == "block" {
+			t.Fatalf("block row leaked into the API: %#v", rows)
+		}
+	}
+	if rows[0].Name != "direct" || rows[0].UploadBytes != "11" || rows[1].Name != "proxy" || rows[1].DownloadBytes != "44" {
+		t.Fatalf("rows = %#v", rows)
 	}
 }

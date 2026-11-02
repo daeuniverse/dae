@@ -55,6 +55,7 @@ type Server struct {
 	nodes       NodeProvider
 	outbounds   OutboundProvider
 	memory      MemoryProvider
+	directStats DirectStatsProvider
 	datapath    DatapathProvider
 	rules       RulesProvider
 	providers   ProviderProvider
@@ -198,6 +199,13 @@ func (s *Server) SetMemoryProvider(provider MemoryProvider) {
 		return
 	}
 	s.memory = provider
+}
+
+func (s *Server) SetDirectStatsProvider(provider DirectStatsProvider) {
+	if s == nil {
+		return
+	}
+	s.directStats = provider
 }
 
 func (s *Server) SetDatapathProvider(provider DatapathProvider) {
@@ -465,6 +473,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRuntimeMemory(w, r)
 	case "/api/v1/runtime/memory/history":
 		s.handleMemoryHistory(w, r)
+	case "/api/v1/runtime/direct-stats":
+		s.handleRuntimeDirectStats(w, r)
 	case "/api/v1/datapath":
 		s.handleDatapath(w, r)
 	case "/api/v1/rules":

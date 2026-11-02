@@ -216,6 +216,7 @@ var (
 	_ nativeapi.TrafficHistoryProvider = (*nativeAPIProvider)(nil)
 	_ nativeapi.OutboundProvider       = (*nativeAPIProvider)(nil)
 	_ nativeapi.MemoryProvider         = (*nativeAPIProvider)(nil)
+	_ nativeapi.DirectStatsProvider    = (*nativeAPIProvider)(nil)
 	_ nativeapi.DatapathProvider       = (*nativeAPIProvider)(nil)
 	_ nativeapi.OperationProvider      = (*nativeAPIOperations)(nil)
 )

@@ -248,7 +248,6 @@ func nativeFlowCoverage() nativeapi.FlowCoverage {
 		UserspaceTCP: "partial",
 		UserspaceUDP: "partial",
 		KernelDirect: "none",
-		KernelBlock:  "none",
 		DNSIntercept: "none",
 		KernelBypass: "none",
 	}

@@ -57,6 +57,27 @@ func (s *Server) handleRuntimeMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, memory)
 }
 
+func (s *Server) handleRuntimeDirectStats(w http.ResponseWriter, r *http.Request) {
+	requestID := requestIDFromContext(r.Context())
+	if s.directStats == nil {
+		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "resource is not supported by this engine")
+		return
+	}
+	if !isReadMethod(r.Method) {
+		writeMethodNotAllowed(w, requestID, "GET, HEAD")
+		return
+	}
+	stats, err := s.directStats.SnapshotDirectStats(r.Context())
+	if err != nil {
+		s.writeProviderFailure(w, requestID, err)
+		return
+	}
+	if stats.ObservedAt == "" {
+		stats.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (s *Server) handleMemoryHistory(w http.ResponseWriter, r *http.Request) {
 	requestID := requestIDFromContext(r.Context())
 	if s.memory == nil {
