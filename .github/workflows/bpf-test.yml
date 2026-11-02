@@ -119,6 +119,11 @@ jobs:
               # kern/tproxy.c; a drift moves a kernel parameter instead of
               # failing the load. Needs no BPF map.
               TestDaeParamLayout
+              # The direct-stats observer declares its own copies of
+              # tuples_key and conn_state; a drift from tproxy.c makes it read
+              # another field's bytes. Pure layout checks, no BPF map needed.
+              TestDirectStatsConnStateABIParity
+              TestDirectStatsTuplesKeyABIParity
             )
             printf '%s\n' "${whitelist[@]}" | sort -u > /tmp/datapath-whitelist.txt
 
