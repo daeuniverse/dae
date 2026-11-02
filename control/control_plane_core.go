@@ -116,7 +116,11 @@ type controlPlaneCore struct {
 	tcHookStage         *tcHookSet
 	tcHookStageDeferred bool
 	preparedTCHooks     *preparedTCHookHandoff
-	bpf                 atomic.Pointer[bpfObjects]
+	// directStats is the opt-in direct-traffic observer object. It is loaded
+	// lazily on the first WAN/LAN bind while api.direct_stats is on.
+	directStatsMu sync.Mutex
+	directStats   *directStatsObserver
+	bpf           atomic.Pointer[bpfObjects]
 	// outboundId2Name is populated during NewControlPlane before the control
 	// plane is published and is read-only afterwards, so concurrent readers
 	// (health callbacks, logging) need no lock.

@@ -130,6 +130,8 @@ submodule submodules: $(submodule_paths)
 clean-ebpf:
 	@rm -f control/bpf_bpf*.go && \
 			rm -f control/bpf_bpf*.o
+	@rm -f control/directstats_bpf*.go && \
+			rm -f control/directstats_bpf*.o
 	@rm -f control/bpftest_bpf*.go && \
 			rm -f control/bpftest_bpf*.o
 	@rm -f trace/bpf_*_bpf*.go && \
