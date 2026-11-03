@@ -50,11 +50,15 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 返回 `404 capability_not_supported`，与 `providers.can_manage`、
 `geodata.can_update` 恒为 `false` 一致：dae 不通过 API 创建或删除订阅。
 
-`POST /api/v1/nodes`、`DELETE /api/v1/nodes/{node_id}` 与
-`POST /api/v1/providers/{provider_id}/refresh` 已实现，但受配置写入闸门约束：
-`nodes.can_manage` 与 `providers.can_refresh` 随 `api.config_write` 与受管目录布局一起为真。
-三者都排队一个 reload，分别以 `202` + `node_create` / `node_delete` / `provider_refresh`
-操作返回；`DELETE` 对未知 id 保持幂等（`200 {"deleted": 0}`）。
+`POST /api/v1/nodes` 与 `DELETE /api/v1/nodes/{node_id}` 已实现，受配置写入闸门约束：
+`nodes.can_manage` 随 `api.config_write` 与受管目录布局一起为真。
+两者都排队一个 reload，分别以 `202` + `node_create` / `node_delete` 操作返回；
+`DELETE` 对未知 id 保持幂等（`200 {"deleted": 0}`）。
+
+`POST /api/v1/providers/{provider_id}/refresh` 不受该闸门约束：`providers.can_refresh`
+只取决于 operations 是否接好，因此 API 运行期恒为 true。只有 `kind == subscription` 的
+provider 可以刷新，inline/file provider 返回 `404 capability_not_supported`；刷新排队一个
+`provider_refresh` 操作。
 
 `/api/v1/runtime/settings` 与 `/api/v1/auth*` 返回 `404 capability_not_supported`。
 路由模拟的能力随当前 generation 提供；超过 4096 个规则步骤时不会构建模拟器。
@@ -64,10 +68,12 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 全局每分钟最多 120 次，超限返回 `429 rate_limited` 和 `Retry-After`。
 
 配置支持源级编辑及受限的组配置编辑：`GET /api/v1/config`、
-`GET /api/v1/config/sources[/{source_id}]`、
+`GET /api/v1/config/sources/{source_id}`、
 `PUT /api/v1/config/sources/{source_id}`（需 `If-Match`）与 `POST /api/v1/config/validate`。
-仅当 `api.config_write = true` 且配置目录符合受管布局（`config.dae` 引入 `config.d/*.dae`
-与 `api.dae`）时才允许写入；否则返回 `403 permission_denied` 并附 `details.reason`，且不写盘。
+契约没有 `GET /api/v1/config/sources` 列表路由：源清单取自 `GET /api/v1/config` 的
+`sources[]`，对集合路径的非 `POST` 请求返回 `405`。写入仅当 `api.config_write = true`
+且配置目录符合受管布局（`config.dae` 引入 `config.d/*.dae` 与 `api.dae`）时可用；
+否则返回 `403 permission_denied` 并附 `details.reason`，且不写盘。
 组配置补丁使用 `application/json-patch+json`，需要从组配置 `ETag` 传入强 `If-Match`；
 目前仅允许修改 `/config/check_interval`（秒）和 `/config/tolerance`（毫秒）。
 成功修改会排队 reload，返回 `202` 与 `group_update` operation；`groups.config_patch` 和组的
@@ -164,12 +170,12 @@ provider（见下）。节点管理（`POST`、`DELETE`）返回
 `inline` provider（`p_inline`），其他 tag 为 `p_` 加 tag 哈希，因此只要 tag 不变，
 provider ID（以及节点的 `provider_id`）跨 reload 稳定。`node_count` 取自当前
 generation；订阅没有产出任何 dialer 时 `status` 为 `"stale"`，而不是编造更新时间。
-分页复用节点那套绑定 generation 的 cursor。订阅的 `can_refresh` 为 true，配置写入
-可用时 `can_manage` 为 true，因此 `POST /api/v1/providers/{provider_id}/refresh`
-会排队一个 `provider_refresh` 操作。刷新会重新拉取订阅；拉取失败时保留上一次成功的
-节点，避免切断正在运行的 generation，同时不把失败报成成功：`status` 为 `"stale"`，
-`last_error` 给出原因，`updated_at` 是最后一次尝试的时间。其余情况下
-`can_refresh`/`can_manage` 为 `false`，相关端点返回 `404 capability_not_supported`。
+分页复用节点那套绑定 generation 的 cursor。`can_refresh` 只看 operations 适配器，
+因此订阅恒为 true；`can_manage` 恒为 false（不通过 API 创建或删除 provider）。
+`POST /api/v1/providers/{provider_id}/refresh` 因此对订阅排队一个 `provider_refresh`
+操作，对其他 kind 返回 `404 capability_not_supported`。刷新会重新拉取订阅；拉取失败时
+保留上一次成功的节点，避免切断正在运行的 generation，同时不把失败报成成功：`status`
+为 `"stale"`，`last_error` 给出原因，`updated_at` 是最后一次尝试的时间。
 
 `GET /api/v1/geodata` 报告 dae 实际加载的 geoip/geosite 文件大小、mtime 与 SHA-256。
 摘要会缓存到文件变化为止，因此轮询开销很小。`can_update` 为 `false`：资源来自安装包，

@@ -53,13 +53,17 @@ answer `404 capability_not_supported`, matching `providers.can_manage` and
 `geodata.can_update` being `false`: dae does not create or delete subscriptions
 through the API.
 
-`POST /api/v1/nodes`, `DELETE /api/v1/nodes/{node_id}` and
-`POST /api/v1/providers/{provider_id}/refresh` are implemented, gated on the
-configuration write switch: `nodes.can_manage` and `providers.can_refresh` are
-true only with `api.config_write` and the managed layout. All three queue a
-reload and answer `202` with a `node_create`, `node_delete` or
-`provider_refresh` operation; `DELETE` stays idempotent for an unknown id
-(`200 {"deleted": 0}`).
+`POST /api/v1/nodes` and `DELETE /api/v1/nodes/{node_id}` are implemented,
+gated on the configuration write switch: `nodes.can_manage` is true only with
+`api.config_write` and the managed layout. Both queue a reload and answer `202`
+with a `node_create` or `node_delete` operation; `DELETE` stays idempotent for an
+unknown id (`200 {"deleted": 0}`).
+
+`POST /api/v1/providers/{provider_id}/refresh` does not depend on that switch:
+`providers.can_refresh` only needs the operations adapter, so it is true whenever
+the API runs. Only a `subscription` provider can be refreshed — an inline or file
+provider answers `404 capability_not_supported` — and it queues a
+`provider_refresh` operation.
 
 `/api/v1/runtime/settings` and `/api/v1/auth*` answer
 `404 capability_not_supported`. Routing trace availability follows the running
@@ -72,13 +76,15 @@ queries, and currently supports `resolve: "none"` only; `resolve: "live"` answer
 `Retry-After`.
 
 Configuration supports source-level editing plus restricted group-config
-editing: `GET /api/v1/config`, `GET /api/v1/config/sources[/{source_id}]`,
+editing: `GET /api/v1/config`, `GET /api/v1/config/sources/{source_id}`,
 `PUT /api/v1/config/sources/{source_id}` (requires `If-Match`) and
-`POST /api/v1/config/validate`. Writes are available only when
-`api.config_write = true` and the config directory follows the managed layout
-(`config.dae` includes `config.d/*.dae` and `api.dae`); otherwise they answer
-`403 permission_denied` with `details.reason`, and nothing is written. Deliberate
-deviations from the contract:
+`POST /api/v1/config/validate`. The contract has no `GET /api/v1/config/sources`
+list route: the source list comes from `GET /api/v1/config`'s `sources[]`, and a
+non-`POST` request to the collection path answers `405`. Writes are available
+only when `api.config_write = true` and the config directory follows the managed
+layout (`config.dae` includes `config.d/*.dae` and `api.dae`); otherwise they
+answer `403 permission_denied` with `details.reason`, and nothing is written.
+Deliberate deviations from the contract:
 
 Group config patches use `application/json-patch+json` and require the strong
 `If-Match` revision from the config `ETag`. Only `/config/check_interval`
@@ -208,14 +214,15 @@ does. `node_count` comes from the running generation, and a provider whose
 subscription produced no dialer reports `status: "stale"` instead of an
 invented update time. Pagination reuses the generation-bound node cursor.
 
-`can_refresh` is true for a subscription and `can_manage` is true when
-configuration writes are enabled, so `POST /api/v1/providers/{provider_id}/refresh`
-queues a `provider_refresh` operation. A refresh refetches the subscription; when
-the fetch fails, the last good nodes are kept so the running generation is not
-cut, and the provider reports the failure instead of a success: `status` is
-`"stale"`, `last_error` carries the reason, and `updated_at` is the time of the
-last attempt. Otherwise `can_refresh`/`can_manage` are `false` and the endpoints
-answer `404 capability_not_supported`.
+`can_refresh` follows the operations adapter alone, so it is true for every
+subscription, while `can_manage` stays `false` because providers are never
+created or deleted over the API. `POST /api/v1/providers/{provider_id}/refresh`
+therefore queues a `provider_refresh` operation for a subscription and answers
+`404 capability_not_supported` for any other provider kind. A refresh refetches
+the subscription; when the fetch fails, the last good nodes are kept so the
+running generation is not cut, and the provider reports the failure instead of a
+success: `status` is `"stale"`, `last_error` carries the reason, and `updated_at`
+is the time of the last attempt.
 
 `GET /api/v1/geodata` reports the geoip and geosite files dae loaded with size,
 mtime and SHA-256. The digest is cached until the file changes, so polling is
