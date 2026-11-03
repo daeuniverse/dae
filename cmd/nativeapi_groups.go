@@ -301,7 +301,12 @@ func groupConfigOf(item userGroup) nativeapi.GroupConfig {
 func groupCapabilitiesOf(item userGroup, patchEnabled bool) nativeapi.GroupCapabilities {
 	mutableConfig := []string{}
 	if patchEnabled {
-		mutableConfig = []string{"check_interval", "tolerance"}
+		mutableConfig = append(mutableConfig, "check_interval")
+		// tolerance only exists for the latency-testing policy. Advertising it
+		// on a selector or fixed group promised a write the patch rejects.
+		if policyKind(item.policy.Policy) == "urltest" {
+			mutableConfig = append(mutableConfig, "tolerance")
+		}
 	}
 	return nativeapi.GroupCapabilities{
 		CanSelect:            item.policy.Policy == consts.DialerSelectionPolicy_Select,

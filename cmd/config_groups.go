@@ -24,7 +24,10 @@ import (
 
 const groupSourceName = "group.dae"
 
-var groupBlockPattern = regexp.MustCompile(`(?m)^[ \t]*group[ \t]*\{[ \t]*$`)
+// groupBlockPattern matches a group block header. A trailing comment and CRLF
+// are allowed: the managed layout accepts such a file, so the patch must find
+// the block the layout check already accepted.
+var groupBlockPattern = regexp.MustCompile(`(?m)^[ \t]*group[ \t]*\{[ \t]*(?:#[^\r\n]*)?\r?$`)
 
 func (e *configEditor) GroupConfigPatchAvailable() bool {
 	return e != nil && e.ConfigCapabilities().Writable
@@ -82,7 +85,7 @@ func (e *configEditor) PatchGroupConfig(
 		}
 	}
 
-	target, err := findSourceByPath(all, filepath.Join(e.baseDir, "config.d", groupSourceName))
+	target, err := e.groupSource(all, groupName)
 	if err != nil || !e.sourceWritable(target) {
 		return nativeapi.GroupConfigDocument{}, "", nil, nativeapi.NewAPIError(404, "capability_not_supported", "managed group configuration source is unavailable")
 	}
@@ -93,7 +96,7 @@ func (e *configEditor) PatchGroupConfig(
 	if !changed {
 		return current, currentRevision, nil, nil
 	}
-	content, err := writeGroupConfigOptions(target.raw, groupName, updated.Config)
+	content, err := writeGroupConfigOptions(target.raw, groupName, updated.Config, groupConfigDiff(current.Config, updated.Config))
 	if err != nil {
 		return nativeapi.GroupConfigDocument{}, "", nil, err
 	}
@@ -105,6 +108,37 @@ func (e *configEditor) PatchGroupConfig(
 		return nativeapi.GroupConfigDocument{}, "", nil, err
 	}
 	return nativeapi.GroupConfigDocument{}, "", &accepted, nil
+}
+
+// groupSource returns the managed source that declares the group block. The
+// layout check allows the group section to live in any config.d file, so a
+// fixed group.dae target advertised a capability the write could not honour.
+func (e *configEditor) groupSource(all []configSourceFile, groupName string) (configSourceFile, error) {
+	for _, candidate := range all {
+		if !e.sourceWritable(candidate) {
+			continue
+		}
+		if _, _, _, err := findGroupBlock(string(candidate.raw), groupName); err == nil {
+			return candidate, nil
+		}
+	}
+	return findSourceByPath(all, filepath.Join(e.baseDir, "config.d", groupSourceName))
+}
+
+// groupConfigWrite names the options a patch actually changed. Writing an
+// unchanged option projects it back through the contract's unit: check_interval
+// is whole seconds, so a 1500ms value would become 1s even when the patch only
+// touched tolerance.
+type groupConfigWrite struct {
+	checkInterval bool
+	tolerance     bool
+}
+
+func groupConfigDiff(before, after nativeapi.GroupConfig) groupConfigWrite {
+	return groupConfigWrite{
+		checkInterval: !reflect.DeepEqual(before.CheckInterval, after.CheckInterval),
+		tolerance:     !reflect.DeepEqual(before.Tolerance, after.Tolerance),
+	}
 }
 
 func findSourceByPath(all []configSourceFile, target string) (configSourceFile, error) {
@@ -194,6 +228,18 @@ func applyGroupConfigPatch(
 			}
 		}
 	}
+	// The contract judges tolerance against the policy the patch results in:
+	// only the latency-testing policy has one. A non-null tolerance that this
+	// patch changed on any other policy is unsupported. An empty Kind means the
+	// caller did not project a policy (tests do this), so it is not judged.
+	if updated.Config.Tolerance != nil &&
+		!reflect.DeepEqual(updated.Config.Tolerance, document.Config.Tolerance) &&
+		document.Policy.Kind != "" && document.Policy.Kind != "urltest" {
+		return nativeapi.GroupConfigDocument{}, false, &nativeapi.APIError{
+			Status: 422, Code: "unsupported_value",
+			Message: "tolerance applies only to the urltest policy",
+		}
+	}
 	return updated, !reflect.DeepEqual(updated.Config, document.Config), nil
 }
 
@@ -241,16 +287,20 @@ func setGroupPatchValue(config *nativeapi.GroupConfig, path string, value *int) 
 	}
 }
 
-func writeGroupConfigOptions(raw []byte, groupName string, groupConfig nativeapi.GroupConfig) ([]byte, error) {
+func writeGroupConfigOptions(raw []byte, groupName string, groupConfig nativeapi.GroupConfig, write groupConfigWrite) ([]byte, error) {
 	text := string(raw)
 	for _, option := range []struct {
 		key   string
 		value *int
 		unit  string
+		apply bool
 	}{
-		{key: "check_interval", value: groupConfig.CheckInterval, unit: "s"},
-		{key: "check_tolerance", value: groupConfig.Tolerance, unit: "ms"},
+		{key: "check_interval", value: groupConfig.CheckInterval, unit: "s", apply: write.checkInterval},
+		{key: "check_tolerance", value: groupConfig.Tolerance, unit: "ms", apply: write.tolerance},
 	} {
+		if !option.apply {
+			continue
+		}
 		var rendered *string
 		if option.value != nil {
 			value := strconv.Itoa(*option.value) + option.unit
@@ -292,11 +342,30 @@ func setGroupConfigLine(text, groupName, key string, value *string) (string, err
 		offset += len(line)
 	}
 	if len(edits) == 0 && value != nil {
-		insertion := childIndent + "    " + key + ": " + *value + "\n"
-		if close > 0 && text[close-1] != '\n' {
-			insertion = "\n" + insertion
+		indent := childIndent + "    "
+		newline := "\n"
+		if strings.Contains(body, "\r\n") {
+			newline = "\r\n"
 		}
-		return text[:close] + insertion + text[close:], nil
+		insertion := indent + key + ": " + *value + newline
+		// Insert after the last non-blank line instead of at the closing brace:
+		// the brace's own leading indentation is part of text[:close], so
+		// appending there left a whitespace-only line and shifted the brace.
+		insertAt := -1
+		offset := open + 1
+		for _, line := range strings.SplitAfter(body, "\n") {
+			if strings.TrimSpace(line) != "" {
+				insertAt = offset + len(line)
+			}
+			offset += len(line)
+		}
+		if insertAt < 0 {
+			return text[:open+1] + newline + insertion + text[open+1:], nil
+		}
+		if text[insertAt-1] != '\n' {
+			return text[:insertAt] + newline + insertion + text[insertAt:], nil
+		}
+		return text[:insertAt] + insertion + text[insertAt:], nil
 	}
 	for i := len(edits) - 1; i >= 0; i-- {
 		item := edits[i]

@@ -69,7 +69,7 @@ func TestWriteGroupConfigOptionsPreservesCommentsAndAddsMissingOptions(t *testin
 		"}\n")
 	updated, err := writeGroupConfigOptions(source, "proxy", nativeapi.GroupConfig{
 		CheckInterval: intPointer(60),
-	})
+	}, groupConfigWrite{checkInterval: true, tolerance: true})
 	require.NoError(t, err)
 	require.Equal(t, "group {\n"+
 		"    proxy {\n"+
@@ -82,7 +82,7 @@ func TestWriteGroupConfigOptionsPreservesCommentsAndAddsMissingOptions(t *testin
 	added, err := writeGroupConfigOptions([]byte("group {\n    proxy {\n        policy: min\n    }\n}\n"), "proxy", nativeapi.GroupConfig{
 		CheckInterval: intPointer(20),
 		Tolerance:     intPointer(40),
-	})
+	}, groupConfigWrite{checkInterval: true, tolerance: true})
 	require.NoError(t, err)
 	require.True(t, strings.Contains(string(added), "        check_interval: 20s\n"))
 	require.True(t, strings.Contains(string(added), "        check_tolerance: 40ms\n"))
