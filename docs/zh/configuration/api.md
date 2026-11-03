@@ -33,7 +33,7 @@ api {
 | `ui` | 空 | 存放已构建前端的绝对目录，在 `/ui/` 下无凭证访问；非 `/api` 路径会重定向到这里；留空表示不托管前端。 |
 | `config_write` | `false` | 是否允许通过 API 替换配置源。需要同时设置非空 `secret`，且配置目录符合下面的规范结构。 |
 | `disable_connection_bytes` | `false` | 不下发每条连接的累计上/下行字节（`upload_bytes` / `download_bytes`）。详见下面的流量统计口径。 |
-| `direct_stats` | `false` | 在 dae 已绑定的 WAN/LAN 接口上挂只读 eBPF 观测钩子，统计直连流量。详见下面的流量统计口径。 |
+| `direct_stats` | `false` | 在 dae 已绑定的 WAN/LAN 接口上挂只读 eBPF 观测钩子，统计直连流量。仅当 `enabled` 为 true 时生效；详见下面的流量统计口径。 |
 
 ## 通过 API 编辑配置
 

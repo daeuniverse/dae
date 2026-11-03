@@ -148,9 +148,9 @@ key 最优成员的 `delta_to_best_ms`。`rank` 是瞬时排名，而组的选�
 `health` 与组报告的是同一套投影，按 transport / purpose / IP 版本区分——每个 IP 版本
 有三个 purpose（`tcp`/`data`、`udp`/`dns`、`udp`/`data`），因此探测齐全的节点会报告
 六条。
-`subscription_tag` 为节点来源订阅，内联节点为 `null`；`provider_id` 指向该节点所属的
-provider（见下）。节点管理（`POST`、`DELETE`）返回
-`404 capability_not_supported`。
+`subscription_tag` 为节点来源订阅；内联节点与未打标签订阅的节点为 `null`，后者仍通过
+`provider_id` 指向自己的 provider。节点管理（`POST`、`DELETE`）在设置
+`api.config_write` 且目录符合受管布局时可用，否则返回 `404 capability_not_supported`。
 
 ### 规则、providers 与 geodata
 

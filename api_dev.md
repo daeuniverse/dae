@@ -1412,3 +1412,107 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 - **`/rules` 完整形态**：`?detail=full` 逃生口与响应体 gzip 未做（见 10.7）。
 - **`warmth`**：恒 `unknown`（见 10.7）。
 - **provider 创建/删除、`runtime/settings`、`auth/*`**：不在路线图内，持续 `404 capability_not_supported`。
+
+## 12. 收尾工作（2026-11-03 第二轮审查核验）
+
+对 `pullrequestreview-5750489216`（针对 `b879d557b8`）的 13 条断言在本地 `2b57ce1` 逐条核验：12 条成立，1 条表述不准确但指向真实偏差。本节只记**仍需动手**的项目，按「会丢流量 / 破坏用户配置 / 违反契约 / 成本」排序。`- [ ]` 表示未修复。
+
+**2026-11-04：除 12.7 的两条流程项外均已修复**，勾选项后附实现方式与测试位置；`api_dev.md` 本身按计划在功能收尾时删除。
+
+### 12.1 优先级总览
+
+| 优先级 | 项目 | 后果 |
+|---|---|---|
+| P0 | 垃圾订阅页覆盖缓存（12.2） | 组清空、流量中断，且守卫不触发 |
+| P0 | 无 tag 订阅节点归到 `p_inline`（12.2） | `DELETE /nodes` 误删 `node.dae` 行；`node_count` 混算 |
+| P0 | `provider_refresh` 失败仍 `succeeded`（12.2） | 客户端无法感知刷新失败 |
+| P0 | 组补丁不校验 `tolerance` + 缩进破坏（12.2） | 写入无效配置、文件格式损坏 |
+| P1 | `kernel_block` 缺失、validate 404、游标 400/410（12.3） | 契约不合规，客户端报错 |
+| P1 | `check_interval` 截断、patch 只认 `group.dae`（12.4） | 配置被静默改写 / 404 |
+| P1 | pin 被 alive 回调撤销、trace 在 `must_rules` 中断（12.5） | 运行时选择失效、trace 结果错误 |
+| P2 | `direct_stats` 未受 `enabled` 门控、`rkey` padding、反向索引与计数口径（12.6） | 白付成本、漏计/误计 |
+| P3 | 拆 PR、`api_dev.md` 落位、文档过期句（12.7） | 合并阻塞 |
+
+### 12.2 P0：数据面与写路径
+
+- [x] **订阅返回「能解析成 1 个伪节点」的垃圾页时覆盖缓存并清空组**（已实测复现；已修：`isShareLinkLine` 只接受 `scheme://…` 开头的行，缓存写入移到构建之后 `subscription.PersistPayload`，并用 `DialerSet.ParseReport` 在 reload 时拒绝「有链接但无 dialer」的订阅；测试 `common/subscription/subscription_cache_test.go`、`cmd/run_controlplane_persist_test.go`）
+  - 现象：`bogus://invalid`、含 `https://` 的登录页 HTML 都被 `ResolveSubscriptionAsBase64` 的行级兜底当成节点，`resolveSubscriptionNodes` 因「节点数 > 0」放行并写缓存，`CacheFallback=false`；后续 reload 里该链接解析失败被静默丢弃（`component/outbound/filter.go:156-166`），组容忍 0 成员（`control/control_plane.go:702-706`），而 0 节点守卫要求 `resolvingfailed`（`cmd/run_controlplane.go:378`）不成立。
+  - 修复：写缓存前用 `dialer.NewFromLinkContext` 真实解析并计数（或让 `resolveSubscriptionNodes` 只接受受支持 scheme 的行）；「解析成功但可用 dialer 为 0」也计入 reload 拒绝条件。
+  - 位置：`common/subscription/subscription.go:52-71`、`:190-200`、`:268-283`；`cmd/run_controlplane.go:297-328`、`:378`。
+  - 验证：`httptest` 返回登录页，断言 `Resolve` 走 `CacheFallback`（当前为 `false`）。
+
+- [x] **未打标签订阅的节点被归到 `p_inline`，可被当作 inline 删除**（live；已修：新增 `subscription.ProviderKey`，写入 `dialer.Property.ProviderTag` 作为 API 身份，`SubscriptionTag` 仍为空以保持 `subtag()` 语义；`providers()` 按 provider 身份统计；测试 `cmd/nativeapi_provider_identity_test.go`）
+  - 现象：`providerIDOf("")` 恒返回 `p_inline`（`cmd/nativeapi_providers.go:75-85`），而 `tagToNodeList[""]` 同时装 `node` 段与无 tag 订阅（`cmd/run_controlplane.go:187-191`、`:328`）：两类节点共享 provider、`node_count` 相加；`DELETE /nodes/{id}` 的所有权检查因 `provider_id == p_inline` 通过，再按名删 `node.dae`（`cmd/config_nodes.go:417-427`；`removeNodeEntry` `:187-206` 只比名字），同名的订阅节点因此删不掉且返回 `200 {"deleted": 0}`。
+  - 修复：给无 tag 订阅分配稳定 ID（复用 `subscription.CacheKey` 的 `sub_<hash8>`）并写进 dialer 的 `subscriptionTag`；`removeNodeEntry` 改为按 `(name, link)` 匹配或按 ID 定位行。
+  - 验证：`dup` 同时存在于 `node.dae` 与无 tag 订阅，断言两个 node id 与 `provider_id` 不同、删除互不影响。
+
+- [x] **`provider_refresh` 失败仍 `succeeded`，`updated_at` 前移**（live；已修：健康记录只保留最后成功时间并跨代继承，`updated_at` 为空时不回填；resolver 用 `providerRefreshError` 让操作以 `fetch_failed` 失败；测试 `cmd/nativeapi_provider_refresh_test.go`）
+  - 现象：reload 成功即操作成功（`cmd/nativeapi_operations.go:155-165`、`cmd/reload_manager.go:147-160`），与订阅健康无关；`publishSubscriptionHealth` 对每个 tag 无条件写 `updatedAt=now`（`cmd/nativeapi_providers.go:53-68`），`providers()` 再无条件回填（`:145-155`），失败刷新也推进 `updated_at`。
+  - 契约：`api/providers.yaml` 的 `Provider.updated_at` = "Last successful load or refresh"；refresh 说明要求「failure uses SafeError」。
+  - 修复：健康记录拆「最后尝试」与「最后成功」两个时间；`provider_refresh` 的结果 resolver 在 `health.err != ""` 时 `store.Fail` 并返回 `SafeError`。
+
+- [x] **组配置补丁不按策略校验 `tolerance`，且改写破坏缩进**（已实测复现；已修：按 `Policy.Kind` 拒绝非 urltest 的 tolerance 变更、`mutable_config` 按策略生成、插入点改为最后一条非空子行、只回写 diff 字段；测试 `cmd/config_groups_guard_test.go`）
+  - 现象：`isGroupPatchPath` 只比对路径字符串（`cmd/config_groups.go:201`），`mutable_config` 对所有组都广告 `check_interval` + `tolerance`（`cmd/nativeapi_groups.go:302-306`）。契约要求「结果策略非 URLTest 时，tolerance 有变更返回 422」（`api-standardize/api/nodes-groups.yaml:637-645`）。`setGroupConfigLine` 插入缺失行时 `text[:close]` 已含闭括号缩进，又拼 `childIndent+"    "`（`cmd/config_groups.go:262-283`），输出多一行空白、`check_tolerance` 与闭括号错位（实测 `select` 组输出闭括号被顶到行首）。
+  - 修复：补丁后按结果策略判定（非 urltest 拒绝 tolerance 变更）；插入点改为「最后一条非空子行行尾」；`mutable_config` 按策略生成。
+  - 验证：把复现用例固化成表测（`select` + `check_interval: 1500ms` + 只 patch `tolerance`），断言缩进与 `1500ms` 均保留。
+
+### 12.3 P1：契约字段与请求校验
+
+- [x] **`flows.coverage.kernel_block` 删除后未补 `"none"`**（已修：恢复字段并恒返回 `"none"`）：`component/nativeapi/types.go:894-900` 已无该字段；契约 `api/flows.yaml:1127` 列为 required，doona 读取。恢复字段并恒返回 `"none"`（block 在内核直接丢，本就没有计数器）。
+
+- [x] **`POST /config/validate` 只传 `content` 返回 404**（已修：无 id/path 时按 `source-N` 解析并合并为匿名 section，诊断归属该 ID；测试 `cmd/config_editor_validate_test.go`）：`cmd/config_editor.go:437-457` 在无 `id` 也无 `path` 时 `target` 为零值 → `404 resource_not_found`；契约 `api/config.yaml:1075-1090` 只要求 `content`，`id` 是请求内局部标识（缺省用 `source-N`）。修复：`id` 缺省按数组下标生成；只有 `content` 时作为「无路径候选」参与合并校验，不落盘。
+
+- [x] **分页游标：filters/limit 变更返回 410，契约要求 400；且未绑定实例**（已修：游标新增 `Instance` 字段，不符→410；bind 不符→400；三处列表传入 `p.status.snapshot().InstanceID`；测试 `cmd/cursor_test.go`）：`cmd/cursor.go:78-80` 把 kind 与 bind 用 `||` 合并，`api-standardize/source/v0.1.0/en/docs/errors.md:135-137` 要求「已识别游标 + 不同 filters/limit → 400 `invalid_request`」；`pageCursor`（`cmd/cursor.go:22-27`）无实例标识，`dns/log` 的 `dl_<seq>` 重启后会被新实例误认。修复：kind 不符 → 410，bind 不符 → 400；bind 加入 `instance_id`（`cmd/runtime_status.go` 已有）。
+
+  > 审查原文的「DNS cache pagination continues on another snapshot」判为**部分成立**：改用 keyset 锚点后已不重复/不静默跳过，锚点被淘汰返回 410，且契约 `errors.md:123-131` 与 `docs/dns-cache.md:24` 允许 record 锚定并在遍历期间变动。真正待修的是上面两条（400/410 与实例绑定）。
+
+### 12.4 P1：组配置写入
+
+- [x] **`check_interval` 被截断为整秒，且每次 patch 回写两个字段**（已修：`groupConfigDiff` 只回写本次变更的字段，只改 tolerance 时保留 `1500ms`）：投影 `int(CheckInterval / time.Second)`（`cmd/nativeapi_groups.go:280-285`）+ 无条件回写 `check_interval` / `check_tolerance`（`cmd/config_groups.go:245-262`），只改 `tolerance` 也会把 `1500ms` 写成 `1s`。修复：投影保留毫秒，或原样带出字面量；只回写本次 patch 的字段。
+
+- [x] **组 patch 只认 `config.d/group.dae`，块匹配不认行尾注释/CRLF**（已修：`groupSource` 按实际声明块定位源文件，正则允许行尾注释与 `\r`；测试 `cmd/config_groups_guard_test.go`）：路径硬编码在 `cmd/config_groups.go:85`；`groupBlockPattern`（`:24`）不匹配 `group { # comment` 与 `\r\n`；而布局校验（`cmd/config_layout.go:56-100`）只要求模块文件齐全与 section 唯一，group 段可以落在别的 `config.d/*.dae` → 能力位说可改、实际 404。修复：按 section 归属定位源文件（merger 的 `MergeWithOrigins` 已有 origin），正则允许注释与 `\r`。
+
+### 12.5 P1：运行时选择与路由 trace
+
+- [x] **pin 可被内核准入回调撤销**（限定 `dial_mode: ip` + `min*` 策略；已修：抽出 `admissionAlive`，alive 回调与发布路径共用 pin 判定；测试 `component/outbound/dialer_group_pin_test.go`）
+  - 发布路径有 pin 豁免（`control/connectivity.go:158-170`），alive 回调直写（`:206-222`）；`DialerGroup.publishAliveChange` 用 alive set 成员数覆盖 `alive`（`component/outbound/dialer_group.go:774-776`），且回调签名不含 group，结构上无法查 pin → 最后健康成员掉线时内核把该组写成 0，流量在用户态之前被丢（`control/kern/tproxy.c:3497-3501`）。
+  - 修复：回调改为接收 `*outbound.DialerGroup`，`!alive` 时做与 `publishOutboundConnectivity` 相同的 `PinsSelection` 判定。
+  - 验证：测试改走 `publishAliveChange(false, nt, false)` 真实链路（现有 `control/connectivity_pin_test.go:36-93` 直调发布函数，覆盖不到回调路径）。
+
+- [x] **trace 在 `must_rules` 处停止，结果与实际出站不符**（已修：`must_rules` 行只记录 matched 并继续求值；测试 `control/routing_trace_must_rules_test.go`）：`control/routing_trace.go:139-152` 命中即 `stopped`；真实匹配器 `control/routing_matcher_userspace.go:308-315` 遇 `OutboundMustRules` 是 `must = true; continue`。修复：`must_rules` 行标记「已 must」并继续求值。
+
+### 12.6 P2：直连观测与构建成本
+
+- [x] **`api.direct_stats: true` 在 `api.enabled: false` 时仍加载观察器**（已修：运行时按 `enabled && direct_stats` 门控，并由 `Api.Warnings()` 提示被忽略；未改为配置硬失败，避免仅切换 enabled 就无法启动）：`cmd/run_controlplane.go:408` 只传 `conf.Api.DirectStats`；`config/api.go:56-62` 在 `!Enabled` 时直接返回，无交叉校验。此时观察器照挂、计数无人可读。修复：运行时传 `conf.Api.Enabled && conf.Api.DirectStats`，并在 `Api.Validate()` 对 `DirectStats && !Enabled` 报配置错误。
+
+- [x] **`rkey` 尾部 3 字节 padding 未清零**（编译对象反汇编确认；已修：lookup 前 memset `rkey`，反汇编显示编译器合并为 1 个覆盖 32..39 的 8 字节 store）：`tuples_key` sizeof 40，`direct_stats_reverse` 只写 0..36 字节（`control/kern/direct_stats.c:220-230`），`key` 有 `__builtin_memset`（`:154`）而 `rkey` 没有（声明 `:297`）→ 40 字节 map key 的哈希含栈垃圾，`conn_state_map` 查询可能漏命中（表现为下载方向漏计）。修复：查表前 memset 或 `= {}`；重新编译确认 lookup 前 40 字节全写。
+
+- [x] **反向索引键缺本地地址与时效；reload 后计数归零但 `counter_since` 不变**（已修：`DIRECT_STATS_REVERSE_MAX_AGE_NS` 300s 过期即删；计数用 `directStatsRetired` 跨代累积，与进程级 `counter_since` 对齐；测试 `control/direct_stats_test.go`。**本地地址未加**：NAT 回包的本地地址是 SNAT 地址，record 时不可知，加上会导致永不匹配，误计改由时效 + LRU 控制）：`direct_reverse_map` 只用 (remote ip, remote port, local port, l4proto)（`direct_stats.c:112-117`、`:235-250`），另一台 LAN 主机复用端口或后续代理流复用五元组会被误计为直连；value 的 `now` 只在命中时刷新，无过期判定。观察器 collection 每代新建且 map 不 pin（`control/direct_stats.go:160` 起），reload 后内核计数从 0 起，而 `direct` 行的 `counter_since` 是进程级（`control/outbound_counters.go:110`）。修复：键补本地地址、命中做过期判定；计数跨 reload 继承（或独立 pin 的 map），并让 `counter_since` 与数值同源。
+
+- [x] **trace matcher 无条件为每代构建**（已修：新增构建选项 `RoutingTraceEnabled`，由 `api.enabled` 驱动，API 关闭时不构建第二套 matcher）：`control/control_plane.go:746-760`、`:830-853` 与 API 开关无关地多建一套 userspace domain/IP matcher，大 `geosite` 规则集下所有用户付费（未量化）。修复：仅在 `api.enabled` 或首次访问 `/trace` 时构建（延迟构建需处理并发与 generation 绑定）。
+
+### 12.7 P3：流程与文档
+
+- [ ] **按能力拆 PR**：只读 API / 组选择 / 配置与节点写入 / 数据面观测。审查方两轮均提出，是当前合并主障碍。
+- [ ] **`api_dev.md` 不随功能进 main**：当前 1500+ 行且 `CHANGELOGS.md:138` 引用它；收尾后删除本文件与 CHANGELOGS 指向，内容由 `docs/{en,zh}/development/api.md` 承载。
+- [x] **文档过期句**（已修：两处已更新为实际行为，并补充未打标签订阅的 `subscription_tag` 说明）：`docs/en/development/api.md:187-188` 与 `docs/zh/development/api.md:152` 仍写「节点管理（`POST`、`DELETE`）返回 `404 capability_not_supported`」，实际已实现（只在闸门关闭时 404）。
+- [x] **误报更正，不需改**：审查称「`hasUI` 的注释挂在 `uiRootDir` 上（`component/nativeapi/ui.go:24`）」不成立——`:24-26` 是 `uiRootDir` 自己的注释，`hasUI` 在 `:47-48` 有独立注释；审查称 `CHANGELOGS.md:72` 写节点管理 404，实际该处描述的是「按 `api.config_write` + 受管布局 gating」，与实现一致。
+
+### 12.8 复现方法（供回归时复用）
+
+- **订阅覆盖**：`httptest` 返回 `bogus://invalid` 或含 `https://` 的登录页，调用真实 `subscription.Resolve`，断言 `CacheFallback` 与缓存内容。
+- **eBPF padding**：按 `go:generate` 同参数 `clang -O2 -target bpfel -I kern/headers -DMAX_MATCH_SET_LEN=1024 -D__TARGET_ARCH_x86` 编译 `control/kern/direct_stats.c`，`llvm-objdump -d` 检查 lookup 前写入是否覆盖 40 字节。
+- **组补丁缩进**：直接调用 `writeGroupConfigOptions`，比对输出；输入含缩进的 `group { sel { ... } }` 与 `check_interval: 1500ms`。
+
+### 12.9 doona 面板复核（2026-11-04，demo.daeuniverse.org）
+
+环境限制：本机没有免密提权，`dae run` 需要 root + eBPF，无法启动真实 daemon。改为用真实 `component/nativeapi.Server`（同一套路由、鉴权、CORS、JSON 投影）加契约形状 fixture 起本地 mock（`127.0.0.1:19527`、`allow_origins: https://demo.daeuniverse.org`，并为 Chrome 的 PNA preflight 补 `Access-Control-Allow-Private-Network: true`）。在 demo 面板「设置 → 后端网址」填入后「测试连接」通过（`连接成功，API v1`），保存后所有页面指向本地 mock。
+
+面板侧观察：
+
+- **节点来源**：`inline`（1 节点）与未打标签订阅 `sub_9b87…`（2 节点）是两个独立来源，`subA`（3 节点）以「过期数据」呈现——对应 12.2 的 provider 身份修复。
+- **节点列表**：选中 `sub_9b87…` 时 `dup` / `u1` 归属该来源，行内没有「移除」按钮；`inline` 的节点仍有「移除」。contributor 报的「删订阅节点却改了 `node.dae`」在面板上已无可入口。
+- **策略页**：`proxy`（手动选择）与 `auto`（自动选择）都渲染正常，成员按来源标注；活动页的出站图、节点延迟列表同步。
+- **分流 → 记录**：对 `coverage.kernel_block` 做 A/B 对照——字段存在时显示「6 个范围未完整观测」，人为删掉后变成「5 个」。说明面板确实读这个必填字段（缺失时不崩溃，但覆盖范围少一项）；恢复后一致。
+
+限制：fixture 是手写数据，所以这一轮只验证「契约 / UI 兼容」，不验证后端判断逻辑（刷新失败→操作失败、组补丁 422、游标 400/410）；那些由 12.2–12.4 的单测覆盖。

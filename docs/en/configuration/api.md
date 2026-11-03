@@ -35,7 +35,7 @@ api {
 | `ui` | empty | Absolute directory holding a built frontend. Served at `/ui/` without credentials; other non-`/api` paths redirect there. Empty disables UI hosting. |
 | `config_write` | `false` | Allow API callers to replace configuration sources. Requires a non-empty `secret` and the directory layout below. |
 | `disable_connection_bytes` | `false` | Stop reporting cumulative bytes per connection (`upload_bytes` / `download_bytes`). See the traffic accounting note below. |
-| `direct_stats` | `false` | Attach a read-only eBPF observer to the WAN/LAN interfaces dae binds and count traffic routed directly. See the traffic accounting note below. |
+| `direct_stats` | `false` | Attach a read-only eBPF observer to the WAN/LAN interfaces dae binds and count traffic routed directly. Ignored unless `enabled` is true; see the traffic accounting note below. |
 
 ## Editing configuration through the API
 

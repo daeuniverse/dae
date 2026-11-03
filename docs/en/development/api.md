@@ -182,10 +182,11 @@ and health samples. A group reports such duplicates as one member as well.
 `health` is the same projection groups report, keyed by transport, purpose and
 IP version — three purposes per IP version (`tcp`/`data`, `udp`/`dns`,
 `udp`/`data`), so a fully probed node reports six entries. `subscription_tag`
-carries the subscription the node came from and
-is `null` for inline nodes; `provider_id` names the provider that owns the node
-(see below). Node management (`POST`, `DELETE`) is `404
-capability_not_supported`.
+carries the subscription the node came from and is `null` for inline nodes and
+for nodes from an untagged subscription, which still report their own provider
+through `provider_id`. Node management (`POST`, `DELETE`) is available when
+`api.config_write` is set and the tree follows the managed layout; otherwise it
+is `404 capability_not_supported`.
 
 ### Rules, providers and geodata
 
