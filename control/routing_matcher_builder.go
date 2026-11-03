@@ -43,7 +43,6 @@ type RoutingMatcherBuilder struct {
 	compiledRules      []compiledRoutingMatch
 	predicateGroups    []routingMatcherPredicateGroupSpan
 	ruleSpans          []routingMatcherRuleSpan
-	currentRuleSpan    int
 	currentFunction    *config_parser.Function
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
