@@ -184,6 +184,12 @@ type ControlPlaneBuildOptions struct {
 	// display tag. An untagged subscription is the empty string so those rules
 	// keep treating it as tagless while the API still reports its own provider.
 	NodeDisplayTags map[string]string
+	// RoutingTraceEnabled builds the second userspace matcher the trace endpoint
+	// needs. It is an extra domain/IP matcher with the same memory cost as the
+	// real one, so deployments without the API must not pay for it. The API
+	// listener settings cannot change on reload, so deciding this at build time
+	// is safe.
+	RoutingTraceEnabled bool
 }
 
 var (
@@ -750,7 +756,7 @@ func NewControlPlaneWithContextOptions(
 	}
 	datReader := &routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder}
 	var routingTraceProgram *routing.NormalizedProgram
-	if len(routingA.Rules) <= MaxRoutingTraceRuleSteps {
+	if buildOpts.RoutingTraceEnabled && len(routingA.Rules) <= MaxRoutingTraceRuleSteps {
 		traceProgram, traceErr := routing.NewNormalizedProgram(routingA.Rules, routingA.Fallback,
 			&routing.AliasOptimizer{},
 			datReader,

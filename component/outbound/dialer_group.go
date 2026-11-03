@@ -807,7 +807,31 @@ func (g *DialerGroup) publishAliveChange(alive bool, networkType *dialer.Network
 			// exactly as before.
 		}
 	}
+	// A runtime pin means userspace dials the member the user chose even when
+	// probe health says the group is empty. The kernel must not drop the flow
+	// first, so admission has to follow the pin here too; the publish path
+	// (publishOutboundConnectivity) applies the same rule.
+	alive = g.admissionAlive(alive, networkType)
 	g.aliveChangeCallback(alive, networkType, isInit)
+}
+
+// admissionAlive applies the runtime pin to a health-derived admission value. A
+// pin is per transport: it only opens the slot of the transport the user
+// switched.
+func (g *DialerGroup) admissionAlive(alive bool, networkType *dialer.NetworkType) bool {
+	if alive || networkType == nil || !g.PinsSelection(selectionNetworkForL4Proto(networkType.L4Proto)) {
+		return alive
+	}
+	return true
+}
+
+// selectionNetworkForL4Proto maps a transport to the pin slot the user
+// switches, mirroring control's publishOutboundConnectivity.
+func selectionNetworkForL4Proto(proto consts.L4ProtoStr) SelectionNetwork {
+	if proto == consts.L4ProtoStr_UDP {
+		return SelectionNetworkUDP
+	}
+	return SelectionNetworkTCP
 }
 
 // groupPublishesOptimisticAlive reports whether the group's selection policy

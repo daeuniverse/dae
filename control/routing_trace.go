@@ -149,11 +149,16 @@ func (m *RoutingMatcher) TraceRouting(
 				}
 			}
 			if outcome.Result == "matched" {
-				stopped = true
-				if len(uncertain) == 0 {
-					evaluation.Decision = "determinate"
-					outbound := rule.Outbound
-					evaluation.Outbound = &outbound
+				// must_rules only raises the must flag; the real matcher keeps
+				// evaluating and takes the outbound from the next matching
+				// rule, so the trace must not stop here.
+				if rule.Outbound != consts.OutboundMustRules.String() {
+					stopped = true
+					if len(uncertain) == 0 {
+						evaluation.Decision = "determinate"
+						outbound := rule.Outbound
+						evaluation.Outbound = &outbound
+					}
 				}
 			}
 		}

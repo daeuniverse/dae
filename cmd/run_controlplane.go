@@ -85,7 +85,9 @@ func buildControlPlaneRuntime(
 	externGeoDataDirs []string,
 	prepareOnly bool,
 	dnsRoutingUnchanged bool,
-	isReloadBuild bool) (*control.ControlPlane, error) {
+	isReloadBuild bool,
+	routingTrace bool,
+) (*control.ControlPlane, error) {
 	return control.NewControlPlaneWithContextOptions(
 		ctx,
 		log,
@@ -106,6 +108,7 @@ func buildControlPlaneRuntime(
 			FullconeDirectDialer:  fullconeDirectDialer,
 			SystemDNSResolver:     systemDNSResolver,
 			NodeDisplayTags:       nodeDisplayTags,
+			RoutingTraceEnabled:   routingTrace,
 		},
 	)
 }
@@ -475,6 +478,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		prepareOnly,
 		dnsRoutingUnchanged,
 		isReloadBuild,
+		conf.Api.Enabled,
 	)
 	if err != nil {
 		return nil, err
