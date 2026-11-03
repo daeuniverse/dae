@@ -155,3 +155,25 @@ func TestDirectStatsRoleVariantsSkipUnusedLookups(t *testing.T) {
 		}
 	}
 }
+
+// The observer's map is per generation; the retired accumulator is what keeps
+// the reported totals (and counter_since) process-wide across reloads.
+func TestRetiredDirectStatsAccumulatesAcrossGenerations(t *testing.T) {
+	directStatsRetired.mu.Lock()
+	directStatsRetired.counts = DirectStatsCounters{}
+	directStatsRetired.mu.Unlock()
+	t.Cleanup(func() {
+		directStatsRetired.mu.Lock()
+		directStatsRetired.counts = DirectStatsCounters{}
+		directStatsRetired.mu.Unlock()
+	})
+
+	accumulateDirectStats(DirectStatsCounters{UpBytes: 10, UpPackets: 1})
+	accumulateDirectStats(DirectStatsCounters{DownBytes: 5, DownPackets: 2})
+
+	got := retiredDirectStats()
+	want := DirectStatsCounters{UpBytes: 10, UpPackets: 1, DownBytes: 5, DownPackets: 2}
+	if got != want {
+		t.Fatalf("retired totals = %+v, want %+v", got, want)
+	}
+}

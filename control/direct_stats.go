@@ -35,6 +35,7 @@ package control
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf"
@@ -88,13 +89,47 @@ func DirectStatsEnabled() bool {
 	return directStatsEnabled.Load()
 }
 
+// directStatsRetired holds the counters of generations that already closed.
+// The observer's map belongs to one generation, so without this a reload
+// restarted the totals while counter_since (process-level) stayed, and the two
+// resources disagreed about what "since" meant.
+var directStatsRetired struct {
+	mu     sync.Mutex
+	counts DirectStatsCounters
+}
+
+func accumulateDirectStats(counters DirectStatsCounters) {
+	directStatsRetired.mu.Lock()
+	defer directStatsRetired.mu.Unlock()
+	directStatsRetired.counts.UpBytes += counters.UpBytes
+	directStatsRetired.counts.UpPackets += counters.UpPackets
+	directStatsRetired.counts.DownBytes += counters.DownBytes
+	directStatsRetired.counts.DownPackets += counters.DownPackets
+}
+
+func retiredDirectStats() DirectStatsCounters {
+	directStatsRetired.mu.Lock()
+	defer directStatsRetired.mu.Unlock()
+	return directStatsRetired.counts
+}
+
 // DirectStatsSnapshot returns counters summed across CPUs. It returns zeros
 // when observation is off or has never been loaded.
 func (c *ControlPlane) DirectStatsSnapshot() (DirectStatsCounters, error) {
 	if c == nil || c.core == nil {
 		return DirectStatsCounters{}, nil
 	}
-	return c.core.readDirectStats()
+	current, err := c.core.readDirectStats()
+	if err != nil {
+		return DirectStatsCounters{}, err
+	}
+	retired := retiredDirectStats()
+	return DirectStatsCounters{
+		UpBytes:     retired.UpBytes + current.UpBytes,
+		UpPackets:   retired.UpPackets + current.UpPackets,
+		DownBytes:   retired.DownBytes + current.DownBytes,
+		DownPackets: retired.DownPackets + current.DownPackets,
+	}, nil
 }
 
 // stageDirectStatsHooks attaches the observer to a link dae already binds.
@@ -187,10 +222,22 @@ func (c *controlPlaneCore) ensureDirectStatsCollection() (*ebpf.Collection, erro
 		return nil, fmt.Errorf("create direct stats collection: %w", err)
 	}
 	if c.directStats != nil {
+		// Fold the replaced observer's totals in before its map goes away.
+		// We already hold directStatsMu here, so read the observer directly.
+		if counters, err := readDirectStatsFrom(c.directStats); err == nil {
+			accumulateDirectStats(counters)
+		}
 		c.directStats.coll.Close()
 	}
-	c.directStats = &directStatsObserver{coll: coll, connState: bpf.ConnStateMap}
+	observer := &directStatsObserver{coll: coll, connState: bpf.ConnStateMap}
+	c.directStats = observer
 	c.addDeferFunc(func() error {
+		// This generation's counters leave with its map; accumulate them first
+		// so the process-level figure survives the reload. The observer is
+		// captured because c.directStats may already name a successor.
+		if counters, err := readDirectStatsFrom(observer); err == nil {
+			accumulateDirectStats(counters)
+		}
 		coll.Close()
 		return nil
 	})
@@ -201,6 +248,10 @@ func (c *controlPlaneCore) readDirectStats() (DirectStatsCounters, error) {
 	c.directStatsMu.Lock()
 	observer := c.directStats
 	c.directStatsMu.Unlock()
+	return readDirectStatsFrom(observer)
+}
+
+func readDirectStatsFrom(observer *directStatsObserver) (DirectStatsCounters, error) {
 	if observer == nil {
 		return DirectStatsCounters{}, nil
 	}

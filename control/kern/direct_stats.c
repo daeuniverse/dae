@@ -244,6 +244,11 @@ direct_stats_remember(const struct tuples_key *key)
 	bpf_map_update_elem(&direct_reverse_map, &rk, &now, BPF_ANY);
 }
 
+// A reply must arrive while the index entry is still fresh. A finished flow
+// leaves its key behind (the map is an LRU, not a timer), so without an age
+// bound a later flow that reuses the port could be counted as direct.
+#define DIRECT_STATS_REVERSE_MAX_AGE_NS (300ULL * 1000000000ULL)
+
 // Answers whether a reply packet belongs to a recorded direct flow. The caller
 // passes the packet's own tuple, so its source is the remote endpoint. A hit
 // refreshes the entry.
@@ -261,7 +266,12 @@ direct_stats_known(const struct tuples_key *key)
 	last_seen = bpf_map_lookup_elem(&direct_reverse_map, &rk);
 	if (!last_seen)
 		return false;
-	*last_seen = bpf_ktime_get_ns();
+	__u64 now = bpf_ktime_get_ns();
+	if (now > *last_seen && now - *last_seen > DIRECT_STATS_REVERSE_MAX_AGE_NS) {
+		bpf_map_delete_elem(&direct_reverse_map, &rk);
+		return false;
+	}
+	*last_seen = now;
 	return true;
 }
 
@@ -300,6 +310,10 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 
 	if (direct_stats_parse_tuple(skb, l3_off, &key))
 		return DIRECT_STATS_CONTINUE;
+
+	// tuples_key has tail padding, and conn_state_map hashes the whole key, so
+	// the reversed key must be fully initialized before it is looked up.
+	__builtin_memset(&rkey, 0, sizeof(rkey));
 
 	// A live entry settles the flow: only direct flows are counted and the
 	// NAT index holds direct flows exclusively, so a proxied packet stops at

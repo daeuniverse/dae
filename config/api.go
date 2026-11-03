@@ -108,6 +108,12 @@ func validateAPIUIDir(dir string) error {
 // Warnings returns non-fatal deployment advisories. Callers log them at startup.
 func (a Api) Warnings() []string {
 	if !a.Enabled {
+		if a.DirectStats {
+			// The observer is gated on both switches: with the listener off the
+			// counters could never be read, so the datapath would pay for
+			// nothing.
+			return []string{"api.direct_stats is ignored while api.enabled is false"}
+		}
 		return nil
 	}
 	var warnings []string
