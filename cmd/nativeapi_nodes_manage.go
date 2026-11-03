@@ -136,13 +136,33 @@ func (p *nativeAPIProvider) RefreshProvider(ctx context.Context, req nativeapi.P
 	if err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
-	// A refresh reports the Provider whose nodes the reload replaced.
+	// A refresh reports the Provider whose nodes the reload replaced. A fetch
+	// that fell back to the cached copy still reloads successfully, so the
+	// failure has to travel through the resolver as an error; otherwise the
+	// operation would report success for a refresh that changed nothing.
 	p.operations.SetResultResolver(accepted.OperationID, func() (any, error) {
 		provider, err := p.GetProvider(context.Background(), req.ProviderID)
 		if err != nil {
 			return nil, err
 		}
+		if provider.LastError != nil {
+			return nil, &providerRefreshError{code: provider.LastError.Code, message: provider.LastError.Message}
+		}
 		return *provider, nil
 	})
 	return accepted, nil
+}
+
+// providerRefreshError reports why a queued refresh did not load new nodes. The
+// operation completes after the reload, so this travels through the result
+// resolver and becomes the operation's SafeError.
+type providerRefreshError struct {
+	code    string
+	message string
+}
+
+func (e *providerRefreshError) Error() string { return e.message }
+
+func (e *providerRefreshError) SafeError() *nativeapi.SafeError {
+	return &nativeapi.SafeError{Code: e.code, Message: e.message}
 }

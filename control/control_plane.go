@@ -179,6 +179,11 @@ type ControlPlaneBuildOptions struct {
 	DirectDialer          netproxy.Dialer
 	FullconeDirectDialer  netproxy.Dialer
 	SystemDNSResolver     *netutils.SystemDNSResolver
+	// NodeDisplayTags maps a provider identity to the tag subtag() filters and
+	// DNS rules see. Providers missing from the map use their identity as the
+	// display tag. An untagged subscription is the empty string so those rules
+	// keep treating it as tagless while the API still reports its own provider.
+	NodeDisplayTags map[string]string
 }
 
 var (
@@ -658,7 +663,8 @@ func NewControlPlaneWithContextOptions(
 	if err := checkCtx("resolve subscription links"); err != nil {
 		return nil, err
 	}
-	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList)
+	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList, buildOpts.NodeDisplayTags)
+	core.nodeParseReport = dialerSet.ParseReport(tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	deferFuncs = append(deferFuncs, func() error {
 		dialer.CleanupTransportCacheNamespace(option.TransportCacheNamespace)

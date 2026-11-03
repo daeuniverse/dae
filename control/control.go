@@ -67,6 +67,17 @@ func (c *ControlPlane) EgressDialers() []*dialer.Dialer {
 	return c.egressRuntime.dialers()
 }
 
+// NodeParseReport reports, per subscription tag, how many links this generation
+// received and how many of them became dialers. The reload caller uses it to
+// keep the previous generation when a fetched payload produced no usable node,
+// and to avoid persisting such a payload over the last good cached copy.
+func (c *ControlPlane) NodeParseReport() map[string]outbound.NodeParseCount {
+	if c == nil || c.core == nil {
+		return nil
+	}
+	return c.core.nodeParseReport
+}
+
 // OutboundGroups returns this generation's outbounds in outbound-ID order,
 // including the builtin direct and block groups. The slice is immutable once
 // the generation is published, so callers must not modify it.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
+	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/sirupsen/logrus"
 )
@@ -33,7 +34,10 @@ const inlineProviderID = "p_inline"
 // all. Provider metadata is the only place a client can see either, so the
 // resolution loop records the outcome here and providers() reports it.
 type subscriptionHealthRecord struct {
-	err       string
+	err string
+	// updatedAt is the last successful load or refresh, which is what the
+	// contract calls updated_at. A failed refresh keeps the previous value:
+	// reporting the attempt time made a failure look like a refresh.
 	updatedAt time.Time
 }
 
@@ -47,19 +51,28 @@ var subscriptionHealthRegistry = struct {
 // configuration no longer defines. A nil error marks a refreshed subscription.
 func publishSubscriptionHealth(outcomes map[string]error) {
 	now := time.Now()
+	subscriptionHealthRegistry.mu.Lock()
+	defer subscriptionHealthRegistry.mu.Unlock()
+	previous := subscriptionHealthRegistry.records
 	records := make(map[string]subscriptionHealthRecord, len(outcomes))
 	for tag, err := range outcomes {
 		if tag == "" {
 			continue
 		}
-		record := subscriptionHealthRecord{updatedAt: now}
+		record := subscriptionHealthRecord{}
+		// Carry the last success across generations: this map is replaced on
+		// every build, and a failed refresh must not forget when the copy that
+		// is still running was loaded.
+		if prev, ok := previous[tag]; ok {
+			record.updatedAt = prev.updatedAt
+		}
 		if err != nil {
 			record.err = sanitizeLogMessage(err.Error())
+		} else {
+			record.updatedAt = now
 		}
 		records[tag] = record
 	}
-	subscriptionHealthRegistry.mu.Lock()
-	defer subscriptionHealthRegistry.mu.Unlock()
 	subscriptionHealthRegistry.records = records
 }
 
@@ -82,11 +95,16 @@ func providerIDOf(tag string) string {
 	return "p_" + hex.EncodeToString(sum[:8])
 }
 
-func providerNameOf(tag string) string {
-	if tag == "" {
+func providerNameOf(key, tag string) string {
+	if tag != "" {
+		return tag
+	}
+	if key == "" {
 		return "inline"
 	}
-	return tag
+	// An untagged subscription has no configured name; its derived identity is
+	// the only stable label a client can use.
+	return key
 }
 
 // providers projects the accepted configuration onto provider metadata. Node
@@ -97,25 +115,22 @@ func (p *nativeAPIProvider) providers(active *nativeActiveGeneration) ([]nativea
 	if err != nil {
 		return nil, err
 	}
-	counts := make(map[string]int, 4)
-	for _, node := range nodes {
-		tag := ""
-		if node.SubscriptionTag != nil {
-			tag = *node.SubscriptionTag
-		}
-		counts[tag]++
-	}
 
 	type definition struct {
 		kind string
 		url  string
+		tag  string
 	}
+	// Keyed by provider identity: a configured subscription tag, or the
+	// URL-derived key of an untagged subscription. The inline node section keeps
+	// the empty key, so an untagged subscription no longer collapses into it.
 	definitions := make(map[string]definition)
 	if active.conf != nil {
-		for _, subscription := range active.conf.Subscription {
-			tag, link := common.GetTagFromLinkLikePlaintext(string(subscription))
-			if _, exists := definitions[tag]; !exists {
-				definitions[tag] = definition{kind: "subscription", url: link}
+		for _, raw := range active.conf.Subscription {
+			tag, link := common.GetTagFromLinkLikePlaintext(string(raw))
+			key := subscription.ProviderKey(tag, string(raw))
+			if _, exists := definitions[key]; !exists {
+				definitions[key] = definition{kind: "subscription", url: link, tag: tag}
 			}
 		}
 		if len(active.conf.Node) > 0 {
@@ -125,19 +140,35 @@ func (p *nativeAPIProvider) providers(active *nativeActiveGeneration) ([]nativea
 			definitions[""] = definition{kind: "inline"}
 		}
 	}
-	for tag := range counts {
-		if _, exists := definitions[tag]; !exists {
-			definitions[tag] = definition{kind: "subscription"}
+	keyByProviderID := make(map[string]string, len(definitions))
+	for key := range definitions {
+		keyByProviderID[providerIDOf(key)] = key
+	}
+	counts := make(map[string]int, len(definitions))
+	for _, node := range nodes {
+		providerID := inlineProviderID
+		if node.ProviderID != nil {
+			providerID = *node.ProviderID
 		}
+		key, ok := keyByProviderID[providerID]
+		if !ok {
+			// A node whose provider is no longer in the accepted configuration
+			// still has to appear somewhere; its own ID is the stable name
+			// left for it.
+			key = providerID
+			definitions[key] = definition{kind: "subscription"}
+			keyByProviderID[providerID] = key
+		}
+		counts[key]++
 	}
 
 	providers := make([]nativeapi.Provider, 0, len(definitions))
-	for tag, definition := range definitions {
+	for key, definition := range definitions {
 		provider := nativeapi.Provider{
-			ID:        providerIDOf(tag),
-			Name:      providerNameOf(tag),
+			ID:        providerIDOf(key),
+			Name:      providerNameOf(key, definition.tag),
 			Kind:      definition.kind,
-			NodeCount: uint64(counts[tag]),
+			NodeCount: uint64(counts[key]),
 			Status:    "stale",
 		}
 		if provider.NodeCount > 0 {
@@ -146,12 +177,14 @@ func (p *nativeAPIProvider) providers(active *nativeActiveGeneration) ([]nativea
 		// A refresh that fell back to the cached nodes, or failed outright, is
 		// not a success: the contract has last_error and updated_at so a client
 		// can tell the two apart.
-		if health, ok := subscriptionHealth(tag); ok {
-			updatedAt := health.updatedAt.UTC().Format(time.RFC3339)
-			provider.UpdatedAt = &updatedAt
+		if health, ok := subscriptionHealth(key); ok {
+			if !health.updatedAt.IsZero() {
+				updatedAt := health.updatedAt.UTC().Format(time.RFC3339)
+				provider.UpdatedAt = &updatedAt
+			}
 			if health.err != "" {
 				provider.Status = "stale"
-				provider.LastError = &nativeapi.SafeError{Code: "subscription_refresh_failed", Message: health.err}
+				provider.LastError = &nativeapi.SafeError{Code: "fetch_failed", Message: health.err}
 			}
 		}
 		if definition.url != "" {

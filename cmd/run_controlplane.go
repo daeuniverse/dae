@@ -28,6 +28,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/daedns"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
@@ -73,6 +74,7 @@ func buildControlPlaneRuntime(
 	bpf any,
 	dnsCache map[string]*control.DnsCache,
 	tagToNodeList map[string][]string,
+	nodeDisplayTags map[string]string,
 	groups []config.Group,
 	routing *config.Routing,
 	global *config.Global,
@@ -83,8 +85,7 @@ func buildControlPlaneRuntime(
 	externGeoDataDirs []string,
 	prepareOnly bool,
 	dnsRoutingUnchanged bool,
-	isReloadBuild bool,
-) (*control.ControlPlane, error) {
+	isReloadBuild bool) (*control.ControlPlane, error) {
 	return control.NewControlPlaneWithContextOptions(
 		ctx,
 		log,
@@ -104,8 +105,39 @@ func buildControlPlaneRuntime(
 			DirectDialer:          directDialer,
 			FullconeDirectDialer:  fullconeDirectDialer,
 			SystemDNSResolver:     systemDNSResolver,
+			NodeDisplayTags:       nodeDisplayTags,
 		},
 	)
+}
+
+// fetchedSubscription is one successful fetch whose body has not been persisted
+// yet: its links must become dialers first.
+type fetchedSubscription struct {
+	tag      string
+	cacheKey string
+	payload  []byte
+}
+
+// persistFetchedSubscriptions stores the fetched bodies whose links became
+// dialers and reports the tags whose payload produced no usable node. Those
+// keep the previous cached copy: persisting them would destroy the last good
+// copy a later failed fetch falls back to.
+func persistFetchedSubscriptions(log *logrus.Logger, configDir string, fetched []fetchedSubscription, report map[string]outbound.NodeParseCount) ([]string, error) {
+	var rejected []string
+	for _, item := range fetched {
+		if count, ok := report[item.tag]; ok && count.Links > 0 && count.Parsed == 0 {
+			log.Warnf(`subscription %q returned %d link(s) but none of them could be parsed; keeping the previous cached copy`, item.tag, count.Links)
+			rejected = append(rejected, item.tag)
+			continue
+		}
+		if item.cacheKey == "" || len(item.payload) == 0 {
+			continue
+		}
+		if err := subscription.PersistPayload(configDir, item.cacheKey, item.payload); err != nil {
+			return rejected, err
+		}
+	}
+	return rejected, nil
 }
 
 func configureTransparentHugePages(log *logrus.Logger, disable bool) {
@@ -181,6 +213,10 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
+	// displayTags keeps subtag() filters and DNS rules on their historical
+	// semantics: an untagged subscription is tagless there, while the API still
+	// reports it under its own provider identity.
+	displayTags := make(map[string]string, len(conf.Subscription))
 	// On initial startup (not reload), purge stale TC filters left by any previous process.
 	if bpf == nil && !isReloadBuild {
 		control.PurgeStaleTCFilters(log)
@@ -261,7 +297,13 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		elapsed  time.Duration
 		stale    bool
 		fetchErr error
+		payload  []byte
+		cacheKey string
 	}
+	// fetched holds the bodies whose links must become dialers before they may
+	// replace the cached copy. A payload nobody can load would otherwise
+	// destroy the last good copy and empty the groups on the next reload.
+	var fetched []fetchedSubscription
 	numSubscriptions := len(conf.Subscription)
 	if numSubscriptions > 0 {
 		// Reset to cover only the fetch itself; the network-wait phase above is
@@ -310,22 +352,31 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		// Collect results
 		for range numSubscriptions {
 			result := <-results
+			providerKey := subscription.ProviderKey(result.tag, string(result.sub))
+			displayTags[providerKey] = result.tag
 			if result.err != nil {
 				log.Warnf(`failed to resolve subscription "%v" after %v: %v`, result.sub, result.elapsed, result.err)
 				resolvingfailed = true
-				subscriptionHealthUpdates[result.tag] = result.err
+				subscriptionHealthUpdates[providerKey] = result.err
 			} else {
 				log.Infof(`subscription "%v" resolved %d node(s) in %v`, result.tag, len(result.nodes), result.elapsed)
 				if result.stale {
 					// Served from the last good copy: the nodes stay in the
 					// generation, but the subscription did not refresh.
-					subscriptionHealthUpdates[result.tag] = result.fetchErr
+					subscriptionHealthUpdates[providerKey] = result.fetchErr
 				} else {
-					subscriptionHealthUpdates[result.tag] = nil
+					subscriptionHealthUpdates[providerKey] = nil
 				}
 			}
 			if len(result.nodes) > 0 {
-				tagToNodeList[result.tag] = append(tagToNodeList[result.tag], result.nodes...)
+				tagToNodeList[providerKey] = append(tagToNodeList[providerKey], result.nodes...)
+			}
+			if result.err == nil && !result.stale && len(result.payload) > 0 {
+				fetched = append(fetched, fetchedSubscription{
+					tag:      providerKey,
+					cacheKey: result.cacheKey,
+					payload:  result.payload,
+				})
 			}
 		}
 		close(results)
@@ -343,8 +394,8 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// untagged one is keyed by its URL, so neither shape appears there.
 	liveCacheKeys := make(map[string]struct{}, len(conf.Subscription))
 	for _, sub := range conf.Subscription {
-		tag, link := common.GetTagFromLinkLikePlaintext(string(sub))
-		liveCacheKeys[subscription.CacheKey(tag, link)] = struct{}{}
+		tag, _ := common.GetTagFromLinkLikePlaintext(string(sub))
+		liveCacheKeys[subscription.ProviderKey(tag, string(sub))] = struct{}{}
 	}
 	for _, file := range files {
 		key := strings.TrimSuffix(file.Name(), ".sub")
@@ -412,6 +463,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		bpf,
 		dnsCache,
 		tagToNodeList,
+		displayTags,
 		conf.Group,
 		&conf.Routing,
 		&conf.Global,
@@ -426,6 +478,23 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	)
 	if err != nil {
 		return nil, err
+	}
+	// A subscription body only replaces its cached copy once its links became
+	// dialers. A link-shaped payload that produced no dialer would otherwise
+	// leave the groups empty while the refresh reported success.
+	rejected, err := persistFetchedSubscriptions(log, filepath.Dir(cfgFile), fetched, c.NodeParseReport())
+	if err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	if len(rejected) > 0 {
+		for _, tag := range rejected {
+			subscriptionHealthUpdates[tag] = fmt.Errorf("subscription resolved links but none of them could be parsed; the previous copy is kept")
+		}
+		if isReloadBuild {
+			_ = c.Close()
+			return nil, fmt.Errorf(`refusing reload: subscription %q resolved links but no usable node; keeping the current generation`, rejected[0])
+		}
 	}
 	publishSubscriptionHealth(subscriptionHealthUpdates)
 	log.Infof("Control plane built in %v", time.Since(stageStart))

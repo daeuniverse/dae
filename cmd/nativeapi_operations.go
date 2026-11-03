@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -168,10 +169,18 @@ func (o *nativeAPIOperations) FollowReload(operationID string, started bool, suc
 			if resolver := o.takeResultResolver(operationID); resolver != nil {
 				result, resolveErr := resolver()
 				if resolveErr != nil {
-					o.store.Fail(operationID, &nativeapi.SafeError{
+					safeErr := &nativeapi.SafeError{
 						Code:    "result_unavailable",
 						Message: "the write completed but the resource it produced could not be read",
-					})
+					}
+					// A provider refresh that fell back to the cached copy still
+					// completes the reload; its failure code and safe message
+					// belong on the operation, not behind result_unavailable.
+					var refreshErr *providerRefreshError
+					if errors.As(resolveErr, &refreshErr) {
+						safeErr = refreshErr.SafeError()
+					}
+					o.store.Fail(operationID, safeErr)
 					status = "failed"
 				} else {
 					o.store.Succeed(operationID, result)

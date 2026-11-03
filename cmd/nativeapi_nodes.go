@@ -492,7 +492,7 @@ func (a *nativeActiveGeneration) nodes(groupID string) ([]nativeapi.Node, error)
 			Name:            property.Name,
 			Protocol:        optionalString(property.Protocol),
 			SubscriptionTag: optionalString(property.SubscriptionTag),
-			ProviderID:      stringPointer(providerIDOf(property.SubscriptionTag)),
+			ProviderID:      stringPointer(providerIDOf(property.ProviderTag)),
 			GroupIDs:        mergeSortedStrings(nil, ids),
 			Health:          health,
 		}
