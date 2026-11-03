@@ -158,16 +158,17 @@ func (p *nativeAPIProvider) DnsCache(ctx context.Context, filter nativeapi.DnsCa
 		}
 		return entries[i].EntryID < entries[j].EntryID
 	})
+	instance := p.status.snapshot().InstanceID
 	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit)
 	after := ""
 	if filter.Cursor != "" {
-		parsed, err := decodePageCursor("dns_cache", bind, filter.Cursor, now)
+		parsed, err := decodePageCursor(instance, "dns_cache", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsCacheList{}, err
 		}
 		after = parsed
 	}
-	page, next, err := pageAfter(entries, func(entry nativeapi.DnsCacheEntry) string { return entry.EntryID }, after, filter.Limit, "dns_cache", bind, now)
+	page, next, err := pageAfter(entries, func(entry nativeapi.DnsCacheEntry) string { return entry.EntryID }, after, filter.Limit, instance, "dns_cache", bind, now)
 	if err != nil {
 		return nativeapi.DnsCacheList{}, err
 	}
@@ -297,16 +298,17 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 		})
 	}
 	now := time.Now()
+	instance := p.status.snapshot().InstanceID
 	bind := pageCursorBind(name, filter.Types, filter.Src, filter.Limit)
 	after := ""
 	if filter.Cursor != "" {
-		parsed, err := decodePageCursor("dns_log", bind, filter.Cursor, now)
+		parsed, err := decodePageCursor(instance, "dns_log", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsLogList{}, err
 		}
 		after = parsed
 	}
-	page, next, err := pageAfter(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, filter.Limit, "dns_log", bind, now)
+	page, next, err := pageAfter(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, filter.Limit, instance, "dns_log", bind, now)
 	if err != nil {
 		return nativeapi.DnsLogList{}, err
 	}

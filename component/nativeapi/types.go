@@ -895,6 +895,10 @@ type FlowCoverage struct {
 	UserspaceTCP string `json:"userspace_tcp"`
 	UserspaceUDP string `json:"userspace_udp"`
 	KernelDirect string `json:"kernel_direct"`
+	// KernelBlock is always "none": blocked packets are dropped in the
+	// datapath and never reach a counter. The field is required by the
+	// contract, so it is reported rather than omitted.
+	KernelBlock  string `json:"kernel_block"`
 	DNSIntercept string `json:"dns_intercept"`
 	KernelBypass string `json:"kernel_bypass"`
 }

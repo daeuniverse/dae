@@ -248,6 +248,7 @@ func nativeFlowCoverage() nativeapi.FlowCoverage {
 		UserspaceTCP: "partial",
 		UserspaceUDP: "partial",
 		KernelDirect: "none",
+		KernelBlock:  "none",
 		DNSIntercept: "none",
 		KernelBypass: "none",
 	}
@@ -282,7 +283,7 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 	bind := pageCursorBind(filter.Network, filter.State, filter.ConnectionID, filter.Limit)
 	after := ""
 	if filter.Cursor != "" {
-		parsed, err := decodePageCursor("flows", bind, filter.Cursor, now)
+		parsed, err := decodePageCursor(status.InstanceID, "flows", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.FlowList{}, err
 		}
@@ -290,7 +291,7 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 	}
 	// Flow IDs are stable across reads, so they anchor the walk while finished
 	// flows keep arriving at the head of the history.
-	page, next, err := pageAfter(matched, func(entry control.SessionFlowHistoryEntry) string { return entry.ID }, after, filter.Limit, "flows", bind, now)
+	page, next, err := pageAfter(matched, func(entry control.SessionFlowHistoryEntry) string { return entry.ID }, after, filter.Limit, status.InstanceID, "flows", bind, now)
 	if err != nil {
 		return nativeapi.FlowList{}, err
 	}

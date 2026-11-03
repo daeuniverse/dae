@@ -202,7 +202,7 @@ func TestGetConfigRevisionMatchesTheGenerationFormula(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := e.buildCandidate(nil)
+	candidate, err := e.buildCandidate(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -293,7 +293,7 @@ func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSour
 	if err := e.guardConfigWrite(target, content); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
-	candidate, err := e.buildCandidate(map[string][]byte{target.abs: content})
+	candidate, err := e.buildCandidate(map[string][]byte{target.abs: content}, nil)
 	if err != nil {
 		return nativeapi.OperationAccepted{}, e.unprocessable(err, target)
 	}

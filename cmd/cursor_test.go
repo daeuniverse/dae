@@ -15,8 +15,8 @@ import (
 func TestPageCursorRoundTrip(t *testing.T) {
 	now := time.Now()
 	bind := pageCursorBind("example.com.", []string{"A"}, "10.0.0.1", 100)
-	cursor := encodePageCursor("dns_log", bind, "dl_7", now)
-	after, err := decodePageCursor("dns_log", bind, cursor, now.Add(time.Minute))
+	cursor := encodePageCursor("instance-a", "dns_log", bind, "dl_7", now)
+	after, err := decodePageCursor("instance-a", "dns_log", bind, cursor, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -28,21 +28,20 @@ func TestPageCursorRoundTrip(t *testing.T) {
 func TestPageCursorRejectsForeignExpiredOrMalformed(t *testing.T) {
 	now := time.Now()
 	bind := pageCursorBind("example.com.", []string{"A"}, "", 100)
-	cursor := encodePageCursor("dns_log", bind, "dl_7", now)
+	cursor := encodePageCursor("instance-a", "dns_log", bind, "dl_7", now)
 
 	cases := map[string]struct {
-		kind, bind, cursor string
-		at                 time.Time
+		instance, kind, bind, cursor string
+		at                           time.Time
 	}{
-		"malformed":       {"dns_log", bind, "not-a-cursor", now},
-		"other walk kind": {"flows", bind, cursor, now},
-		"other filter":    {"dns_log", pageCursorBind("other.com.", []string{"A"}, "", 100), cursor, now},
-		"other limit":     {"dns_log", pageCursorBind("example.com.", []string{"A"}, "", 50), cursor, now},
-		"expired":         {"dns_log", bind, cursor, now.Add(pageCursorTTL + time.Second)},
+		"malformed":       {"instance-a", "dns_log", bind, "not-a-cursor", now},
+		"other walk kind": {"instance-a", "flows", bind, cursor, now},
+		"other instance":  {"instance-b", "dns_log", bind, cursor, now},
+		"expired":         {"instance-a", "dns_log", bind, cursor, now.Add(pageCursorTTL + time.Second)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := decodePageCursor(tc.kind, tc.bind, tc.cursor, tc.at)
+			_, err := decodePageCursor(tc.instance, tc.kind, tc.bind, tc.cursor, tc.at)
 			apiErr, ok := err.(*nativeapi.APIError)
 			if !ok {
 				t.Fatalf("err = %v, want *nativeapi.APIError", err)
@@ -54,30 +53,52 @@ func TestPageCursorRejectsForeignExpiredOrMalformed(t *testing.T) {
 	}
 }
 
+// A cursor this instance recognises but for another filter set or limit is 400,
+// not 410: the client restarts the walk to change either.
+func TestPageCursorRejectsChangedFiltersWithBadRequest(t *testing.T) {
+	now := time.Now()
+	bind := pageCursorBind("example.com.", []string{"A"}, "", 100)
+	cursor := encodePageCursor("instance-a", "dns_log", bind, "dl_7", now)
+
+	cases := map[string]string{
+		"other filter": pageCursorBind("other.com.", []string{"A"}, "", 100),
+		"other limit":  pageCursorBind("example.com.", []string{"A"}, "", 50),
+	}
+	for name, otherBind := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodePageCursor("instance-a", "dns_log", otherBind, cursor, now)
+			apiErr, ok := err.(*nativeapi.APIError)
+			if !ok || apiErr.Status != 400 || apiErr.Code != "invalid_request" {
+				t.Fatalf("err = %v, want 400 invalid_request", err)
+			}
+		})
+	}
+}
+
 func TestPageAfterResumesAfterTheAnchor(t *testing.T) {
 	now := time.Now()
 	bind := "bind"
 	items := []string{"a", "b", "c", "d", "e"}
 	key := func(item string) string { return item }
 
-	page, next, err := pageAfter(items, key, "", 2, "flows", bind, now)
+	page, next, err := pageAfter(items, key, "", 2, "instance-a", "flows", bind, now)
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
 	if len(page) != 2 || page[0] != "a" || page[1] != "b" || next == nil {
 		t.Fatalf("first page = %v next=%v", page, next)
 	}
-	anchor, err := decodePageCursor("flows", bind, *next, now)
+	anchor, err := decodePageCursor("instance-a", "flows", bind, *next, now)
 	if err != nil || anchor != "b" {
 		t.Fatalf("next anchor = %q err = %v", anchor, err)
 	}
-	page, _, err = pageAfter(items, key, anchor, 2, "flows", bind, now)
+	page, _, err = pageAfter(items, key, anchor, 2, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 2 || page[0] != "c" {
 		t.Fatalf("second page = %v err=%v", page, err)
 	}
 
 	// The last page reports no cursor.
-	page, last, err := pageAfter(items, key, "d", 2, "flows", bind, now)
+	page, last, err := pageAfter(items, key, "d", 2, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 1 || page[0] != "e" || last != nil {
 		t.Fatalf("last page = %v next=%v err=%v", page, last, err)
 	}
@@ -91,16 +112,16 @@ func TestPageAfterIsStableWhenRecordsAppearAtTheHead(t *testing.T) {
 	key := func(item string) string { return item }
 
 	first := []string{"c", "b", "a"}
-	page, next, err := pageAfter(first, key, "", 1, "flows", bind, now)
+	page, next, err := pageAfter(first, key, "", 1, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 1 || page[0] != "c" {
 		t.Fatalf("first page = %v err=%v", page, err)
 	}
-	anchor, _ := decodePageCursor("flows", bind, *next, now)
+	anchor, _ := decodePageCursor("instance-a", "flows", bind, *next, now)
 
 	// A new record arrives at the head before the client asks for page two. With
 	// an offset this page would repeat "c"; after a key it continues at "b".
 	second := []string{"d", "c", "b", "a"}
-	page, _, err = pageAfter(second, key, anchor, 1, "flows", bind, now)
+	page, _, err = pageAfter(second, key, anchor, 1, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 1 || page[0] != "b" {
 		t.Fatalf("second page = %v err=%v, want [b]", page, err)
 	}
@@ -110,7 +131,7 @@ func TestPageAfterRejectsAnEvictedAnchor(t *testing.T) {
 	now := time.Now()
 	// The anchor's record left the ring: the walk cannot continue on this
 	// snapshot, so the caller reports 410 instead of skipping the gap.
-	if _, _, err := pageAfter([]string{"y", "z"}, func(s string) string { return s }, "x", 2, "flows", "bind", now); err == nil {
+	if _, _, err := pageAfter([]string{"y", "z"}, func(s string) string { return s }, "x", 2, "instance-a", "flows", "bind", now); err == nil {
 		t.Fatal("an evicted anchor must expire the cursor")
 	} else if apiErr, ok := err.(*nativeapi.APIError); !ok || apiErr.Status != 410 {
 		t.Fatalf("err = %v, want 410 snapshot_expired", err)

@@ -340,7 +340,7 @@ func (e *configEditor) GetConfig(ctx context.Context) (nativeapi.EffectiveConfig
 // write has not been reloaded yet. An earlier source-set hash could not be
 // reproduced by a client (it included the hidden api.dae) and never matched.
 func (e *configEditor) sourceRevision(all []configSourceFile) string {
-	candidate, err := e.buildCandidate(nil)
+	candidate, err := e.buildCandidate(nil, nil)
 	if err != nil {
 		return ""
 	}
@@ -382,12 +382,36 @@ func (e *configEditor) GetConfigSource(ctx context.Context, sourceID string) (na
 
 // buildCandidate merges the main file with the given overrides and parses the
 // result. Only overrides of visible sources reach this function.
-func (e *configEditor) buildCandidate(overrides map[string][]byte) (*config.Config, error) {
+func (e *configEditor) buildCandidate(overrides map[string][]byte, extra []*config_parser.Section) (*config.Config, error) {
 	sections, _, err := config.NewMergerWithOverrides(e.mainPath, overrides).Merge()
 	if err != nil {
 		return nil, err
 	}
+	if len(extra) > 0 {
+		sections = mergeCandidateSections(sections, extra)
+	}
 	return config.New(sections)
+}
+
+// mergeCandidateSections merges a submitted source that has no place in the
+// include tree over the accepted configuration. The merger concatenates items
+// of the same section, with the later source winning on decode; this mirrors
+// that order so a single-section candidate can be validated without knowing
+// which file declares the section.
+func mergeCandidateSections(base []*config_parser.Section, extra []*config_parser.Section) []*config_parser.Section {
+	index := make(map[string]int, len(base))
+	for i, section := range base {
+		index[section.Name] = i
+	}
+	for _, section := range extra {
+		if i, ok := index[section.Name]; ok {
+			base[i].Items = append(base[i].Items, section.Items...)
+			continue
+		}
+		index[section.Name] = len(base)
+		base = append(base, section)
+	}
+	return base
 }
 
 // fullValidate runs the same checks the validate command runs on top of the
@@ -406,9 +430,20 @@ func (e *configEditor) fullValidate(conf *config.Config) error {
 	return validateFixedDomainTtl(conf)
 }
 
+// anonymousValidationSource is a submitted source with no place in the include
+// tree. The contract requires only content, so its sections are merged over the
+// resulting configuration rather than replacing a file.
+type anonymousValidationSource struct {
+	id      string
+	content string
+}
+
 // candidateOverrides maps validation sources to absolute paths. Only visible
-// sources can be overridden; anything else is treated as not found.
-func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativeapi.ConfigValidationSource) (map[string][]byte, map[string]string, error) {
+// sources can be overridden; anything else is treated as not found. A source
+// with neither id nor path is anonymous: the contract requires only content, so
+// its sections are merged over the resulting configuration instead of replacing
+// a file.
+func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativeapi.ConfigValidationSource) (map[string][]byte, map[string]string, []anonymousValidationSource, error) {
 	visible := e.visibleSources(all)
 	byID := map[string]configSourceFile{}
 	byAbs := map[string]configSourceFile{}
@@ -418,47 +453,52 @@ func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativea
 	}
 	overrides := map[string][]byte{}
 	absToID := map[string]string{}
+	var anonymous []anonymousValidationSource
 	hiddenIDs := map[string]bool{}
 	for _, s := range all {
 		if s.abs != e.mainPath && filepath.Base(s.abs) == hiddenConfigSourceName {
 			hiddenIDs[s.id] = true
 		}
 	}
-	for _, r := range reqs {
+	for index, r := range reqs {
+		if r.Content == nil {
+			return nil, nil, nil, &nativeapi.APIError{Status: 422, Code: "unsupported_value", Message: "source content is required"}
+		}
 		var target configSourceFile
 		var ok bool
 		switch {
 		case r.ID != "":
 			if hiddenIDs[r.ID] {
-				return nil, nil, errHiddenSourceRef
+				return nil, nil, nil, errHiddenSourceRef
 			}
 			target, ok = byID[r.ID]
 		case r.Path != "":
 			abs := filepath.Clean(filepath.Join(e.baseDir, filepath.FromSlash(r.Path)))
 			if filepath.Base(abs) == hiddenConfigSourceName {
-				return nil, nil, errHiddenSourceRef
+				return nil, nil, nil, errHiddenSourceRef
 			}
 			target, ok = byAbs[abs]
 			if !ok && abs != e.mainPath && filepath.Base(abs) != hiddenConfigSourceName {
 				// A new include file: validate it as a candidate path.
 				target, ok = configSourceFile{abs: abs, id: sourceIDFor(r.Path)}, true
 			}
+		default:
+			// Request-local ID, defaulted exactly as the contract describes.
+			anonymous = append(anonymous, anonymousValidationSource{id: fmt.Sprintf("source-%d", index+1), content: *r.Content})
+			continue
 		}
 		if !ok {
-			return nil, nil, &nativeapi.APIError{Status: 404, Code: "resource_not_found", Message: "config source not found"}
-		}
-		if r.Content == nil {
-			return nil, nil, &nativeapi.APIError{Status: 422, Code: "unsupported_value", Message: "source content is required"}
+			return nil, nil, nil, &nativeapi.APIError{Status: 404, Code: "resource_not_found", Message: "config source not found"}
 		}
 		// Two requests that resolve to the same file describe one source twice,
 		// so the candidate would be ambiguous.
 		if _, dup := overrides[target.abs]; dup {
-			return nil, nil, &nativeapi.APIError{Status: 400, Code: "invalid_request", Message: "duplicate configuration source"}
+			return nil, nil, nil, &nativeapi.APIError{Status: 400, Code: "invalid_request", Message: "duplicate configuration source"}
 		}
 		overrides[target.abs] = []byte(*r.Content)
 		absToID[target.abs] = target.id
 	}
-	return overrides, absToID, nil
+	return overrides, absToID, anonymous, nil
 }
 
 func (e *configEditor) ValidateConfig(ctx context.Context, req nativeapi.ConfigValidationRequest) (nativeapi.ConfigValidationResult, error) {
@@ -477,13 +517,25 @@ func (e *configEditor) ValidateConfig(ctx context.Context, req nativeapi.ConfigV
 	if err != nil {
 		return nativeapi.ConfigValidationResult{}, err
 	}
-	overrides, absToID, err := e.candidateOverrides(all, req.Sources)
+	overrides, absToID, anonymous, err := e.candidateOverrides(all, req.Sources)
 	if err != nil {
 		return nativeapi.ConfigValidationResult{}, err
 	}
 
 	diags := []nativeapi.ConfigDiagnostic{}
 	failed := false
+	// A source with only content has no file to override, so it is parsed here
+	// and merged over the resulting configuration in full mode.
+	var anonymousSections []*config_parser.Section
+	for _, src := range anonymous {
+		sections, parseErr := config_parser.Parse(src.content)
+		if parseErr != nil {
+			failed = true
+			diags = append(diags, e.diagnosticsFor(parseErr, absToID, src.id, "config_invalid")...)
+			continue
+		}
+		anonymousSections = append(anonymousSections, sections...)
+	}
 	if req.Mode == "syntax" {
 		// Syntax mode parses the submitted texts only; no merge or full checks run.
 		for abs, raw := range overrides {
@@ -492,8 +544,8 @@ func (e *configEditor) ValidateConfig(ctx context.Context, req nativeapi.ConfigV
 				diags = append(diags, e.diagnosticsFor(err, map[string]string{abs: absToID[abs]}, "", "config_invalid")...)
 			}
 		}
-	} else {
-		conf, buildErr := e.buildCandidate(overrides)
+	} else if !failed {
+		conf, buildErr := e.buildCandidate(overrides, anonymousSections)
 		if buildErr != nil {
 			failed = true
 			diags = append(diags, e.diagnosticsFor(buildErr, absToID, "", "config_invalid")...)
@@ -630,7 +682,7 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	}
 
 	// Validate the candidate with full checks before touching disk.
-	candidate, buildErr := e.buildCandidate(map[string][]byte{target.abs: []byte(req.Content)})
+	candidate, buildErr := e.buildCandidate(map[string][]byte{target.abs: []byte(req.Content)}, nil)
 	if buildErr != nil {
 		return nativeapi.OperationAccepted{}, e.unprocessable(buildErr, target)
 	}

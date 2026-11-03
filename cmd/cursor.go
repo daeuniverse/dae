@@ -26,6 +26,7 @@ const pageCursorTTL = 5 * time.Minute
 // long as that record is still retained.
 type pageCursor struct {
 	Kind      string `json:"k"`
+	Instance  string `json:"i"`
 	Bind      string `json:"b"`
 	After     string `json:"a"`
 	ExpiresAt int64  `json:"e"`
@@ -48,9 +49,10 @@ func pageCursorBind(parts ...any) string {
 	return strings.Join(values, "\x00")
 }
 
-func encodePageCursor(kind, bind, after string, now time.Time) string {
+func encodePageCursor(instance, kind, bind, after string, now time.Time) string {
 	payload, err := json.Marshal(pageCursor{
 		Kind:      kind,
+		Instance:  instance,
 		Bind:      bind,
 		After:     after,
 		ExpiresAt: now.Add(pageCursorTTL).Unix(),
@@ -61,10 +63,13 @@ func encodePageCursor(kind, bind, after string, now time.Time) string {
 	return base64.RawURLEncoding.EncodeToString(payload)
 }
 
-// decodePageCursor resolves an opaque cursor for one page walk. A cursor issued
-// by another walk (different filters or limit), an expired one, or a malformed
-// one reports 410 snapshot_expired so the client restarts without a cursor.
-func decodePageCursor(kind, bind, value string, now time.Time) (string, error) {
+// decodePageCursor resolves an opaque cursor for one page walk. A cursor that
+// names another process, another walk, or an expired snapshot reports 410
+// snapshot_expired, which is the contract's "the server no longer recognises
+// it". A cursor from this instance and endpoint but another filter set or limit
+// is recognised and reports 400 invalid_request instead; the client has to
+// restart the walk to change either.
+func decodePageCursor(instance, kind, bind, value string, now time.Time) (string, error) {
 	expired := nativeapi.NewAPIError(410, "snapshot_expired", "the page snapshot expired; restart the page walk")
 	raw, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
@@ -74,8 +79,11 @@ func decodePageCursor(kind, bind, value string, now time.Time) (string, error) {
 	if err := json.Unmarshal(raw, &cursor); err != nil {
 		return "", expired
 	}
-	if cursor.Kind != kind || cursor.Bind != bind || cursor.After == "" || cursor.ExpiresAt < now.Unix() {
+	if cursor.Kind != kind || cursor.Instance != instance || cursor.After == "" || cursor.ExpiresAt < now.Unix() {
 		return "", expired
+	}
+	if cursor.Bind != bind {
+		return "", nativeapi.NewAPIError(400, "invalid_request", "the cursor was issued for different filters or a different limit; restart the page walk")
 	}
 	return cursor.After, nil
 }
@@ -90,7 +98,7 @@ func decodePageCursor(kind, bind, value string, now time.Time) (string, error) {
 // An anchor that is no longer present means the walk cannot be continued on this
 // snapshot - the record was evicted - so the caller reports 410 rather than
 // silently skipping the gap.
-func pageAfter[T any](items []T, keyOf func(T) string, after string, limit int, kind, bind string, now time.Time) ([]T, *string, error) {
+func pageAfter[T any](items []T, keyOf func(T) string, after string, limit int, instance, kind, bind string, now time.Time) ([]T, *string, error) {
 	start := 0
 	if after != "" {
 		found := false
@@ -114,7 +122,7 @@ func pageAfter[T any](items []T, keyOf func(T) string, after string, limit int, 
 	}
 	var next *string
 	if end < len(items) && end > start {
-		value := encodePageCursor(kind, bind, keyOf(items[end-1]), now)
+		value := encodePageCursor(instance, kind, bind, keyOf(items[end-1]), now)
 		next = &value
 	}
 	return items[start:end], next, nil
