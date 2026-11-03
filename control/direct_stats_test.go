@@ -113,3 +113,45 @@ func mustReadBindSource(t *testing.T) string {
 	}
 	return string(raw)
 }
+
+func TestDirectStatsProgramNamesFollowRole(t *testing.T) {
+	cases := []struct {
+		layer2, wan, dual bool
+		ingress, egress   string
+	}{
+		{false, false, false, "direct_stats_lan_ingress_l3", "direct_stats_egress_l3"},
+		{true, false, false, "direct_stats_lan_ingress_l2", "direct_stats_egress_l2"},
+		{false, true, false, "direct_stats_wan_ingress_l3", "direct_stats_egress_l3"},
+		{true, true, false, "direct_stats_wan_ingress_l2", "direct_stats_egress_l2"},
+		{false, false, true, "direct_stats_ingress_l3", "direct_stats_egress_l3"},
+		{true, true, true, "direct_stats_ingress_l2", "direct_stats_egress_l2"},
+	}
+	spec, err := loadDirectstats()
+	for _, tc := range cases {
+		ingress, egress := directStatsProgramNames(tc.layer2, tc.wan, tc.dual)
+		if ingress != tc.ingress || egress != tc.egress {
+			t.Errorf("names(l2=%v wan=%v dual=%v) = %s,%s; want %s,%s", tc.layer2, tc.wan, tc.dual, ingress, egress, tc.ingress, tc.egress)
+		}
+		if err == nil && (spec.Programs[ingress] == nil || spec.Programs[egress] == nil) {
+			t.Errorf("object has no program %s or %s", ingress, egress)
+		}
+	}
+}
+
+// TestDirectStatsRoleVariantsSkipUnusedLookups pins the specialisation: the
+// role is a literal at each entry point, and each direction's lookup is gated
+// on it, so a LAN-only or WAN-only hook does not run the other side's lookups.
+func TestDirectStatsRoleVariantsSkipUnusedLookups(t *testing.T) {
+	source := readDirectStatsSource(t)
+	for _, want := range []string{
+		"role != DIRECT_STATS_ROLE_LAN",
+		"role != DIRECT_STATS_ROLE_WAN",
+		"direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_LAN)",
+		"direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_WAN)",
+		"direct_stats_ingress(skb, 14, DIRECT_STATS_ROLE_BOTH)",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("observer source lacks %q", want)
+		}
+	}
+}

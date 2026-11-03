@@ -143,8 +143,9 @@ api {
 `up_packets`, `down_bytes` and `down_packets`, with `enabled` mirroring the
 switch. The figures are link bytes, not payload bytes, and are a lower bound:
 the observer runs before tproxy, so the first packet of every flow (and flows
-that predate a restart) is not counted, and non-TCP/UDP traffic is skipped. Turn
-the switch off to remove the hooks and stop paying for the observation.
+that predate a restart) is not counted, and non-TCP/UDP traffic is skipped. The hooks run before tproxy, so every packet on those interfaces, proxied traffic
+included, pays for a map lookup or two; turn the switch off to remove the hooks and
+stop paying for the observation.
 
 The counters are also folded into the builtin `direct` row of
 `GET /api/v1/runtime/outbounds`, so an existing panel that reads only that

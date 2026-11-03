@@ -129,7 +129,7 @@ api {
 之后 `GET /api/v1/runtime/direct-stats` 会返回累计的 `up_bytes`、`up_packets`、
 `down_bytes` 与 `down_packets`，`enabled` 对应开关状态。数字是链路字节而不是 payload
 字节，且只是下界：观测钩子在 tproxy 之前运行，所以每条流的第一个包（以及重启前就存在的
-流）不会被统计，非 TCP/UDP 流量也不计。关闭开关即移除钩子，不再付出观测成本。
+流）不会被统计，非 TCP/UDP 流量也不计。钩子先于 tproxy 运行，这些接口上的每个包（包括代理流量）都要付一两次 map 查找的成本；关闭开关即移除钩子，不再付出观测成本。
 
 观测计数同时会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读该资源的
 既有面板（例如 doona 的活动页）无需认识本端点即可看到直连流量。该行此时是混合口径：

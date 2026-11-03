@@ -278,12 +278,21 @@ direct_stats_add(__u32 bytes_key, __u32 packets_key, __u64 len)
 		*v += 1;
 }
 
-// Ingress observer. Runs on both LAN (client upload) and WAN (reply download)
-// interfaces, including a single arm interface that carries both roles, so the
-// direction is resolved per packet: the reply's tuple is the reverse of the
-// state key, the upload's tuple is the state key as-is.
+enum direct_stats_role {
+	DIRECT_STATS_ROLE_BOTH = 0,
+	DIRECT_STATS_ROLE_LAN = 1,
+	DIRECT_STATS_ROLE_WAN = 2,
+};
+
+// Ingress observer. Userspace picks the variant from the interface role, so a
+// LAN-only hook never pays for the reply-side lookups and a WAN-only hook never
+// pays for the upload-side one. An interface that carries both roles (a single
+// arm) gets the BOTH variant, which resolves the direction per packet: the
+// reply's tuple is the reverse of the state key, the upload's tuple is the
+// state key as-is. `role` is a compile-time constant at every call site, so
+// the unused branches are removed from each program.
 static __always_inline int
-direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off)
+direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 {
 	struct tuples_key key, rkey;
 	struct conn_state *st;
@@ -292,30 +301,40 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off)
 	if (direct_stats_parse_tuple(skb, l3_off, &key))
 		return DIRECT_STATS_CONTINUE;
 
-	direct_stats_reverse(&key, &rkey);
-
-	// Download: the packet is the reply, so its reversed tuple is the key.
-	st = bpf_map_lookup_elem(&conn_state_map, &rkey);
-	if (direct_stats_is_direct(st)) {
-		direct_stats_add(DIRECT_STATS_DOWNLOAD_BYTES,
-				 DIRECT_STATS_DOWNLOAD_PACKETS, len);
-		direct_stats_remember(&rkey);
-		return DIRECT_STATS_CONTINUE;
+	// A live entry settles the flow: only direct flows are counted and the
+	// NAT index holds direct flows exclusively, so a proxied packet stops at
+	// the entry after a single lookup.
+	if (role != DIRECT_STATS_ROLE_LAN) {
+		// Download: the packet is the reply, so its reversed tuple is the key.
+		direct_stats_reverse(&key, &rkey);
+		st = bpf_map_lookup_elem(&conn_state_map, &rkey);
+		if (st) {
+			if (direct_stats_is_direct(st)) {
+				direct_stats_add(DIRECT_STATS_DOWNLOAD_BYTES,
+						 DIRECT_STATS_DOWNLOAD_PACKETS, len);
+				direct_stats_remember(&rkey);
+			}
+			return DIRECT_STATS_CONTINUE;
+		}
 	}
 
-	// Upload: the packet is the original direction.
-	st = bpf_map_lookup_elem(&conn_state_map, &key);
-	if (direct_stats_is_direct(st)) {
-		direct_stats_add(DIRECT_STATS_UPLOAD_BYTES,
-				 DIRECT_STATS_UPLOAD_PACKETS, len);
-		direct_stats_remember(&key);
-		return DIRECT_STATS_CONTINUE;
+	if (role != DIRECT_STATS_ROLE_WAN) {
+		// Upload: the packet is the original direction.
+		st = bpf_map_lookup_elem(&conn_state_map, &key);
+		if (st) {
+			if (direct_stats_is_direct(st)) {
+				direct_stats_add(DIRECT_STATS_UPLOAD_BYTES,
+						 DIRECT_STATS_UPLOAD_PACKETS, len);
+				direct_stats_remember(&key);
+			}
+			return DIRECT_STATS_CONTINUE;
+		}
 	}
 
 	// NAT gateway: SNAT rewrote the reply's destination, so the reversed tuple
 	// cannot reach the entry the upload created. The three-field index survives
 	// the translation because SNAT preserves the local port.
-	if (direct_stats_known(&key))
+	if (role != DIRECT_STATS_ROLE_LAN && direct_stats_known(&key))
 		direct_stats_add(DIRECT_STATS_DOWNLOAD_BYTES,
 				 DIRECT_STATS_DOWNLOAD_PACKETS, len);
 
@@ -349,13 +368,37 @@ direct_stats_egress(struct __sk_buff *skb, __u32 l3_off)
 SEC("tc/direct_stats_ingress_l2")
 int direct_stats_ingress_l2(struct __sk_buff *skb)
 {
-	return direct_stats_ingress(skb, 14);
+	return direct_stats_ingress(skb, 14, DIRECT_STATS_ROLE_BOTH);
 }
 
 SEC("tc/direct_stats_ingress_l3")
 int direct_stats_ingress_l3(struct __sk_buff *skb)
 {
-	return direct_stats_ingress(skb, 0);
+	return direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_BOTH);
+}
+
+SEC("tc/direct_stats_lan_ingress_l2")
+int direct_stats_lan_ingress_l2(struct __sk_buff *skb)
+{
+	return direct_stats_ingress(skb, 14, DIRECT_STATS_ROLE_LAN);
+}
+
+SEC("tc/direct_stats_lan_ingress_l3")
+int direct_stats_lan_ingress_l3(struct __sk_buff *skb)
+{
+	return direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_LAN);
+}
+
+SEC("tc/direct_stats_wan_ingress_l2")
+int direct_stats_wan_ingress_l2(struct __sk_buff *skb)
+{
+	return direct_stats_ingress(skb, 14, DIRECT_STATS_ROLE_WAN);
+}
+
+SEC("tc/direct_stats_wan_ingress_l3")
+int direct_stats_wan_ingress_l3(struct __sk_buff *skb)
+{
+	return direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_WAN);
 }
 
 SEC("tc/direct_stats_egress_l2")

@@ -98,11 +98,14 @@ func (c *ControlPlane) DirectStatsSnapshot() (DirectStatsCounters, error) {
 }
 
 // stageDirectStatsHooks attaches the observer to a link dae already binds.
-// Every role gets the ingress observer (a LAN client upload or a WAN reply);
-// only the WAN role gets the egress observer, whose ingress_ifindex guard
-// leaves just locally generated sockets. On a dual-role interface the same
-// ingress spec is staged twice, which is an idempotent upsert.
-func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool, wan bool) error {
+// Every role gets an ingress observer; only the WAN role gets the egress
+// observer, whose ingress_ifindex guard leaves just locally generated sockets.
+// The ingress variant follows the role so a hook never runs lookups for a
+// direction it cannot see: LAN-only watches client uploads, WAN-only watches
+// replies, and an interface bound with both roles runs the combined program.
+// On a dual-role interface both binds stage the same spec, which is an
+// idempotent upsert.
+func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool, wan bool, dual bool) error {
 	if !directStatsEnabled.Load() {
 		return nil
 	}
@@ -113,12 +116,7 @@ func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool,
 		c.log.Warnf("direct stats observer unavailable: %v", err)
 		return nil
 	}
-	ingressName := "direct_stats_ingress_l3"
-	egressName := "direct_stats_egress_l3"
-	if layer2 {
-		ingressName = "direct_stats_ingress_l2"
-		egressName = "direct_stats_egress_l2"
-	}
+	ingressName, egressName := directStatsProgramNames(layer2, wan, dual)
 	ingress := coll.Programs[ingressName]
 	if ingress == nil {
 		c.log.Warnf("direct stats observer has no %q program; skipping hooks", ingressName)
@@ -139,6 +137,22 @@ func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool,
 		return fmt.Errorf("install direct stats egress hook: %w", err)
 	}
 	return nil
+}
+
+// directStatsProgramNames picks the observer programs for an interface role.
+func directStatsProgramNames(layer2, wan, dual bool) (ingress, egress string) {
+	layer := "l3"
+	if layer2 {
+		layer = "l2"
+	}
+	role := "lan_"
+	switch {
+	case dual:
+		role = ""
+	case wan:
+		role = "wan_"
+	}
+	return "direct_stats_" + role + "ingress_" + layer, "direct_stats_egress_" + layer
 }
 
 // ensureDirectStatsCollection loads the observer object once per core and

@@ -400,12 +400,21 @@ userspace CPU or heap. The cost is bounded and lives in the kernel:
   overhead; on the order of ten MB at most), so a flood of flows evicts old
   entries instead of growing. `conn_state_map` is tproxy's own map, reused via a
   map replacement, and is not allocated again.
-- CPU scales with packet rate, not byte rate. Each observed packet costs one
-  `conn_state_map` lookup, a per-CPU counter update (no atomics, no
-  cross-CPU cacheline sharing) and, for direct flows, an update or lookup in
-  `direct_reverse_map`. The WAN role runs one extra egress program. Expect the
-  cost to become visible only at very high packet rates with small packets;
-  large-packet bulk transfers are dominated by the NIC and the stack.
+- CPU scales with packet rate, not byte rate. The ingress program is chosen by
+  interface role: a LAN-only hook looks up only the upload tuple, a WAN-only
+  hook only the reply tuple, and an interface bound with both roles runs the
+  combined program. An ingress packet costs one `conn_state_map` lookup per
+  direction the hook can see, until an entry answers (one for a role-specific
+  hook, at most two for the combined one), and a per-CPU counter update (no atomics, no cross-CPU cacheline sharing)
+  when the flow is direct. A flow tproxy has marked as proxied stops at that
+  entry and never touches `direct_reverse_map`, so proxied traffic pays the
+  lookups but no map update. `direct_reverse_map` is only consulted when
+  neither direction has a `conn_state_map` entry (the NAT-gateway reply case)
+  and is updated only for direct flows. The WAN role runs one extra egress
+  program, which exits early for forwarded packets and otherwise does one
+  lookup. Expect the cost to become visible only at very high packet rates
+  with small packets; large-packet bulk transfers are dominated by the NIC and
+  the stack.
 - Failure is isolated: if the object cannot load, dae logs a warning, skips the
   hooks and keeps forwarding; the API reports zeros.
 - With `api.direct_stats` off the object is never loaded and nothing is attached.

@@ -286,7 +286,7 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookEgress, egressPriority, 0x2023, egressProgram, egressName, nil)); err != nil {
 		return fmt.Errorf("install LAN egress hook: %w", err)
 	}
-	if err := c.stageDirectStatsHooks(link, linkHdrLen > 0, false); err != nil {
+	if err := c.stageDirectStatsHooks(link, linkHdrLen > 0, false, c.isDualRoleTCInterface(ifname)); err != nil {
 		return err
 	}
 
@@ -617,7 +617,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, ingressPriority, 0x2023, ingressProgram, ingressName, nil)); err != nil {
 		return fmt.Errorf("install WAN ingress hook: %w", err)
 	}
-	if err := c.stageDirectStatsHooks(link, linkHdrLen > 0, true); err != nil {
+	if err := c.stageDirectStatsHooks(link, linkHdrLen > 0, true, c.isDualRoleTCInterface(ifname)); err != nil {
 		return err
 	}
 
