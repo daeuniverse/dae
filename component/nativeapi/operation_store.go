@@ -48,6 +48,10 @@ type OperationStore struct {
 
 	replay      map[string]storedReplay
 	replayOrder []string
+	// reserved holds keys whose operation was created but not yet queued. They
+	// are not replayable yet: a concurrent request with the same key must not
+	// receive a 202 body for work that may still be rejected.
+	reserved map[string]storedReplay
 }
 
 type storedOperation struct {
@@ -85,6 +89,7 @@ func NewOperationStore(retention time.Duration, maxReplayKeys int) *OperationSto
 		maxReplayKeys: maxReplayKeys,
 		operations:    make(map[string]*storedOperation),
 		replay:        make(map[string]storedReplay),
+		reserved:      make(map[string]storedReplay),
 	}
 }
 
@@ -107,6 +112,12 @@ func (s *OperationStore) Accept(kind, scope, idempotencyKey string) (OperationAc
 			}
 			return previous.accepted, true, nil
 		}
+		if _, busy := s.reserved[idempotencyKey]; busy {
+			// The first request is still being admitted. Answering 202 here would
+			// promise work that the admission may still reject.
+			return OperationAccepted{}, false, NewAPIError(http.StatusConflict, codeIdempotencyConflict,
+				"the Idempotency-Key is being admitted by another request")
+		}
 	}
 
 	operationID := newOperationID()
@@ -124,11 +135,29 @@ func (s *OperationStore) Accept(kind, scope, idempotencyKey string) (OperationAc
 	s.order = append(s.order, operationID)
 
 	if idempotencyKey != "" {
-		s.replay[idempotencyKey] = storedReplay{kind: kind, scope: scope, accepted: accepted}
-		s.replayOrder = append(s.replayOrder, idempotencyKey)
-		s.evictReplayKeysLocked()
+		s.reserved[idempotencyKey] = storedReplay{kind: kind, scope: scope, accepted: accepted}
 	}
 	return accepted, false, nil
+}
+
+// CommitReplayKey publishes a reserved key, so a retry replays the accepted
+// body. It is called only after the work is queued: the key and the queue entry
+// must become visible together, or a concurrent caller could see one without
+// the other.
+func (s *OperationStore) CommitReplayKey(idempotencyKey string) {
+	if s == nil || idempotencyKey == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reserved, ok := s.reserved[idempotencyKey]
+	if !ok {
+		return
+	}
+	delete(s.reserved, idempotencyKey)
+	s.replay[idempotencyKey] = reserved
+	s.replayOrder = append(s.replayOrder, idempotencyKey)
+	s.evictReplayKeysLocked()
 }
 
 // ReleaseReplayKey forgets an Idempotency-Key binding. A request that never
@@ -141,6 +170,7 @@ func (s *OperationStore) ReleaseReplayKey(idempotencyKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.replay, idempotencyKey)
+	delete(s.reserved, idempotencyKey)
 	kept := s.replayOrder[:0]
 	for _, key := range s.replayOrder {
 		if key == idempotencyKey {

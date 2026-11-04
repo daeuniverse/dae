@@ -54,11 +54,20 @@ func (s *Server) streamFrames(w http.ResponseWriter, r *http.Request, stream *SS
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("X-Accel-Buffering", "no")
-	if err := writeSSEFrame(w, stream.Ready); err != nil {
+	// Evicting a slow client unblocks the publisher, not the handler: a write to
+	// a socket that accepts nothing blocks until the peer goes away. A per-frame
+	// write deadline turns that into an error the handler can return on, so the
+	// stream (and the max_clients slot) is released.
+	controller := http.NewResponseController(w)
+	writeFrame := func(frame SSEFrame) error {
+		_ = controller.SetWriteDeadline(time.Now().Add(SSEWriteTimeoutSeconds * time.Second))
+		return writeSSEFrame(w, frame)
+	}
+	if err := writeFrame(stream.Ready); err != nil {
 		return
 	}
 	for _, frame := range stream.Replay {
-		if err := writeSSEFrame(w, frame); err != nil {
+		if err := writeFrame(frame); err != nil {
 			return
 		}
 	}
@@ -72,10 +81,11 @@ func (s *Server) streamFrames(w http.ResponseWriter, r *http.Request, stream *SS
 			if !ok {
 				return
 			}
-			if err := writeSSEFrame(w, frame); err != nil {
+			if err := writeFrame(frame); err != nil {
 				return
 			}
 		case <-heartbeat.C:
+			_ = controller.SetWriteDeadline(time.Now().Add(SSEWriteTimeoutSeconds * time.Second))
 			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
 				return
 			}
@@ -94,6 +104,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isReadMethod(r.Method) {
 		writeMethodNotAllowed(w, requestID, "GET, HEAD")
+		return
+	}
+	// A stream never completes, so a HEAD request would hold the connection open
+	// forever: HEAD asks for the headers of a response the server never finishes.
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, requestID, "GET")
 		return
 	}
 	level := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("level")))
@@ -126,6 +142,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isReadMethod(r.Method) {
 		writeMethodNotAllowed(w, requestID, "GET, HEAD")
+		return
+	}
+	// See handleLogs: an event stream has no end, so HEAD must not enter it.
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, requestID, "GET")
 		return
 	}
 	var kinds []string

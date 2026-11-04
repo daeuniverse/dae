@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func apiErrorOf(t *testing.T, err error) *nativeapi.APIError {
@@ -127,4 +128,85 @@ func TestProbeRejectsUnknownKind(t *testing.T) {
 	if item.Error == nil || *item.Error != "dialer is unavailable" {
 		t.Fatalf("error = %v", item.Error)
 	}
+}
+
+func TestProbeDNSSpeaksDNSOnBothTransports(t *testing.T) {
+	// A DNS probe carries DNS regardless of transport, so it must reach port 53.
+	// Reusing probeDialAddress sent length-prefixed DNS frames to 443.
+	if got := probeDNSAddress("ipv4"); got != "1.1.1.1:53" {
+		t.Fatalf("probeDNSAddress(ipv4) = %q, want 1.1.1.1:53", got)
+	}
+	if got := probeDNSAddress("ipv6"); got != "[2606:4700:4700::1111]:53" {
+		t.Fatalf("probeDNSAddress(ipv6) = %q, want the IPv6 resolver on port 53", got)
+	}
+}
+
+func TestParseDNSReplyRequiresMatchingIDAndQuestion(t *testing.T) {
+	query := buildProbeDNSQuery(t, 7, "example.com.")
+	matching := buildProbeDNSReply(t, query, 7, "example.com.")
+	if _, err := parseDNSReply(matching, query, time.Millisecond); err != nil {
+		t.Fatalf("parseDNSReply rejected a matching reply: %v", err)
+	}
+
+	// A header-only reply carries no answer and no question: it used to pass.
+	headerOnly := buildProbeDNSReplyHeaderOnly(t, 7)
+	if _, err := parseDNSReply(headerOnly, query, time.Millisecond); err == nil {
+		t.Fatal("parseDNSReply accepted a header-only reply without a question")
+	}
+	// A reply for another transaction must not count as this probe's answer.
+	wrongID := buildProbeDNSReply(t, query, 8, "example.com.")
+	if _, err := parseDNSReply(wrongID, query, time.Millisecond); err == nil {
+		t.Fatal("parseDNSReply accepted a reply with a different transaction ID")
+	}
+	// A reply for another question must not either.
+	wrongQuestion := buildProbeDNSReply(t, query, 7, "other.example.")
+	if _, err := parseDNSReply(wrongQuestion, query, time.Millisecond); err == nil {
+		t.Fatal("parseDNSReply accepted a reply answering another question")
+	}
+}
+
+func buildProbeDNSQuery(t *testing.T, id uint16, name string) []byte {
+	t.Helper()
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: id, RecursionDesired: true})
+	if err := builder.StartQuestions(); err != nil {
+		t.Fatalf("start questions: %v", err)
+	}
+	if err := builder.Question(dnsmessage.Question{Name: dnsmessage.MustNewName(name), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}); err != nil {
+		t.Fatalf("question: %v", err)
+	}
+	msg, err := builder.Finish()
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	return msg
+}
+
+func buildProbeDNSReply(t *testing.T, query []byte, id uint16, name string) []byte {
+	t.Helper()
+	var parser dnsmessage.Parser
+	if _, err := parser.Start(query); err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: id, Response: true, RecursionAvailable: true})
+	if err := builder.StartQuestions(); err != nil {
+		t.Fatalf("start questions: %v", err)
+	}
+	if err := builder.Question(dnsmessage.Question{Name: dnsmessage.MustNewName(name), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}); err != nil {
+		t.Fatalf("question: %v", err)
+	}
+	msg, err := builder.Finish()
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	return msg
+}
+
+func buildProbeDNSReplyHeaderOnly(t *testing.T, id uint16) []byte {
+	t.Helper()
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: id, Response: true})
+	msg, err := builder.Finish()
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	return msg
 }

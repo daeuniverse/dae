@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/sirupsen/logrus"
 )
@@ -44,6 +45,10 @@ type frameHub struct {
 	length     int
 	subs       map[int]*frameSubscriber
 	nextSub    int
+	// closed records that shutdown swept the hub. A handler admitted before the
+	// sweep but registering after it must not resurrect a subscription the
+	// process no longer serves.
+	closed bool
 }
 
 func newFrameHub(instanceID, prefix string, capacity int, retention time.Duration, maxClients int) *frameHub {
@@ -132,6 +137,10 @@ func (h *frameHub) closeAll() {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
 	for id, sub := range h.subs {
 		close(sub.ch)
 		delete(h.subs, id)
@@ -163,6 +172,9 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil, nativeapi.NewAPIError(503, "temporarily_unavailable", "the event stream is shutting down")
+	}
 	now := time.Now()
 	h.pruneLocked(now)
 
@@ -172,27 +184,28 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 
 	readySeq := uint64(0)
 	if lastEventID != "" {
-		cursor, ok := h.frameByIDLocked(lastEventID)
-		switch {
-		case ok:
+		if cursor, ok := h.frameByIDLocked(lastEventID); ok {
 			readySeq = cursor.seq
-		case lastEventID == h.frameID(0):
-			// The client attached before any record existed. Resuming from zero
-			// is only honest while nothing has been evicted: if the ring already
-			// dropped records, the client missed them and must resync instead of
-			// being told it is up to date.
-			if h.length == 0 {
-				if h.seq > 0 {
-					return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
-				}
-				break
+		} else {
+			// The id may name the frame immediately before the oldest retained
+			// one: that is the checkpoint stream.ready hands out, and resuming
+			// there loses nothing. Any other unknown id means records were
+			// evicted, so the client has to resync.
+			oldestSeq := uint64(0)
+			if h.length > 0 {
+				oldestSeq = h.frames[h.start].seq
 			}
-			if first := h.frames[h.start].seq; first > 1 {
+			boundary := uint64(0)
+			if oldestSeq > 0 {
+				boundary = oldestSeq - 1
+			}
+			if h.seq == 0 && lastEventID == h.frameID(0) {
+				readySeq = 0
+			} else if h.length > 0 && lastEventID == h.frameID(boundary) {
+				readySeq = boundary
+			} else {
 				return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
 			}
-			readySeq = h.frames[h.start].seq - 1
-		default:
-			return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
 		}
 	} else if h.length > 0 {
 		readySeq = h.frames[h.start].seq - 1
@@ -264,6 +277,9 @@ var (
 func sanitizeLogMessage(message string) string {
 	message = bearerPattern.ReplaceAllString(message, "Bearer [redacted]")
 	message = queryPattern.ReplaceAllString(message, "?[redacted]")
+	// A subscription or share link carries its credential in the userinfo, which
+	// is neither a bearer token nor a query parameter: scheme://user:pass@host.
+	message = common.RedactInlineURLs(message)
 	return message
 }
 

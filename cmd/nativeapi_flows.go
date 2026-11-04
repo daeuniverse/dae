@@ -223,6 +223,12 @@ func nativeFlowSummary(flow control.SessionFlowHistoryEntry, instanceID string) 
 		TraceStatus: "disabled",
 		Input:       nativeFlowInput(flow.SessionFlowSnapshot),
 	}
+	if flow.ID != "" {
+		// The id a client can pass to /connections; it is derived from the flow id
+		// so both resources name the same exchange.
+		connectionID := connectionIDOfFlow(flow.ID)
+		summary.ConnectionID = &connectionID
+	}
 	if summary.Revision == 0 {
 		summary.Revision = 1
 	}
@@ -274,7 +280,9 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 		if filter.State != "" && entry.State != filter.State {
 			continue
 		}
-		if filter.ConnectionID != "" {
+		if filter.ConnectionID != "" && connectionIDOfFlow(entry.ID) != filter.ConnectionID {
+			// The contract defines connection_id as an exact match over active and
+			// retained flows, so filter instead of discarding every entry.
 			continue
 		}
 		matched = append(matched, entry)

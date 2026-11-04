@@ -203,3 +203,39 @@ func TestCloseStreamsReleasesOpenStreams(t *testing.T) {
 	// A cancelled stream must not panic when the handler's deferred Cancel runs.
 	stream.Cancel()
 }
+
+func TestFrameHubReadyCheckpointResumes(t *testing.T) {
+	// stream.ready hands out the id of the frame just before the oldest retained
+	// one. Reconnecting with it must resume rather than answer the client's own
+	// checkpoint with event_cursor_expired.
+	hub := newFrameHub("instance-1", "events", 2, time.Minute, 2)
+	for i := 0; i < 3; i++ {
+		hub.publish("runtime.updated", map[string]any{})
+	}
+	first, err := hub.open("", nil)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	checkpoint := first.Ready.ID
+	first.Cancel()
+
+	stream, err := hub.open(checkpoint, nil)
+	if err != nil {
+		t.Fatalf("reconnecting with the ready checkpoint failed: %v", err)
+	}
+	defer stream.Cancel()
+	if len(stream.Replay) != 2 {
+		t.Fatalf("replay = %d frames, want the 2 retained frames", len(stream.Replay))
+	}
+}
+
+func TestFrameHubRefusesStreamsAfterClose(t *testing.T) {
+	// Shutdown sweeps the hub. A handler admitted before the sweep must not
+	// register a subscription afterwards, or it would outlive the process state
+	// it reads from.
+	hub := newFrameHub("instance-1", "events", 4, time.Minute, 4)
+	hub.closeAll()
+	if _, err := hub.open("", nil); err == nil {
+		t.Fatal("a closed hub accepted a new stream")
+	}
+}

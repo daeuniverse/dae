@@ -68,7 +68,18 @@ func newNativeAPIOperations(manager *reloadManager, supervisor *runtimeSuperviso
 	}
 }
 
+// StartOperation queues a reload for the contract's operation resources, which
+// report the reload's generation ids rather than a written resource.
 func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error) {
+	return o.StartOperationWithResult(ctx, kind, scope, idempotencyKey, nil)
+}
+
+// StartOperationWithResult creates the operation, registers the body it must
+// report and queues the reload as one step. Registering the resolver afterwards
+// left a window in which the operation could complete with the reload's generic
+// result, and publishing the replay key before admission let a concurrent
+// caller receive a 202 for work that was then rejected.
+func (o *nativeAPIOperations) StartOperationWithResult(ctx context.Context, kind, scope, idempotencyKey string, resolve func() (any, error)) (nativeapi.OperationAccepted, error) {
 	if err := ctx.Err(); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
@@ -85,6 +96,7 @@ func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, scope, i
 		// response unchanged and start nothing.
 		return accepted, nil
 	}
+	o.SetResultResolver(accepted.OperationID, resolve)
 	request := reloadRequest{
 		isSuspend:       kind == nativeapi.OperationKindSuspend,
 		requestedAt:     time.Now(),
@@ -94,6 +106,7 @@ func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, scope, i
 	if !o.manager.queueReloadRequest(nil, request) {
 		// The transition never started, so the key stays usable for the retry
 		// the client is expected to make.
+		o.takeResultResolver(accepted.OperationID)
 		o.store.ReleaseReplayKey(idempotencyKey)
 		o.store.Fail(accepted.OperationID, &nativeapi.SafeError{
 			Code:    "state_conflict",
@@ -106,6 +119,7 @@ func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, scope, i
 			Details: map[string]string{"operation_id": accepted.OperationID},
 		}
 	}
+	o.store.CommitReplayKey(idempotencyKey)
 	return accepted, nil
 }
 

@@ -391,7 +391,7 @@ func TestHostOriginAndPreflight(t *testing.T) {
 
 	// The state-changing P1 routes always preflight across origins, so the
 	// allowed method list must cover them.
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		writePreflight := doRequest(server, http.MethodOptions, "/api/v1/groups/g_1/selection", remote, map[string]string{
 			"Origin":                         "https://panel.example",
 			"Access-Control-Request-Method":  method,
@@ -825,5 +825,21 @@ func TestVersionReportsBuildMetadata(t *testing.T) {
 	plain := newTestServer(t, Config{AllowAnonymousLoopback: true}, fakeRuntimeProvider{runtime: testRuntime()})
 	if _, exists := decodeJSON(t, doRequest(plain, http.MethodGet, "/api/v1/version", "127.0.0.1:1234", nil))["build"]; exists {
 		t.Fatal("build must be omitted when nothing is known")
+	}
+}
+
+func TestStreamEndpointsRejectHead(t *testing.T) {
+	// A stream has no end, so HEAD would wait for a response that never finishes.
+	// The handler must answer 405 instead of entering the loop.
+	server := newTestServer(t, Config{AllowAnonymousLoopback: true}, fakeRuntimeProvider{runtime: testRuntime()})
+	withP3Providers(server)
+	for _, path := range []string{"/api/v1/logs", "/api/v1/events"} {
+		response := doRequest(server, http.MethodHead, path, "127.0.0.1:1234", nil)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s HEAD status = %d, want 405", path, response.Code)
+		}
+		if allow := response.Header().Get("Allow"); allow != http.MethodGet {
+			t.Fatalf("%s Allow = %q, want GET", path, allow)
+		}
 	}
 }

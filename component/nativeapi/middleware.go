@@ -107,7 +107,7 @@ func (s *Server) handlePreflight(w http.ResponseWriter, r *http.Request) {
 	// preflights them because of Authorization and Content-Type.
 	method := r.Header.Get("Access-Control-Request-Method")
 	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions:
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
 	default:
 		writeError(w, requestIDFromContext(r.Context()), http.StatusForbidden, codePermissionDenied, "method is not allowed")
 		return
@@ -126,7 +126,7 @@ func (s *Server) handlePreflight(w http.ResponseWriter, r *http.Request) {
 	header := w.Header()
 	header.Set("Access-Control-Allow-Origin", origin)
 	header.Add("Vary", "Origin")
-	header.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, DELETE, OPTIONS")
+	header.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
 	header.Set("Access-Control-Allow-Headers", "Authorization, Last-Event-ID, Content-Type, If-Match, Idempotency-Key, Accept")
 	header.Set("Access-Control-Expose-Headers", "Location, Retry-After, ETag")
 	header.Set("Access-Control-Max-Age", "600")

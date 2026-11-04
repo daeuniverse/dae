@@ -157,6 +157,7 @@ func TestOperationStoreReplayAndRetention(t *testing.T) {
 	if replayed {
 		t.Fatal("first accept must not be a replay")
 	}
+	store.CommitReplayKey("key-1")
 	replay, replayed, err := store.Accept(OperationKindReload, "", "key-1")
 	if err != nil {
 		t.Fatalf("replay: %v", err)
@@ -312,6 +313,7 @@ func TestAcceptScopesKeysPerRequest(t *testing.T) {
 	if err != nil || replayed {
 		t.Fatalf("first accept: replayed=%v err=%v", replayed, err)
 	}
+	store.CommitReplayKey("key-1")
 
 	// Same key, same request: replay.
 	replay, replayed, err := store.Accept(OperationKindProviderRefresh, "p_a", "key-1")
@@ -330,5 +332,47 @@ func TestAcceptScopesKeysPerRequest(t *testing.T) {
 		if !ok || apiErr.Code != codeIdempotencyConflict {
 			t.Fatalf("err = %v, want %s", err, codeIdempotencyConflict)
 		}
+	}
+}
+
+func TestReservedKeyIsNotReplayableUntilQueued(t *testing.T) {
+	// The replay body must not be visible before the work is queued: a caller
+	// that arrives in that window would receive a 202 for work the first request
+	// may still have rejected.
+	store := NewOperationStore(time.Hour, 4)
+	for _, key := range []string{"", "key-1"} {
+		first, replayed, err := store.Accept(OperationKindReload, "scope", key)
+		if err != nil || replayed {
+			t.Fatalf("accept(%q): replayed=%v err=%v", key, replayed, err)
+		}
+		if key == "" {
+			continue
+		}
+		if _, _, err := store.Accept(OperationKindReload, "scope", key); err == nil {
+			t.Fatal("a key still being admitted must conflict instead of replaying")
+		} else if apiErr, ok := err.(*APIError); !ok || apiErr.Code != codeIdempotencyConflict {
+			t.Fatalf("err = %v, want %s", err, codeIdempotencyConflict)
+		}
+		store.CommitReplayKey(key)
+		replay, replayed, err := store.Accept(OperationKindReload, "scope", key)
+		if err != nil || !replayed || replay.OperationID != first.OperationID {
+			t.Fatalf("after commit: replay=%+v replayed=%v err=%v", replay, replayed, err)
+		}
+	}
+
+	// A rejected admission releases the key, so the retry the client is told to
+	// make can actually start the work.
+	aborted, _, err := store.Accept(OperationKindReload, "scope", "key-2")
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	store.ReleaseReplayKey("key-2")
+	store.Fail(aborted.OperationID, &SafeError{Code: "state_conflict", Message: "rejected"})
+	retried, replayed, err := store.Accept(OperationKindReload, "scope", "key-2")
+	if err != nil || replayed {
+		t.Fatalf("released key must start new work: replayed=%v err=%v", replayed, err)
+	}
+	if retried.OperationID == aborted.OperationID {
+		t.Fatal("released key replayed the rejected operation")
 	}
 }

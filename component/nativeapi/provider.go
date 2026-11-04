@@ -220,6 +220,10 @@ const (
 	EventMaxBufferedEvents = 1024
 	EventMaxClients        = 32
 	SSEHeartbeatSeconds    = 10
+	// SSEWriteTimeoutSeconds bounds one SSE write. A stream never ends on its
+	// own, so without a deadline a peer that stops reading holds the handler and
+	// its max_clients slot until the process exits.
+	SSEWriteTimeoutSeconds = 30
 )
 
 // LogProvider opens a resumable log stream.
