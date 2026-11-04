@@ -124,6 +124,31 @@ func (f *FlowRuntime) SetFlowRoutingMeta(routingResult *bpfRoutingResult) {
 	f.mark = routingResult.Mark
 }
 
+// FlowByteCounter is one live flow's cumulative byte counters.
+type FlowByteCounter struct {
+	ID            string
+	UploadBytes   uint64
+	DownloadBytes uint64
+}
+
+// FlowByteCounters walks the cumulative counters of every live TCP flow
+// without materialising snapshots. UDP flows carry no counters.
+func (m *SessionManager) FlowByteCounters(yield func(FlowByteCounter)) {
+	if m == nil || yield == nil {
+		return
+	}
+	m.flows.Range(func(_, value any) bool {
+		if flow, ok := value.(*FlowRuntime); ok && flow != nil && flow.id != "" {
+			yield(FlowByteCounter{
+				ID:            flow.id,
+				UploadBytes:   flow.uploadBytes.Load(),
+				DownloadBytes: flow.downloadBytes.Load(),
+			})
+		}
+		return true
+	})
+}
+
 // ActiveFlowSnapshots returns every live userspace flow.
 func (m *SessionManager) ActiveFlowSnapshots() []SessionFlowSnapshot {
 	if m == nil {
@@ -250,6 +275,15 @@ func (c *ControlPlane) activeSessionManager() *SessionManager {
 // session manager.
 func (c *ControlPlane) ActiveFlowSnapshots() []SessionFlowSnapshot {
 	return c.activeSessionManager().ActiveFlowSnapshots()
+}
+
+// FlowByteCounters walks the live flows' cumulative counters of this
+// generation's process session manager.
+func (c *ControlPlane) FlowByteCounters(yield func(FlowByteCounter)) {
+	if c == nil {
+		return
+	}
+	c.activeSessionManager().FlowByteCounters(yield)
 }
 
 // CloseFlowByID cancels one live flow of the process session manager.

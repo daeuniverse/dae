@@ -24,6 +24,9 @@ const (
 	NodeListDefaultLimit = 100
 	NodeListMaxLimit     = 1000
 
+	// ConnectionWindowMaxSeconds bounds `window_seconds` on /connections.
+	ConnectionWindowMaxSeconds = 300
+
 	MaxRuleDictionarySize    = 1 << 20
 	MaxGroupPatchOperations  = 16
 	MaxRoutingTraceRuleSteps = 4096
@@ -179,6 +182,15 @@ type ConnectionFilter struct {
 	Type  string
 	Src   string
 	Limit int
+	// Sort orders the matching connections before `limit` truncates them, so a
+	// truncated listing keeps the connections the caller asked for rather than
+	// an arbitrary slice of the flow map. Empty leaves the engine's own order.
+	Sort string
+	// Order is "asc" or "desc" (the default) and only applies with Sort set.
+	Order string
+	// WindowSeconds makes each connection report the bytes it moved in the
+	// trailing window, and is what the window_* sorts rank by.
+	WindowSeconds int
 }
 
 // ConnectionProvider serves live connections and their close operation.

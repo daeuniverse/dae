@@ -82,6 +82,27 @@ func TestTCPSnapshotCarriesRouteMetadata(t *testing.T) {
 	}
 }
 
+// TestFlowByteCountersWalk pins the cheap counter walk a windowed listing uses:
+// TCP flows report their live counters without materialising full snapshots,
+// and UDP flows, which carry no counters, are absent.
+func TestFlowByteCountersWalk(t *testing.T) {
+	manager := NewSessionManager(context.Background())
+	flow := &FlowRuntime{id: "f_1", network: "tcp", startedAt: time.Now()}
+	flow.uploadBytes.Add(10)
+	flow.downloadBytes.Add(20)
+	manager.flows.Store(struct{}{}, flow)
+	manager.udpFlows.Store(struct{}{}, &UDPFlowRuntime{id: "u_1", startedAt: time.Now()})
+
+	var counters []FlowByteCounter
+	manager.FlowByteCounters(func(counter FlowByteCounter) { counters = append(counters, counter) })
+	if len(counters) != 1 {
+		t.Fatalf("counters = %#v, want only the TCP flow", counters)
+	}
+	if counters[0].ID != "f_1" || counters[0].UploadBytes != 10 || counters[0].DownloadBytes != 20 {
+		t.Fatalf("counter = %#v", counters[0])
+	}
+}
+
 func TestActiveFlowSnapshotsIncludeUDP(t *testing.T) {
 	manager := NewSessionManager(context.Background())
 	flow := &UDPFlowRuntime{

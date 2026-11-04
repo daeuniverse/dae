@@ -7,6 +7,7 @@ package nativeapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -325,7 +326,11 @@ type capturingConnections struct {
 
 func (c *capturingConnections) ListConnections(_ context.Context, filter ConnectionFilter) (ConnectionList, error) {
 	c.filter = filter
-	return ConnectionList{ObservedAt: "2026-01-01T00:00:00Z", InstanceID: "i", Visibility: "partial"}, nil
+	list := ConnectionList{ObservedAt: "2026-01-01T00:00:00Z", InstanceID: "i", Visibility: "partial"}
+	if filter.WindowSeconds > 0 {
+		list.Window = &ConnectionWindow{Seconds: filter.WindowSeconds}
+	}
+	return list, nil
 }
 
 func (c *capturingConnections) CloseConnection(context.Context, string) error { return nil }
@@ -365,11 +370,31 @@ func TestP3ListFiltersAndLimits(t *testing.T) {
 	if connections.filter.Type != "" || connections.filter.Src != "10.0.0.1" || connections.filter.Limit != 5 {
 		t.Fatalf("connection filter = %+v, want type=all src=10.0.0.1 limit=5", connections.filter)
 	}
+	if connections.filter.Sort != "" || connections.filter.WindowSeconds != 0 || connections.filter.Order != "desc" {
+		t.Fatalf("connection order = %+v, want unsorted with no window", connections.filter)
+	}
+
+	recorder = doJSONRequest(server, http.MethodGet, "/api/v1/connections?sort=window_download&order=asc&window_seconds=20", "", remote)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("connections sorted status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if connections.filter.Sort != "window_download" || connections.filter.Order != "asc" || connections.filter.WindowSeconds != 20 {
+		t.Fatalf("connection order = %+v, want window_download asc 20s", connections.filter)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"window":{"seconds":20}`) {
+		t.Fatalf("connections body = %s, want the measured window echoed", body)
+	}
 
 	for _, path := range []string{
 		"/api/v1/connections?src=not-an-ip",
 		"/api/v1/connections?limit=0",
 		"/api/v1/connections?limit=1001",
+		"/api/v1/connections?sort=bandwidth",
+		"/api/v1/connections?order=sideways",
+		"/api/v1/connections?sort=window_download",
+		"/api/v1/connections?window_seconds=0",
+		"/api/v1/connections?window_seconds=301",
 		"/api/v1/dns/cache?limit=0",
 		"/api/v1/dns/cache?limit=1001",
 	} {
@@ -447,5 +472,27 @@ func TestBulkCloseRequiresAnExplicitAllSwitch(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s = %d, want 200: %s", path, recorder.Code, recorder.Body.String())
 		}
+	}
+}
+
+// The window fields are optional on the wire: a listing that did not measure a
+// window must not grow new keys.
+func TestConnectionWindowFieldsJSON(t *testing.T) {
+	upload, download := "3", "4"
+	measured, err := json.Marshal(Connection{ID: "c_1", UploadWindowBytes: &upload, DownloadWindowBytes: &download})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"upload_window_bytes":"3"`, `"download_window_bytes":"4"`} {
+		if !strings.Contains(string(measured), key) {
+			t.Fatalf("connection = %s, want %s", measured, key)
+		}
+	}
+	plain, err := json.Marshal(Connection{ID: "c_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "window_bytes") {
+		t.Fatalf("connection = %s, want no window keys", plain)
 	}
 }

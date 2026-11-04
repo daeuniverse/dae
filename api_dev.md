@@ -593,11 +593,34 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 
 - [x] `GET /api/v1/connections`：从 `SessionManager` 导出活跃 flow（`ConnectionId`、五元组、outbound、sniffed domain、耗时、字节）。
 - [x] `DELETE /api/v1/connections/{connection_id}`：关闭单条 flow（`force`/`interrupt` 语义），需要 session manager 支持按 ID 定位与关闭。
-- [x] 能力：`resources.connections = { available: true, can_close: true, max_page_size }`。
+- [x] 能力：`resources.connections = { available: true, can_close: true, max_page_size, max_window_seconds, sorts }`。
 - [x] 测试：`limit` 截断时报 `truncated` 且 `total_*` 仍为截断前匹配数；`src` 必须是 IP 字面量。
+- [x] 排序与时间窗口（2026-11-05）：`sort` + `order` 在 `limit` 截断**之前**排序，`window_seconds` 让每条连接额外返回 `upload_window_bytes` / `download_window_bytes`（见「P3-8 增补：排序与时间窗口」）。
+
+#### P3-8 增补：排序与时间窗口（2026-11-05）
+
+`GET /api/v1/connections` 新增三个查询参数，端点与既有字段保持兼容（不传时行为不变）：
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `sort` | `download` / `upload` / `total` / `window_download` / `window_upload` / `window_total` | 在 `limit` 截断**之前**对匹配结果排序，因此截断后的列表是真正的「前 N」而不是 `sync.Map` 遍历顺序的前 N 条。未知计数（UDP 流、被 `disable_connection_bytes` 关掉的字节）无论升降序都排在最后 |
+| `order` | `asc` / `desc`（默认 `desc`） | 仅在给了 `sort` 时有意义 |
+| `window_seconds` | 1–300 | 让每条连接额外返回 `upload_window_bytes` / `download_window_bytes`，即**最近 `window_seconds` 秒内**该连接搬运的字节；`window_*` 排序按此值排名 |
+
+响应新增两个字段：列表级 `window: {"seconds": N}`（回显请求的窗口），连接级 `upload_window_bytes` / `download_window_bytes`（十进制字符串，与 `upload_bytes` 同源）。窗口未知时这两个字段**不出现**（不是 `0`），因为「不知道」与「没流量」是两件事。
+
+实现语义与限制：
+
+- **观测式采样，不改数据面**：转发路径仍然只有一次原子加（`control.FlowRuntime.uploadBytes/downloadBytes`）。`cmd/nativeapi_flows_window.go` 的 tracker 只在**有人请求窗口**时按需采样：采样间隔 = `max(1s, 最长窗口 / (容量-1))`，每流保留 16 个基线（约 24 B/样本），无人请求 2 分钟后丢弃全部历史并停止遍历 flow 表。空闲进程为此只多一次定时器唤醒。
+- **精度 = 采样间隔**：`window_seconds=N` 的值是「当前累计 − 至少 N 秒前的基线」，多算的部分不超过一个采样间隔（窗口 ≤ 15s 时为 1s）。请求本身也是一次观测（第一次窗口请求会为每条流落一个基线），所以按固定节奏轮询的前端从**第二次**请求起就有值；只有引擎刚启动、或该窗口第一次被请求时的那条响应里窗口字段为空。
+- **比窗口年轻的流是精确的**：流建立时间晚于 `now - window` 时，窗口增量就等于它的累计值（之前没有流量），所以新连接不需要等一个窗口。
+- **计数器回退视为未知**：同一 ID 的累计值变小说明连接已被替换，此时不报差值。
+- **多窗口共用一个采样节奏**：采样间隔由当前被请求的最长窗口决定（`最长窗口/(容量-1)`，容量 16），因此同时有人请求 300s、有人请求 20s 时，20s 那份的误差上限是 20s 级；单个前端只用一种窗口时误差 ≤ 该窗口的 1/15。
+- **只覆盖 userspace TCP 流**：与 `upload_bytes` / `download_bytes` 完全同源，UDP 流与内核直连流量没有计数（见 P4-8「不做设备级流量统计」）。按设备/域名聚合的排行仍只覆盖部分链路，`window_*` 只是把「自连接到现在的累计量」换成「最近 N 秒的增量」，并没有扩大覆盖面。
+
+前端用法：`GET /api/v1/connections?type=all&detail=full&limit=1000&sort=window_download&order=desc&window_seconds=20`，即可在截断前拿到最近 20 秒下载量最高的连接，再按 `src` / `domain` 聚合出行榜。
 
 #### P3-9 `flows*`
-
 - [x] `GET /api/v1/flows`、`GET /api/v1/flows/{flow_id}`：flow 需要有界历史存储（当前只有活跃 session），字段含 outbound 与字节数。规则命中路径依赖逐 flow trace，当前 `trace` 报 `disabled` + `missing: [not_instrumented]`。
 - [x] 与 `connections` 的分工：`flows` 是短期历史（含已关闭），`connections` 是当前快照。
 - [x] 能力：`resources.flows = { available: true, max_page_size, retention_seconds }`。
@@ -854,7 +877,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 - 不做自动回滚（P4-D7）：人工外部编辑与 API 写并发时，靠 `If-Match` 拒绝而非合并。
 - `config.dae` / `api.dae` 不可写意味着「改监听地址、改 secret、改端口」永远只能人工改文件 + restart；前端必须把这些字段标为只读。
 - `max_bytes = 61440` 对大规则集可能不够：超限时返回 413 而非静默截断；如需更大，应提高 `limits.max_json_body_bytes` 而不是放宽该校验。
-- **不做设备级流量统计**（2026-11-01 决定）：`GET /api/v1/connections` 的 `upload_bytes` / `download_bytes` 只对 userspace TCP 流有值（`control.FlowRuntime.snapshot` 置 `HasBytes: true`），UDP 流与内核直连流量都没有计数。任何按来源/域名聚合出的「流量排行」天生只覆盖一部分链路，补一套覆盖内核直包的 per-device 计量成本极高。因此提供 `api.disable_connection_bytes` 让部署方直接停发这两个字段（恒为 `null`），连接的其余字段不变，而不是去「适配」排行。
+- **不做设备级流量统计**（2026-11-01 决定）：`GET /api/v1/connections` 的 `upload_bytes` / `download_bytes` 只对 userspace TCP 流有值（`control.FlowRuntime.snapshot` 置 `HasBytes: true`），UDP 流与内核直连流量都没有计数。任何按来源/域名聚合出的「流量排行」天生只覆盖一部分链路，补一套覆盖内核直包的 per-device 计量成本极高。因此提供 `api.disable_connection_bytes` 让部署方直接停发这两个字段（恒为 `null`），连接的其余字段不变，而不是去「适配」排行。**2026-11-05 补充**：`window_seconds` 只改变「累计量」到「最近 N 秒增量」的口径，覆盖面仍是同一批 userspace TCP 流；`api.disable_connection_bytes` 开启时窗口字段同样不输出。
 
 ## 4. 端点清单
 
@@ -910,7 +933,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 | GET | `/api/v1/dns/log` | P3-7 | 新增有界 DNS 日志 |
 | GET | `/api/v1/dns/rules` | P3-7 | `dns.routing` 只读导出 |
 | POST | `/api/v1/dns/query` | P3-7 | 主动查询 + 限流 |
-| GET | `/api/v1/connections` | P3-8 | SessionManager 活跃 flow 导出 |
+| GET | `/api/v1/connections` | P3-8 | SessionManager 活跃 flow 导出（`sort` / `order` / `window_seconds` 见 P3-8 增补） |
 | DELETE | `/api/v1/connections/{connection_id}` | P3-8 | 按 ID 关闭 flow |
 | DELETE | `/api/v1/connections` | P3-8 | 批量关闭（`type` / `src` 过滤，或显式 `all=true`；`type=all` 已不再被当作过滤器） |
 | GET | `/api/v1/flows` | P3-9 | flow 有界历史 |

@@ -47,6 +47,10 @@ type nativeAPIProvider struct {
 	// userspace flows carry them, so it can be turned off for deployments that
 	// would rather not publish a partial total.
 	connectionBytes bool
+	// flowWindow keeps the per-flow history a `window_seconds` listing reads;
+	// flowsOnce starts its sampler the first time a caller asks for a window.
+	flowsOnce  sync.Once
+	flowWindow *flowWindowTracker
 	// config edits the managed node source and queues the reloads that follow a
 	// node create or delete.
 	config *configEditor

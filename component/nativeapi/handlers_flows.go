@@ -8,6 +8,7 @@ package nativeapi
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -43,6 +44,12 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter.Limit = limit
+		order, errMsg := parseConnectionOrder(query)
+		if errMsg != "" {
+			writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, errMsg)
+			return
+		}
+		filter.Sort, filter.Order, filter.WindowSeconds = order.sort, order.order, order.windowSeconds
 		list, err := s.connections.ListConnections(r.Context(), filter)
 		if err != nil {
 			s.writeProviderFailure(w, requestID, err)
@@ -79,6 +86,54 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w, requestID, "GET, HEAD, DELETE")
 	}
+}
+
+// connectionSortFields are the ordering keys /connections accepts. The
+// window_* keys rank by the trailing-window bytes and therefore need a window.
+var connectionSortFields = []string{"download", "upload", "total", "window_download", "window_upload", "window_total"}
+
+type connectionOrder struct {
+	sort          string
+	order         string
+	windowSeconds int
+}
+
+func isConnectionSort(field string) bool {
+	for _, candidate := range connectionSortFields {
+		if candidate == field {
+			return true
+		}
+	}
+	return false
+}
+
+// parseConnectionOrder reads `sort`, `order` and `window_seconds`. A non-empty
+// message is the 400 reason; the values are otherwise valid for the provider.
+func parseConnectionOrder(query url.Values) (connectionOrder, string) {
+	parsed := connectionOrder{sort: strings.ToLower(strings.TrimSpace(query.Get("sort"))), order: strings.ToLower(strings.TrimSpace(query.Get("order")))}
+	if parsed.sort != "" && !isConnectionSort(parsed.sort) {
+		return parsed, "sort must be one of " + strings.Join(connectionSortFields, ", ")
+	}
+	switch parsed.order {
+	case "":
+		parsed.order = "desc"
+	case "asc", "desc":
+	default:
+		return parsed, "order must be asc or desc"
+	}
+	raw := query.Get("window_seconds")
+	if raw == "" {
+		if strings.HasPrefix(parsed.sort, "window_") {
+			return parsed, "sort=" + parsed.sort + " requires window_seconds"
+		}
+		return parsed, ""
+	}
+	seconds, ok := parseBoundedPositiveInt(raw, 0)
+	if !ok || seconds > ConnectionWindowMaxSeconds {
+		return parsed, "window_seconds must be an integer in 1.." + strconv.Itoa(ConnectionWindowMaxSeconds)
+	}
+	parsed.windowSeconds = seconds
+	return parsed, ""
 }
 
 func (s *Server) handleConnection(w http.ResponseWriter, r *http.Request) {

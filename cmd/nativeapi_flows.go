@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/daeuniverse/dae/component/nativeapi"
@@ -71,6 +72,18 @@ func (p *nativeAPIProvider) nativeConnectionOf(flow control.SessionFlowSnapshot)
 	return connection
 }
 
+// connectionFlowMatches reports whether a flow passes the request's type and
+// source filters.
+func connectionFlowMatches(flow control.SessionFlowSnapshot, filter nativeapi.ConnectionFilter) bool {
+	if filter.Type != "" && flow.Network != filter.Type {
+		return false
+	}
+	if filter.Src != "" && flow.Src.Addr().String() != filter.Src {
+		return false
+	}
+	return true
+}
+
 // ListConnections returns the live userspace flows.
 func (p *nativeAPIProvider) ListConnections(ctx context.Context, filter nativeapi.ConnectionFilter) (nativeapi.ConnectionList, error) {
 	if err := ctx.Err(); err != nil {
@@ -81,45 +94,142 @@ func (p *nativeAPIProvider) ListConnections(ctx context.Context, filter nativeap
 		return nativeapi.ConnectionList{}, err
 	}
 	status := p.status.snapshot()
-	list := nativeapi.ConnectionList{
-		ObservedAt: time.Now().UTC().Format(time.RFC3339),
-		InstanceID: status.InstanceID,
-		Visibility: "partial",
-		TCP:        []nativeapi.Connection{},
-		UDP:        []nativeapi.Connection{},
+	// Sorting has to see every match before the limit truncates, so the filter
+	// collects first and truncates after ordering.
+	flows := make([]control.SessionFlowSnapshot, 0, 64)
+	var totalTCP, totalUDP uint64
+	for _, flow := range plane.ActiveFlowSnapshots() {
+		if !connectionFlowMatches(flow, filter) {
+			continue
+		}
+		if flow.Network == "udp" {
+			totalUDP++
+		} else {
+			totalTCP++
+		}
+		flows = append(flows, flow)
+	}
+	var windows map[string]flowWindowBytes
+	if filter.WindowSeconds > 0 && p.connectionBytes {
+		windows = p.flowWindows().measure(flows, time.Duration(filter.WindowSeconds)*time.Second)
+	}
+	if filter.Sort != "" {
+		sortConnectionFlows(flows, filter.Sort, filter.Order, windows)
 	}
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = nativeapi.NodeListDefaultLimit
 	}
-	for _, flow := range plane.ActiveFlowSnapshots() {
-		if filter.Type == "tcp" && flow.Network != "tcp" {
-			continue
-		}
-		if filter.Type == "udp" && flow.Network != "udp" {
-			continue
-		}
-		if filter.Src != "" && flow.Src.Addr().String() != filter.Src {
-			continue
-		}
-		connection := p.nativeConnectionOf(flow)
+	tcpFlows, udpFlows, truncated := selectConnectionFlows(flows, limit)
+	list := nativeapi.ConnectionList{
+		ObservedAt: time.Now().UTC().Format(time.RFC3339),
+		InstanceID: status.InstanceID,
+		Visibility: "partial",
+		Truncated:  truncated,
+		TCP:        make([]nativeapi.Connection, 0, len(tcpFlows)),
+		UDP:        make([]nativeapi.Connection, 0, len(udpFlows)),
+		TotalTCP:   totalTCP,
+		TotalUDP:   totalUDP,
+	}
+	if filter.WindowSeconds > 0 {
+		list.Window = &nativeapi.ConnectionWindow{Seconds: filter.WindowSeconds}
+	}
+	for _, flow := range tcpFlows {
+		list.TCP = append(list.TCP, p.connectionOf(flow, windows))
+	}
+	for _, flow := range udpFlows {
+		list.UDP = append(list.UDP, p.connectionOf(flow, windows))
+	}
+	return list, nil
+}
+
+// selectConnectionFlows applies the per-network limit to ordered matches. The
+// limit binds each network separately, which is what `total_tcp` / `total_udp`
+// and `truncated` describe.
+func selectConnectionFlows(flows []control.SessionFlowSnapshot, limit int) (tcpFlows, udpFlows []control.SessionFlowSnapshot, truncated bool) {
+	tcpFlows = make([]control.SessionFlowSnapshot, 0, min(limit, len(flows)))
+	for _, flow := range flows {
 		if flow.Network == "udp" {
-			list.TotalUDP++
-			if len(list.UDP) < limit {
-				list.UDP = append(list.UDP, connection)
+			if len(udpFlows) < limit {
+				udpFlows = append(udpFlows, flow)
 			} else {
-				list.Truncated = true
+				truncated = true
 			}
 			continue
 		}
-		list.TotalTCP++
-		if len(list.TCP) < limit {
-			list.TCP = append(list.TCP, connection)
+		if len(tcpFlows) < limit {
+			tcpFlows = append(tcpFlows, flow)
 		} else {
-			list.Truncated = true
+			truncated = true
 		}
 	}
-	return list, nil
+	return tcpFlows, udpFlows, truncated
+}
+
+// connectionOf projects one flow, attaching the trailing-window bytes when the
+// request measured them. A flow without a baseline keeps the fields absent.
+func (p *nativeAPIProvider) connectionOf(flow control.SessionFlowSnapshot, windows map[string]flowWindowBytes) nativeapi.Connection {
+	connection := p.nativeConnectionOf(flow)
+	// The window bytes derive from the same counters `disable_connection_bytes`
+	// hides, so they go with them.
+	if !p.connectionBytes {
+		return connection
+	}
+	if window, ok := windows[flow.ID]; ok {
+		connection.UploadWindowBytes = nativeAPIUInt64(window.upload)
+		connection.DownloadWindowBytes = nativeAPIUInt64(window.download)
+	}
+	return connection
+}
+
+// sortConnectionFlows orders matches in place. Connections whose counters are
+// unknown sort last in either direction: an unknown byte count is not zero.
+func sortConnectionFlows(flows []control.SessionFlowSnapshot, field, order string, windows map[string]flowWindowBytes) {
+	rank := func(flow control.SessionFlowSnapshot) (uint64, bool) {
+		switch field {
+		case "download":
+			if !flow.HasBytes {
+				return 0, false
+			}
+			return flow.DownloadBytes, true
+		case "upload":
+			if !flow.HasBytes {
+				return 0, false
+			}
+			return flow.UploadBytes, true
+		case "total":
+			if !flow.HasBytes {
+				return 0, false
+			}
+			return flow.UploadBytes + flow.DownloadBytes, true
+		}
+		window, ok := windows[flow.ID]
+		if !ok {
+			return 0, false
+		}
+		switch field {
+		case "window_download":
+			return window.download, true
+		case "window_upload":
+			return window.upload, true
+		default:
+			return window.upload + window.download, true
+		}
+	}
+	sort.SliceStable(flows, func(i, j int) bool {
+		left, leftKnown := rank(flows[i])
+		right, rightKnown := rank(flows[j])
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if !leftKnown || left == right {
+			return false
+		}
+		if order == "asc" {
+			return left < right
+		}
+		return left > right
+	})
 }
 
 // CloseConnection closes one live flow by connection ID.
@@ -152,13 +262,7 @@ func (p *nativeAPIProvider) CloseConnections(ctx context.Context, filter nativea
 	}
 	matched := make([]control.SessionFlowSnapshot, 0, 16)
 	for _, flow := range plane.ActiveFlowSnapshots() {
-		if filter.Type == "tcp" && flow.Network != "tcp" {
-			continue
-		}
-		if filter.Type == "udp" && flow.Network != "udp" {
-			continue
-		}
-		if filter.Src != "" && flow.Src.Addr().String() != filter.Src {
+		if !connectionFlowMatches(flow, filter) {
 			continue
 		}
 		if !all && filter.Type == "" && filter.Src == "" {

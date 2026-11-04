@@ -822,17 +822,27 @@ type Connection struct {
 	DownloadBytes          *string  `json:"download_bytes"`
 	UploadBytesPerSecond   *string  `json:"upload_bytes_per_second"`
 	DownloadBytesPerSecond *string  `json:"download_bytes_per_second"`
+	// Window bytes are present only when the request asked for a window and the
+	// engine has a baseline old enough; an unknown window stays absent.
+	UploadWindowBytes   *string `json:"upload_window_bytes,omitempty"`
+	DownloadWindowBytes *string `json:"download_window_bytes,omitempty"`
+}
+
+// ConnectionWindow echoes the trailing window a connection listing measured.
+type ConnectionWindow struct {
+	Seconds int `json:"seconds"`
 }
 
 type ConnectionList struct {
-	ObservedAt string       `json:"observed_at"`
-	InstanceID string       `json:"instance_id"`
-	Visibility string       `json:"visibility"`
-	Truncated  bool         `json:"truncated"`
-	TCP        []Connection `json:"tcp"`
-	UDP        []Connection `json:"udp"`
-	TotalTCP   uint64       `json:"total_tcp"`
-	TotalUDP   uint64       `json:"total_udp"`
+	ObservedAt string            `json:"observed_at"`
+	InstanceID string            `json:"instance_id"`
+	Visibility string            `json:"visibility"`
+	Truncated  bool              `json:"truncated"`
+	Window     *ConnectionWindow `json:"window,omitempty"`
+	TCP        []Connection      `json:"tcp"`
+	UDP        []Connection      `json:"udp"`
+	TotalTCP   uint64            `json:"total_tcp"`
+	TotalUDP   uint64            `json:"total_udp"`
 }
 
 type BulkCloseResult struct {

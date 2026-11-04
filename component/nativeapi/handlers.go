@@ -251,9 +251,11 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.connections != nil {
 		resources["connections"] = map[string]any{
-			"available":      true,
-			"can_close":      true,
-			"max_bulk_close": NodeListMaxLimit,
+			"available":          true,
+			"can_close":          true,
+			"max_bulk_close":     NodeListMaxLimit,
+			"max_window_seconds": ConnectionWindowMaxSeconds,
+			"sorts":              connectionSortFields,
 		}
 	} else {
 		resources["connections"] = map[string]any{"available": false}
