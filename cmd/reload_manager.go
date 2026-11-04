@@ -383,11 +383,15 @@ func (m *reloadManager) installPreparedDNSHandoffHooks(log *logrus.Logger, curre
 	current.SetPreparedDNSStartHook(hooks.startHook)
 }
 
+// The runtime status is finalised before the busy flags drop. Releasing
+// reloadPending first lets the next request start (and replace the current
+// operation) while this finaliser is still running, so it would complete the
+// wrong operation.
 func (m *reloadManager) finishReloadFailure() {
+	m.finishRuntimeReload(false)
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
 	clearReloadPending(&m.reloadPending)
-	m.finishRuntimeReload(false)
 }
 
 // failPublishedReloadAttempt reports a recoverable post-handoff failure to
@@ -411,16 +415,17 @@ func (m *reloadManager) failReloadAttempt(reloadErr error) {
 		_ = setRunSignalProgress(consts.ReloadError, reloadErr.Error())
 		m.setReloadError(reloadErr)
 	}
+	m.finishRuntimeReload(false)
 	m.reloadActive.Store(false)
 	clearReloadPending(&m.reloadPending)
-	m.finishRuntimeReload(false)
 }
 
 func (m *reloadManager) finishReloadSuccess() {
+	retirementDone := m.takePendingRetirementDone()
+	m.finishRuntimeReload(true)
 	m.reloading.Store(false)
 	m.reloadActive.Store(false)
-	releaseReloadPendingAfterRetirement(&m.reloadPending, m.takePendingRetirementDone())
-	m.finishRuntimeReload(true)
+	releaseReloadPendingAfterRetirement(&m.reloadPending, retirementDone)
 }
 
 // beginReloadTransition reserves the cutover critical section. Shutdown uses
