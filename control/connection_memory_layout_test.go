@@ -79,6 +79,7 @@ func TestConnectionMemoryLayout(t *testing.T) {
 			nil,
 			netip.AddrPort{},
 			netip.AddrPort{},
+			nil,
 		)
 		if err != nil {
 			lifecycleErr = err

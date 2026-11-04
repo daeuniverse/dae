@@ -7,6 +7,7 @@ package control
 
 import (
 	stderrors "errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -124,7 +125,11 @@ func (c *ControlPlane) tcHookAttachments() []EbpfAttachmentSnapshot {
 	if c == nil || c.core == nil {
 		return nil
 	}
+	// tcHooks is swapped during the reload handoff under tcHookMu, so the pointer
+	// has to be read under the same lock.
+	c.core.tcHookMu.Lock()
 	hooks := c.core.tcHooks
+	c.core.tcHookMu.Unlock()
 	if hooks == nil {
 		return nil
 	}
@@ -135,41 +140,47 @@ func (c *ControlPlane) tcHookAttachments() []EbpfAttachmentSnapshot {
 		if group == nil || len(group.entries) == 0 {
 			continue
 		}
-		var spec tcHookSpec
-		for _, entry := range group.entries {
-			if entry != nil {
-				spec = entry.spec
-				break
+		// One hook group holds one entry per priority: tproxy and the direct
+		// observer share an interface, and reporting only the first program hid
+		// the other one from the datapath resource.
+		for priority, entry := range group.entries {
+			if entry == nil {
+				continue
 			}
-		}
-		attachment := EbpfAttachmentSnapshot{
-			Name:  spec.Name,
-			State: "attached",
-		}
-		if attachment.Name == "" && spec.Program != nil {
-			attachment.Name = spec.Program.String()
-		}
-		if key.direction == tcHookIngress {
-			attachment.Direction = "ingress"
-		} else {
-			attachment.Direction = "egress"
-		}
-		if key.scope == tcHookScopeHost {
-			attachment.Kind = "interface"
-			attachment.Interface = spec.Ifname
-			if attachment.Interface == "" {
-				attachment.Interface = strconv.Itoa(key.ifindex)
+			spec := entry.spec
+			attachment := EbpfAttachmentSnapshot{
+				Name:  spec.Name,
+				State: "attached",
 			}
-		} else {
-			attachment.Kind = "other"
-			attachment.Hook = string(key.scope) + "-netns"
+			if attachment.Name == "" && spec.Program != nil {
+				attachment.Name = spec.Program.String()
+			}
+			if key.direction == tcHookIngress {
+				attachment.Direction = "ingress"
+			} else {
+				attachment.Direction = "egress"
+			}
+			if key.scope == tcHookScopeHost {
+				attachment.Kind = "interface"
+				attachment.Interface = spec.Ifname
+				if attachment.Interface == "" {
+					attachment.Interface = strconv.Itoa(key.ifindex)
+				}
+			} else {
+				attachment.Kind = "other"
+				attachment.Hook = string(key.scope) + "-netns"
+			}
+			// The contract requires a non-empty name; fall back to the hook
+			// identity when the spec carried no program name.
+			if attachment.Name == "" {
+				attachment.Name = attachment.Kind + "/" + attachment.Direction
+			}
+			if len(group.entries) > 1 {
+				// Programs sharing one hook are only distinguishable by priority.
+				attachment.Name = fmt.Sprintf("%s@%d", attachment.Name, priority)
+			}
+			attachments = append(attachments, attachment)
 		}
-		// The contract requires a non-empty name; fall back to the hook
-		// identity when the spec carried no program name.
-		if attachment.Name == "" {
-			attachment.Name = attachment.Kind + "/" + attachment.Direction
-		}
-		attachments = append(attachments, attachment)
 	}
 	sort.Slice(attachments, func(i, j int) bool {
 		if attachments[i].Interface != attachments[j].Interface {

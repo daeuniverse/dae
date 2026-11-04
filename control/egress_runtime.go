@@ -40,6 +40,10 @@ type egressRuntime struct {
 type egressBindingKey struct {
 	group  *outbound.DialerGroup
 	dialer *dialer.Dialer
+	// selection is the group's selection revision at the time the snapshot was
+	// taken. A pin or runtime selection change bumps it, so a cached snapshot
+	// carrying the old selection cannot be handed to a new flow.
+	selection uint64
 }
 
 type egressRuntimeActions struct {
@@ -160,7 +164,7 @@ func (r *egressRuntime) acquireEgress(selected *dialer.Dialer, group *outbound.D
 		}
 		r.dialerRefs[selected] = refs + 1
 		if group != nil {
-			key := egressBindingKey{group: group, dialer: selected}
+			key := egressBindingKey{group: group, dialer: selected, selection: group.SelectionRevision()}
 			retainedGroup = r.snapshots[key]
 			if retainedGroup == nil {
 				retainedGroup = group.SnapshotForEstablishedFlow(selected)

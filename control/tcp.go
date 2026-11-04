@@ -294,7 +294,7 @@ func (c *ControlPlane) handleConnWithRoutingResultOwned(
 		ownership.storePendingEgress(rConn)
 	}
 	binding := newTcpFlowBinding(c.PolicyEpoch(), res)
-	flow, err := c.adoptTCPFlow(ctx, ownership, ingressConn, rConn, binding, src, dst)
+	flow, err := c.adoptTCPFlow(ctx, ownership, ingressConn, rConn, binding, src, dst, routingResult)
 	if err != nil {
 		if stderrors.Is(err, ErrSessionManagerClosed) || stderrors.Is(err, errRoutingEpochOwnerUnavailable) {
 			return nil
@@ -302,7 +302,6 @@ func (c *ControlPlane) handleConnWithRoutingResultOwned(
 		return fmt.Errorf("adopt TCP flow runtime: %w", err)
 	}
 	defer closeEstablishedTCPFlow(rConn, flow)
-	flow.SetFlowRoutingMeta(routingResult)
 
 	// Bind the byte recorders to the selected outbound once, so the relay hot
 	// path pays one extra atomic add per record and never re-resolves it. The
@@ -802,7 +801,7 @@ func (c *ControlPlane) handleTCPDnsFastPathOwned(
 		Mark:        flowRoutingResult.Mark,
 		Must:        flowRoutingResult.Must != 0,
 	}}
-	flow, err := c.adoptTCPFlow(ctx, ownership, lConn, nil, binding, src, dst)
+	flow, err := c.adoptTCPFlow(ctx, ownership, lConn, nil, binding, src, dst, flowRoutingResult)
 	if err != nil {
 		return true, fmt.Errorf("adopt TCP DNS flow runtime: %w", err)
 	}

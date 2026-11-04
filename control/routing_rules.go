@@ -8,6 +8,7 @@ package control
 import (
 	"strconv"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -40,9 +41,14 @@ func snapshotConfiguredRules(rules []*config_parser.RoutingRule, fallback config
 		if rule == nil {
 			continue
 		}
+		outbound := rule.Outbound.MarshalString(false, true, true)
 		snapshots = append(snapshots, RoutingRuleSnapshot{
 			Expression: rule.String(false, false, false),
-			Outbound:   rule.Outbound.MarshalString(false, true, true),
+			Outbound:   outbound,
+			// must_rules is the only configured outbound that constrains the rest
+			// of the chain: a match sets the must flag and evaluation continues,
+			// so the rule itself is what carries the must semantics.
+			Must: outbound == consts.OutboundMustRules.String(),
 		})
 	}
 	parsed, err := config.ParseFunctionOrString(fallback)

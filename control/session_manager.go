@@ -388,6 +388,7 @@ func (c *ControlPlane) adoptTCPFlow(
 	binding TcpFlowBinding,
 	src netip.AddrPort,
 	dst netip.AddrPort,
+	routingResult *bpfRoutingResult,
 ) (*FlowRuntime, error) {
 	takeFailedEgress := func() netproxy.Conn {
 		if ownership != nil {
@@ -425,7 +426,7 @@ func (c *ControlPlane) adoptTCPFlow(
 	if egress != nil {
 		runtime = c.egressRuntime
 	}
-	flow, err := manager.adoptTCP(ingress, egress, binding, runtime, keys, src, dst)
+	flow, err := manager.adoptTCP(ingress, egress, binding, runtime, keys, src, dst, routingResult)
 	var drainRelease func()
 	var failedEgress netproxy.Conn
 	if err == nil && ownership != nil {
@@ -489,6 +490,7 @@ func (m *SessionManager) adoptTCP(
 	pinKeys []bpfTuplesKey,
 	src netip.AddrPort,
 	dst netip.AddrPort,
+	routingResult *bpfRoutingResult,
 ) (*FlowRuntime, error) {
 	if m == nil {
 		return nil, ErrSessionManagerClosed
@@ -518,6 +520,10 @@ func (m *SessionManager) adoptTCP(
 		startedAt:   startedAt,
 		id:          flowIDOf("tcp", src, dst, startedAt),
 	}
+	// Record the kernel routing evidence before the flow is reachable from the
+	// API. Writing it after LoadOrStore let a snapshot read the zero values of
+	// these fields while they were being assigned, which is also a data race.
+	flow.SetFlowRoutingMeta(routingResult)
 	if len(pinKeys) > len(flow.pinKeys) {
 		pinKeys = pinKeys[:len(flow.pinKeys)]
 	}
