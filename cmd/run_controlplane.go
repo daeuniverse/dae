@@ -113,6 +113,35 @@ func buildControlPlaneRuntime(
 	)
 }
 
+type subscriptionResult struct {
+	tag      string
+	nodes    []string
+	err      error
+	sub      config.KeyableString
+	elapsed  time.Duration
+	stale    bool
+	fetchErr error
+	payload  []byte
+	cacheKey string
+}
+
+// newSubscriptionResult carries everything the caller needs from Resolve. The
+// payload and cache key must travel with it, or the fetched body is never
+// persisted and an outage empties the groups.
+func newSubscriptionResult(sub config.KeyableString, resolved subscription.Resolution, err error, elapsed time.Duration) subscriptionResult {
+	return subscriptionResult{
+		tag:      resolved.Tag,
+		nodes:    resolved.Nodes,
+		err:      err,
+		sub:      sub,
+		elapsed:  elapsed,
+		stale:    resolved.CacheFallback,
+		fetchErr: resolved.FetchErr,
+		payload:  resolved.Payload,
+		cacheKey: resolved.CacheKey,
+	}
+}
+
 // fetchedSubscription is one successful fetch whose body has not been persisted
 // yet: its links must become dialers first.
 type fetchedSubscription struct {
@@ -292,17 +321,6 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	}
 	// Parallelize subscription resolution to improve startup performance.
 	// Use a semaphore to limit concurrency and avoid overwhelming the network.
-	type subscriptionResult struct {
-		tag      string
-		nodes    []string
-		err      error
-		sub      config.KeyableString
-		elapsed  time.Duration
-		stale    bool
-		fetchErr error
-		payload  []byte
-		cacheKey string
-	}
 	// fetched holds the bodies whose links must become dialers before they may
 	// replace the cached copy. A payload nobody can load would otherwise
 	// destroy the last good copy and empty the groups on the next reload.
@@ -340,15 +358,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 				}
 				client := newHTTPClientForDialer(subDialer, 30*time.Second, conf.Global.SoMarkFromDae, conf.Global.Mptcp)
 				resolved, err := subscription.Resolve(log, &client, filepath.Dir(cfgFile), string(s))
-				results <- subscriptionResult{
-					tag:      resolved.Tag,
-					nodes:    resolved.Nodes,
-					err:      err,
-					sub:      s,
-					elapsed:  time.Since(subStart),
-					stale:    resolved.CacheFallback,
-					fetchErr: resolved.FetchErr,
-				}
+				results <- newSubscriptionResult(s, resolved, err, time.Since(subStart))
 			}(sub)
 		}
 
@@ -358,7 +368,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 			providerKey := subscription.ProviderKey(result.tag, string(result.sub))
 			displayTags[providerKey] = result.tag
 			if result.err != nil {
-				log.Warnf(`failed to resolve subscription "%v" after %v: %v`, result.sub, result.elapsed, result.err)
+				log.Warnf(`failed to resolve subscription "%v" after %v: %v`, common.RedactURL(string(result.sub)), result.elapsed, common.RedactInlineURLs(result.err.Error()))
 				resolvingfailed = true
 				subscriptionHealthUpdates[providerKey] = result.err
 			} else {
@@ -462,7 +472,8 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// The observer is only useful while the API serves its counters. Loading it
 	// with api.enabled=false pays the datapath cost for nobody, so the switch is
 	// the conjunction of both settings.
-	control.ConfigureDirectStats(conf.Api.Enabled && conf.Api.DirectStats)
+	control.ConfigureDnsLog(conf.Api.Enabled)
+	control.ConfigureDirectStats(control.ResolveDirectStats(log, conf.Api.Enabled && conf.Api.DirectStats))
 	c, err = buildControlPlaneRuntime(
 		ctx,
 		log,
@@ -503,7 +514,14 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 			return nil, fmt.Errorf(`refusing reload: subscription %q resolved links but no usable node; keeping the current generation`, rejected[0])
 		}
 	}
-	publishSubscriptionHealth(subscriptionHealthUpdates)
+	// A reload candidate may still be rejected after this build, so its outcome
+	// is shown only once the generation is published. Startup has no previous
+	// generation to protect and publishes at once.
+	if isReloadBuild {
+		c.SetOnPublished(func() { publishSubscriptionHealth(subscriptionHealthUpdates) })
+	} else {
+		publishSubscriptionHealth(subscriptionHealthUpdates)
+	}
 	log.Infof("Control plane built in %v", time.Since(stageStart))
 	log.Infof("Total startup time: %v", time.Since(startTime))
 

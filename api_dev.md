@@ -83,7 +83,7 @@ api {
 | `ui` | string | 空 | 已构建前端的绝对目录；在 `/ui/` 无凭证托管，非 `/api` 路径 302 到此。目录不可用（缺失/无 `index.html`）只 warning，不阻断启动 |
 | `config_write` | bool | `false` | 允许 API 替换可写配置源、补丁组配置、增删 inline 节点；置 true 时 `secret` 必须非空，且配置目录必须符合受管布局（P4-1） |
 | `disable_connection_bytes` | bool | `false` | 为 true 时 `/connections` 不再输出 `upload_bytes` / `download_bytes`（恒 `null`），其余字段不变 |
-| `direct_stats` | bool | `false` | 只读 eBPF 直连观测开关；开启后 `GET /runtime/direct-stats` 有数，并把内核直连链路字节并入 `runtime/outbounds` 的 builtin `direct` 行 |
+| `direct_stats` | bool | `false` | 只读 eBPF 直连观测开关；**需要 TCX（Linux ≥ 6.6），内核不支持时记警告并自动关闭**；开启后 `GET /runtime/direct-stats` 有数，并把内核直连链路字节并入 `runtime/outbounds` 的 builtin `direct` 行 |
 
 设计约束：
 
@@ -1381,6 +1381,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 ### 11.1 直连观测（`api.direct_stats`）
 
+- **2026-11-04 修订（第三轮审查）**：内核不支持 TCX 时 `api.direct_stats` 被警告并关闭（`control.ResolveDirectStats`）；bridge 上入口只挂成员端口（master 仅保留 WAN 出口钩子），避免路由流量在端口与 master 各计一次；WAN 方向的无路由决策 `conn_state` 不再遮住后续回包的 NAT 索引匹配；NAT 索引的 value 记录 LAN 源地址，另一台主机复用同一端点/端口时标记为歧义并停止计数直到过期（300s）。
 - **载体**：`control/kern/direct_stats.c`（TC，观察专用）+ `control/direct_stats.go`。只读 `conn_state_map`，不写 mark，不改变转发；优先级 1，早于 tproxy 优先级 2 运行，因此能看到「判直连之后被 OK 掉」的包。
 - **挂载点**：只在 dae 已经绑定的 WAN/LAN 接口上挂（`_bindLan` / `_bindWan`）；加载失败只 warning，绝不影响转发。
 - **角色专用程序**（2026-11-03 优化）：LAN-only 接口只看客户端上传，WAN-only 只看回包，双角色接口用合并程序，避免对看不到的方向做无用的 tuple / NAT 索引查询。
@@ -1505,6 +1506,14 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 - **订阅覆盖**：`httptest` 返回 `bogus://invalid` 或含 `https://` 的登录页，调用真实 `subscription.Resolve`，断言 `CacheFallback` 与缓存内容。
 - **eBPF padding**：按 `go:generate` 同参数 `clang -O2 -target bpfel -I kern/headers -DMAX_MATCH_SET_LEN=1024 -D__TARGET_ARCH_x86` 编译 `control/kern/direct_stats.c`，`llvm-objdump -d` 检查 lookup 前写入是否覆盖 40 字节。
 - **组补丁缩进**：直接调用 `writeGroupConfigOptions`，比对输出；输入含缩进的 `group { sel { ... } }` 与 `check_interval: 1500ms`。
+
+### 12.8a 第三轮审查（PR #1156 review 5768199026）修复摘要
+
+- 订阅：解析结果写入缓存；全部不可解析时保留旧服务器列表；无 tag 订阅沿用展示 tag；失败日志对 URL 脱敏。
+- 直连观测：不支持 TCX（内核 < 6.6）时无条件关闭并告警；bridge 仅在成员口挂 ingress；NAT 回包不再被跳过；同一键出现多个内网主机时标记歧义不计数；reload 期间总量不回落。
+- reload：所有 reload（信号/CLI/API）在清除 reloading 状态前先执行收尾。
+- API：`POST /probes` 幂等键在受理后提交；请求体拒绝尾随 JSON；`api.enabled=false` 时 DNS 日志不记录；DNS 日志游标绑定 store epoch，环形缓冲下一条被淘汰时返回 410；`network: both` 单次原子写、值未变不增加 revision；订阅健康仅在新代被接受后发布。
+- 未覆盖：eBPF 改动未在 root/netns 下实际加载验证。
 
 ### 12.9 doona 面板复核（2026-11-04，demo.daeuniverse.org）
 

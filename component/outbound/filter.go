@@ -54,9 +54,12 @@ const (
 )
 
 type DialerSet struct {
-	log          *logrus.Logger
-	dialers      []*dialer.Dialer
-	nodeToTagMap map[*dialer.Dialer]string
+	log     *logrus.Logger
+	dialers []*dialer.Dialer
+	// nodeToTagMap holds the display tag subtag() matches; nodeToProviderMap the
+	// provider identity used for ownership and parse accounting.
+	nodeToTagMap      map[*dialer.Dialer]string
+	nodeToProviderMap map[*dialer.Dialer]string
 
 	// parseFailures counts nodes that were dropped because their link could
 	// not be parsed into a dialer. They are not routable, so the count is a
@@ -155,9 +158,10 @@ func (s *DialerSet) logParseFailureSummary() {
 // subscription has always been for those rules.
 func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOption, tagToNodeList map[string][]string, displayTags map[string]string) *DialerSet {
 	s := &DialerSet{
-		log:          option.Log,
-		dialers:      make([]*dialer.Dialer, 0),
-		nodeToTagMap: make(map[*dialer.Dialer]string),
+		log:               option.Log,
+		dialers:           make([]*dialer.Dialer, 0),
+		nodeToTagMap:      make(map[*dialer.Dialer]string),
+		nodeToProviderMap: make(map[*dialer.Dialer]string),
 	}
 	for providerTag, nodes := range tagToNodeList {
 		displayTag := providerTag
@@ -172,7 +176,8 @@ func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOpti
 			}
 			d.SetProviderTag(providerTag)
 			s.dialers = append(s.dialers, d)
-			s.nodeToTagMap[d] = providerTag
+			s.nodeToTagMap[d] = displayTag
+			s.nodeToProviderMap[d] = providerTag
 		}
 	}
 	s.logParseFailureSummary()
@@ -199,7 +204,7 @@ func (s *DialerSet) ParseReport(tagToNodeList map[string][]string) map[string]No
 		return report
 	}
 	parsed := make(map[string]int, len(report))
-	for _, tag := range s.nodeToTagMap {
+	for _, tag := range s.nodeToProviderMap {
 		parsed[tag]++
 	}
 	for tag, count := range report {

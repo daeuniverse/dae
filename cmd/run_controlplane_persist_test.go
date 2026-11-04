@@ -6,11 +6,15 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/config"
 	"github.com/sirupsen/logrus"
 )
 
@@ -49,5 +53,34 @@ func TestPersistFetchedSubscriptionsKeepsCopyWhenNoLinkParsed(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(persistDir, "subB.sub")); err != nil {
 		t.Fatalf("subB payload was not persisted: %v", err)
+	}
+}
+
+// A successful Resolve must end as a cache file in persist.d: the payload and
+// cache key travel through subscriptionResult into persistFetchedSubscriptions.
+func TestResolvedSubscriptionIsPersisted(t *testing.T) {
+	const body = "vmess://c2VydmVyOjQ0Mwo=#n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	sub := "subA:" + srv.URL
+	resolved, err := subscription.Resolve(logrus.New(), srv.Client(), dir, sub)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	result := newSubscriptionResult(config.KeyableString(sub), resolved, err, 0)
+	if len(result.payload) == 0 || result.cacheKey == "" {
+		t.Fatalf("payload/cacheKey dropped: %q %q", result.payload, result.cacheKey)
+	}
+	fetched := []fetchedSubscription{{tag: result.cacheKey, cacheKey: result.cacheKey, payload: result.payload}}
+	if _, err := persistFetchedSubscriptions(logrus.New(), dir, fetched, nil); err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "persist.d", result.cacheKey+".sub"))
+	if err != nil || len(got) == 0 {
+		t.Fatalf("cache file missing: %v", err)
 	}
 }

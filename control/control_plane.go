@@ -46,8 +46,12 @@ import (
 )
 
 type ControlPlane struct {
-	log          *logrus.Logger
-	directDialer netproxy.Dialer
+	// onPublished runs once when this generation becomes the active one. It
+	// carries state that must only be shown for a generation that was accepted.
+	onPublished     func()
+	onPublishedOnce sync.Once
+	log             *logrus.Logger
+	directDialer    netproxy.Dialer
 
 	runtimeStats *runtimeStats
 	memoryStats  *memoryStats
