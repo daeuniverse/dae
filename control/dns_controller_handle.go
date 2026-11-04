@@ -520,7 +520,7 @@ func (c *DnsController) serveFromRespCacheWithRefresh_(dnsMessage *dnsmessage.Ms
 	// A cache hit answers a real query, so it belongs in the DNS log like an
 	// upstream answer does. Returning before recording left /dns/log blind to
 	// every hit, which made a pure cache-serving resolver look idle.
-	if len(dnsMessage.Question) > 0 {
+	if dnsLogActive() && len(dnsMessage.Question) > 0 {
 		status := "NOERROR"
 		var answers []dnsmessage.RR
 		packed := new(dnsmessage.Msg)

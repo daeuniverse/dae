@@ -301,15 +301,17 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 	now := time.Now()
 	instance := p.status.snapshot().InstanceID
 	bind := pageCursorBind(name, filter.Types, filter.Src, filter.Limit)
-	after := ""
+	// The epoch ties a cursor to this log: a replaced store restarts the ids.
+	kind := "dns_log:" + strconv.FormatUint(controller.DnsLogEpoch(), 10)
+	after, expectNext := "", ""
 	if filter.Cursor != "" {
-		parsed, err := decodePageCursor(instance, "dns_log", bind, filter.Cursor, now)
+		var err error
+		after, expectNext, err = decodePageCursorNext(instance, kind, bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsLogList{}, err
 		}
-		after = parsed
 	}
-	page, next, err := pageAfter(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, filter.Limit, instance, "dns_log", bind, now)
+	page, next, err := pageAfterExpecting(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, expectNext, filter.Limit, instance, kind, bind, now)
 	if err != nil {
 		return nativeapi.DnsLogList{}, err
 	}

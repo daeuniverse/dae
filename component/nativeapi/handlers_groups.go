@@ -279,6 +279,12 @@ func decodeLimitedJSON(r *http.Request, limit int, target any) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
+	return decodeSingleJSON(decoder, target)
+}
+
+// decodeSingleJSON decodes one JSON value and refuses anything after it, so a
+// body such as `{...}{...}` or `{...} junk` is not silently half-accepted.
+func decodeSingleJSON(decoder *json.Decoder, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}

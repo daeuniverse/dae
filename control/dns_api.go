@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -65,8 +66,23 @@ func dnsEntryIDOfKey(key string) string {
 	return "de_" + hex.EncodeToString(sum[:8])
 }
 
+// dnsLogDisabled turns the DNS log off. The log only feeds the API, so with the
+// API off every query would pay for a record nobody can read. The zero value
+// keeps it on, so a controller built outside the daemon still records.
+var dnsLogDisabled atomic.Bool
+
+// ConfigureDnsLog sets whether DNS queries are recorded. The control plane
+// calls it from api.enabled before each build.
+func ConfigureDnsLog(enabled bool) {
+	dnsLogDisabled.Store(!enabled)
+}
+
+func dnsLogActive() bool {
+	return !dnsLogDisabled.Load()
+}
+
 func (c *DnsController) recordDnsLog(question dnsmessage.Question, req *udpRequest, status string, cached bool, upstream string, answers []dnsmessage.RR, elapsed time.Duration) {
-	if c == nil || c.dnsControllerStore == nil || question.Name == "" {
+	if !dnsLogActive() || c == nil || c.dnsControllerStore == nil || question.Name == "" {
 		return
 	}
 	src := ""
@@ -100,6 +116,14 @@ func (c *DnsController) recordDnsLog(question dnsmessage.Question, req *udpReque
 	}
 	store.dnsLogRing[store.dnsLogStart] = record
 	store.dnsLogStart = (store.dnsLogStart + 1) % len(store.dnsLogRing)
+}
+
+// DnsLogEpoch identifies the store behind the DNS log.
+func (c *DnsController) DnsLogEpoch() uint64 {
+	if c == nil || c.dnsControllerStore == nil {
+		return 0
+	}
+	return c.dnsControllerStore.dnsLogEpoch
 }
 
 // DnsLogRecords returns the retained DNS log records, newest last.

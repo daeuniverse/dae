@@ -134,6 +134,9 @@ func (o *nativeAPIOperations) StartProbe(ctx context.Context, request nativeapi.
 		o.probes.release()
 		return accepted, nil
 	}
+	// The work is queued, so the reserved key becomes replayable. Without this
+	// a retry with the same key answered 409 until the process restarted.
+	o.store.CommitReplayKey(idempotencyKey)
 	go o.runProbe(accepted.OperationID, request)
 	return accepted, nil
 }

@@ -474,13 +474,14 @@ func (p *nativeAPIProvider) SetGroupSelection(ctx context.Context, groupID, memb
 	var revision uint64
 	switch network {
 	case "both":
-		// Both transports are switched, but only the last increment is observed:
-		// the revision is a monotonic counter, so the value after the second
-		// write is the current one.
-		if _, err = apply(outbound.SelectionNetworkTCP); err != nil {
-			return nativeapi.GroupSelectionResult{}, selectionError(err)
+		// One call switches both transports under a single revision, so a
+		// failure cannot leave one of them switched.
+		if canSelect {
+			revision, err = item.group.SetSelectionBoth(index)
+		} else {
+			revision, err = item.group.SetOverrideBoth(index)
 		}
-		if revision, err = apply(outbound.SelectionNetworkUDP); err != nil {
+		if err != nil {
 			return nativeapi.GroupSelectionResult{}, selectionError(err)
 		}
 	case "tcp":
@@ -553,10 +554,8 @@ func (p *nativeAPIProvider) ClearGroupSelection(ctx context.Context, groupID, ne
 	}
 	switch network {
 	case "both":
-		if err := clearSlot(outbound.SelectionNetworkTCP); err != nil {
-			return nativeapi.GroupOverrideCleared{}, selectionError(err)
-		}
-		if err := clearSlot(outbound.SelectionNetworkUDP); err != nil {
+		var err error
+		if revision, err = item.group.ClearOverrideBoth(); err != nil {
 			return nativeapi.GroupOverrideCleared{}, selectionError(err)
 		}
 	case "tcp":

@@ -96,7 +96,7 @@ func validateEmptyJSONBody(r *http.Request, limit int) error {
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, int64(limit)+1))
 	var body map[string]json.RawMessage
-	if err := decoder.Decode(&body); err != nil {
+	if err := decodeSingleJSON(decoder, &body); err != nil {
 		return errInvalidJSONBody
 	}
 	if len(body) != 0 {

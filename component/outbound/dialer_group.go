@@ -310,7 +310,12 @@ func (g *DialerGroup) SetSelection(network SelectionNetwork, index int) (uint64,
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
-	g.selectionIndexes[slot].Store(int64(index))
+	// Re-selecting the current member changes nothing, so it must not bump the
+	// revision: every revision adds an egress snapshot per group that lives
+	// until the next reload.
+	if g.selectionIndexes[slot].Swap(int64(index)) == int64(index) {
+		return g.selectionRevision.Load(), nil
+	}
 	return g.selectionRevision.Add(1), nil
 }
 
@@ -356,7 +361,51 @@ func (g *DialerGroup) SetOverride(network SelectionNetwork, index int) (uint64, 
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
-	g.overrideIndexes[slot].Store(int64(index))
+	if g.overrideIndexes[slot].Swap(int64(index)) == int64(index) {
+		return g.selectionRevision.Load(), nil
+	}
+	return g.selectionRevision.Add(1), nil
+}
+
+// SetSelectionBoth switches TCP and UDP together and bumps the revision once,
+// so the pair is observed under one revision and a failure cannot leave one
+// transport switched.
+func (g *DialerGroup) SetSelectionBoth(index int) (uint64, error) {
+	return g.setBoth(g.selectionIndexes[:], index)
+}
+
+// SetOverrideBoth pins TCP and UDP together, with the same single revision.
+func (g *DialerGroup) SetOverrideBoth(index int) (uint64, error) {
+	return g.setBoth(g.overrideIndexes[:], index)
+}
+
+func (g *DialerGroup) setBoth(slots []atomic.Int64, index int) (uint64, error) {
+	if g == nil {
+		return 0, fmt.Errorf("nil dialer group")
+	}
+	if index < 0 || index >= len(g.Dialers) {
+		return 0, fmt.Errorf("selected dialer index is out of range")
+	}
+	changed := false
+	for i := range slots {
+		if slots[i].Swap(int64(index)) != int64(index) {
+			changed = true
+		}
+	}
+	if !changed {
+		return g.selectionRevision.Load(), nil
+	}
+	return g.selectionRevision.Add(1), nil
+}
+
+// ClearOverrideBoth drops the pin of both transports under one revision.
+func (g *DialerGroup) ClearOverrideBoth() (uint64, error) {
+	if g == nil {
+		return 0, fmt.Errorf("nil dialer group")
+	}
+	for i := range g.overrideIndexes {
+		g.overrideIndexes[i].Store(-1)
+	}
 	return g.selectionRevision.Add(1), nil
 }
 

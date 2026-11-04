@@ -29,6 +29,7 @@ type pageCursor struct {
 	Instance  string `json:"i"`
 	Bind      string `json:"b"`
 	After     string `json:"a"`
+	Next      string `json:"n,omitempty"`
 	ExpiresAt int64  `json:"e"`
 }
 
@@ -50,7 +51,15 @@ func pageCursorBind(parts ...any) string {
 }
 
 func encodePageCursor(instance, kind, bind, after string, now time.Time) string {
+	return encodePageCursorNext(instance, kind, bind, after, "", now)
+}
+
+// encodePageCursorNext also records the key of the first record of the next
+// page, which lets a ring-backed walk notice that records were evicted between
+// the two pages.
+func encodePageCursorNext(instance, kind, bind, after, next string, now time.Time) string {
 	payload, err := json.Marshal(pageCursor{
+		Next:      next,
 		Kind:      kind,
 		Instance:  instance,
 		Bind:      bind,
@@ -70,22 +79,27 @@ func encodePageCursor(instance, kind, bind, after string, now time.Time) string 
 // is recognised and reports 400 invalid_request instead; the client has to
 // restart the walk to change either.
 func decodePageCursor(instance, kind, bind, value string, now time.Time) (string, error) {
+	after, _, err := decodePageCursorNext(instance, kind, bind, value, now)
+	return after, err
+}
+
+func decodePageCursorNext(instance, kind, bind, value string, now time.Time) (string, string, error) {
 	expired := nativeapi.NewAPIError(410, "snapshot_expired", "the page snapshot expired; restart the page walk")
 	raw, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
-		return "", expired
+		return "", "", expired
 	}
 	var cursor pageCursor
 	if err := json.Unmarshal(raw, &cursor); err != nil {
-		return "", expired
+		return "", "", expired
 	}
 	if cursor.Kind != kind || cursor.Instance != instance || cursor.After == "" || cursor.ExpiresAt < now.Unix() {
-		return "", expired
+		return "", "", expired
 	}
 	if cursor.Bind != bind {
-		return "", nativeapi.NewAPIError(400, "invalid_request", "the cursor was issued for different filters or a different limit; restart the page walk")
+		return "", "", nativeapi.NewAPIError(400, "invalid_request", "the cursor was issued for different filters or a different limit; restart the page walk")
 	}
-	return cursor.After, nil
+	return cursor.After, cursor.Next, nil
 }
 
 // pageAfter returns the items that follow the anchor in a stable, ordered list.
@@ -99,6 +113,14 @@ func decodePageCursor(instance, kind, bind, value string, now time.Time) (string
 // snapshot - the record was evicted - so the caller reports 410 rather than
 // silently skipping the gap.
 func pageAfter[T any](items []T, keyOf func(T) string, after string, limit int, instance, kind, bind string, now time.Time) ([]T, *string, error) {
+	return pageAfterExpecting(items, keyOf, after, "", limit, instance, kind, bind, now)
+}
+
+// pageAfterExpecting is pageAfter for a ring-backed list. expectNext is the key
+// the previous page promised would come next; if the anchor survives but that
+// record does not, records were evicted in between and the walk would silently
+// skip them, so it reports 410 like a lost anchor.
+func pageAfterExpecting[T any](items []T, keyOf func(T) string, after, expectNext string, limit int, instance, kind, bind string, now time.Time) ([]T, *string, error) {
 	start := 0
 	if after != "" {
 		found := false
@@ -116,13 +138,16 @@ func pageAfter[T any](items []T, keyOf func(T) string, after string, limit int, 
 	if start > len(items) {
 		start = len(items)
 	}
+	if expectNext != "" && (start >= len(items) || keyOf(items[start]) != expectNext) {
+		return nil, nil, nativeapi.NewAPIError(410, "snapshot_expired", "the page snapshot expired; restart the page walk")
+	}
 	end := start + limit
 	if end > len(items) {
 		end = len(items)
 	}
 	var next *string
 	if end < len(items) && end > start {
-		value := encodePageCursor(instance, kind, bind, keyOf(items[end-1]), now)
+		value := encodePageCursorNext(instance, kind, bind, keyOf(items[end-1]), keyOf(items[end]), now)
 		next = &value
 	}
 	return items[start:end], next, nil

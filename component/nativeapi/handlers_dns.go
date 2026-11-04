@@ -195,7 +195,7 @@ func (s *Server) handleDnsQuery(w http.ResponseWriter, r *http.Request) {
 	var request DnsQueryRequest
 	decoder := json.NewDecoder(io.LimitReader(r.Body, int64(s.cfg.MaxJSONBodyBytes)+1))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeSingleJSON(decoder, &request); err != nil {
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body")
 		return
 	}

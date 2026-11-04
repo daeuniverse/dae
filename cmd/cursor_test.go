@@ -137,3 +137,16 @@ func TestPageAfterRejectsAnEvictedAnchor(t *testing.T) {
 		t.Fatalf("err = %v, want 410 snapshot_expired", err)
 	}
 }
+
+// A walk whose next record was evicted while the anchor survived must expire
+// instead of silently skipping the gap.
+func TestPageAfterExpectingDetectsEvictedNext(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	key := func(s string) string { return s }
+	if _, _, err := pageAfterExpecting([]string{"c", "b", "a"}, key, "c", "b", 1, "i", "dns_log", "bind", now); err != nil {
+		t.Fatalf("intact walk failed: %v", err)
+	}
+	if _, _, err := pageAfterExpecting([]string{"c", "a"}, key, "c", "b", 1, "i", "dns_log", "bind", now); err == nil {
+		t.Fatal("evicted next record was not reported")
+	}
+}
