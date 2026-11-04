@@ -209,9 +209,15 @@ func Resolve(log *logrus.Logger, client *http.Client, configDir string, subscrip
 	/// Parse url.
 	u, err := url.Parse(subscription)
 	if err != nil {
-		return result, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
+		// The parser error quotes the link it could not parse, and a
+		// subscription URL is a credential. Redact both the message and the
+		// error text instead of wrapping the raw error, which would carry the
+		// URL into every caller and every log line that prints it.
+		redacted := common.RedactURL(subscription)
+		return result, fmt.Errorf("failed to parse subscription %s: %s",
+			redacted, strings.ReplaceAll(err.Error(), subscription, redacted))
 	}
-	log.Debugf("ResolveSubscription: %v", subscription)
+	log.Debugf("ResolveSubscription: %v", common.RedactURL(subscription))
 
 	switch u.Scheme {
 	case "file":
@@ -249,13 +255,16 @@ func Resolve(log *logrus.Logger, client *http.Client, configDir string, subscrip
 		}
 		fetchErr = verr
 	}
+	// A transport error quotes the request URL, so the failure text carries the
+	// subscription token. Redact before it reaches a log line or an API status.
+	fetchErr = fmt.Errorf("%s", common.RedactInlineURLs(fetchErr.Error()))
 
 	// The fetch failed or the payload was unusable. Keep the last good nodes
 	// instead of dropping them: the generation already runs on them, and a
 	// failed refresh must not cut proxied traffic.
 	if cached, cacheErr := os.ReadFile(cachePath); cacheErr == nil {
 		if cachedNodes, resolveErr := resolveSubscriptionNodes(log, cached); resolveErr == nil {
-			log.Warnf(`failed to refresh subscription "%v": %v; keeping %d cached node(s)`, subscription, fetchErr, len(cachedNodes))
+			log.Warnf(`failed to refresh subscription "%v": %v; keeping %d cached node(s)`, common.RedactURL(subscription), fetchErr, len(cachedNodes))
 			result.Nodes = cachedNodes
 			result.CacheFallback = true
 			result.FetchErr = fetchErr
