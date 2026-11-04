@@ -40,12 +40,14 @@ func managedModuleFixture(name string) string {
 type fakeConfigOperations struct {
 	calls int
 	err   error
+	// resolver records the body the last queued operation would report, so a
+	// test can assert it was installed with the operation rather than after it.
+	resolver func() (any, error)
 }
 
-func (f *fakeConfigOperations) SetResultResolver(string, func() (any, error)) {}
-
-func (f *fakeConfigOperations) StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error) {
+func (f *fakeConfigOperations) StartOperationWithResult(ctx context.Context, kind, scope, idempotencyKey string, resolve func() (any, error)) (nativeapi.OperationAccepted, error) {
 	f.calls++
+	f.resolver = resolve
 	if f.err != nil {
 		return nativeapi.OperationAccepted{}, f.err
 	}

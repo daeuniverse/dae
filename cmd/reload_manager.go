@@ -51,6 +51,11 @@ type reloadManager struct {
 	transitionActive             bool
 	shutdownStarted              bool
 	activeRetirement             *activeRetirementTask
+	// configReadMu serializes configuration reads against API writes. A write
+	// replaces the bytes on disk and then queues the reload; if the reload read
+	// the tree in between the write and its rollback, it published the candidate
+	// the caller was told was rejected.
+	configReadMu sync.Mutex
 
 	observerMu     sync.Mutex
 	reloadObserver func(operationID string, started bool, success bool, reloadErr error)

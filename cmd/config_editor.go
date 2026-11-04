@@ -54,10 +54,11 @@ var apiSecretPattern = regexp.MustCompile(`(?s)(\bapi\s*\{(?:#[^\n]*\n|'[^'\n]*'
 // operationQueue is the subset of the operations adapter a write path needs: it
 // queues the reload and says what the completed operation must report.
 type operationQueue interface {
-	StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error)
-	// SetResultResolver registers the resource body a completed operation
-	// reports, replacing the reload's generation ids.
-	SetResultResolver(operationID string, resolver func() (any, error))
+	// StartOperation creates the operation, installs the result resolver and
+	// queues the reload in one step. A resolver registered afterwards could miss
+	// an operation that completed in the meantime, and the operation would then
+	// report the reload's generation ids instead of the written resource.
+	StartOperationWithResult(ctx context.Context, kind, scope, idempotencyKey string, resolve func() (any, error)) (nativeapi.OperationAccepted, error)
 }
 
 type configEditorIdem struct {
@@ -75,6 +76,7 @@ type configEditor struct {
 	apiAtStart config.Api
 	enabled    bool
 	operations operationQueue
+	reload     *reloadManager
 	busy       func() bool
 	generation func() string
 	idem       map[string]configEditorIdem
@@ -107,6 +109,7 @@ func newConfigEditor(cfgFile string, api config.Api, operations operationQueue,
 		apiAtStart: api,
 		enabled:    api.ConfigWrite && operations != nil,
 		operations: operations,
+		reload:     reload,
 		idem:       map[string]configEditorIdem{},
 	}
 	e.busy = func() bool {
@@ -479,8 +482,15 @@ func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativea
 			}
 			target, ok = byAbs[abs]
 			if !ok && abs != e.mainPath && filepath.Base(abs) != hiddenConfigSourceName {
-				// A new include file: validate it as a candidate path.
-				target, ok = configSourceFile{abs: abs, id: sourceIDFor(r.Path)}, true
+				// A path the include tree does not reach can never be part of the
+				// merged candidate: the merger reads files by globbing the disk, so
+				// accepting the bytes here validated nothing and silently dropped
+				// whatever the caller submitted.
+				return nil, nil, nil, &nativeapi.APIError{
+					Status:  422,
+					Code:    "unsupported_value",
+					Message: "the path is not part of the include tree, so its content cannot be validated",
+				}
 			}
 		default:
 			// Request-local ID, defaulted exactly as the contract describes.
@@ -696,6 +706,9 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	if fi, statErr := os.Stat(target.abs); statErr == nil {
 		mode = fi.Mode().Perm()
 	}
+	// Hold the read lock across write, queue and rollback (see lockConfigRead).
+	unlockRead := e.lockConfigRead()
+	defer unlockRead()
 	if err := writeFileAtomic(target.abs+".bak", target.raw, 0o600); err != nil {
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config backup: %w", err)
 	}
@@ -703,7 +716,10 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
 	}
 
-	accepted, err := e.operations.StartOperation(ctx, nativeapi.OperationKindReload, target.abs, req.IdempotencyKey)
+	// The scope carries the candidate bytes, not just the path: reusing a key for
+	// different content describes different work, and replaying the first answer
+	// would report a write that never happened for the second caller.
+	accepted, err := e.operations.StartOperationWithResult(ctx, nativeapi.OperationKindReload, target.abs+"\x00"+rawSHA256([]byte(req.Content)), req.IdempotencyKey, nil)
 	if err != nil {
 		// The reload never started, so the on-disk file must return to its
 		// previous state; otherwise the next reload would apply a rejected edit.
@@ -726,6 +742,13 @@ func (e *configEditor) guardConfigWrite(target configSourceFile, content []byte)
 	if e.apiAtStart.Secret != "" && strings.Contains(string(content), e.apiAtStart.Secret) {
 		return permissionDenied("source must not contain the listener secret", "listener_secret_in_content")
 	}
+	// The listener block belongs to api.dae. A second api section elsewhere
+	// leaves the effective settings unchanged, so the value comparison lets it
+	// through, but the layout check then sees one section declared by two files
+	// and refuses every later write, including the one that would repair it.
+	if !e.isApiSource(target.abs) && declaresApiSection(string(content)) {
+		return permissionDenied("the api section may only be declared in the listener source", "listener_secret_in_content")
+	}
 	if e.busy() {
 		return &nativeapi.APIError{
 			Status: 409, Code: "state_conflict", Message: "a reload is already in progress",
@@ -740,6 +763,37 @@ func (e *configEditor) guardConfigWrite(target configSourceFile, content []byte)
 		}
 	}
 	return nil
+}
+
+func (e *configEditor) isApiSource(abs string) bool {
+	return filepath.Base(abs) == hiddenConfigSourceName
+}
+
+// declaresApiSection reports whether a source text declares an api block.
+func declaresApiSection(content string) bool {
+	sections, err := config_parser.Parse(content)
+	if err != nil {
+		// An unparsable candidate is rejected by the validation that follows.
+		return false
+	}
+	for _, section := range sections {
+		if section.Name == "api" {
+			return true
+		}
+	}
+	return false
+}
+
+// lockConfigRead blocks the reload worker from reading the tree until the write
+// either queued its operation or restored the previous bytes. Without it a
+// reload could read the candidate between the write and the rollback and
+// publish an edit the caller was told was rejected.
+func (e *configEditor) lockConfigRead() func() {
+	if e.reload == nil {
+		return func() {}
+	}
+	e.reload.configReadMu.Lock()
+	return e.reload.configReadMu.Unlock
 }
 
 // guardApiUnchanged refuses a candidate that would move the process-owned

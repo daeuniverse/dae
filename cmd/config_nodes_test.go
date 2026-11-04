@@ -113,7 +113,7 @@ func TestConfigCreateNodeWritesManagedModule(t *testing.T) {
 	accepted, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{
 		Name: "mock-01",
 		Link: mockLink,
-	}, emptyNodeIndex)
+	}, emptyNodeIndex, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestConfigCreateNodeRejectsDuplicateName(t *testing.T) {
 
 	// A name a subscription delivered is taken too: names are global.
 	index := nodeIndexWith(map[string]nodeRef{"n_sub": {Name: "mock-01", ProviderID: "p_abc"}})
-	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, index)
+	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, index, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
 		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
 	}
@@ -158,7 +158,7 @@ func TestConfigCreateNodeRejectsUnsupportedLink(t *testing.T) {
 	e := newFlowEditor(t, main, true, ops)
 	before := flowSource(t, e, "config.d/node.dae")
 
-	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: "vless://not-a-real-node"}, emptyNodeIndex)
+	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: "vless://not-a-real-node"}, emptyNodeIndex, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 422 || apiErr.Code != "unsupported_value" {
 		t.Fatalf("got %d %s, want 422 unsupported_value", apiErr.Status, apiErr.Code)
 	}
@@ -174,7 +174,7 @@ func TestConfigCreateNodeNeedsWritesEnabled(t *testing.T) {
 	main, _ := newManagedTree(t)
 	e := newFlowEditor(t, main, false, &fakeConfigOperations{})
 
-	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex)
+	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
 		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
 	}
@@ -186,13 +186,13 @@ func TestConfigDeleteNodeRemovesLine(t *testing.T) {
 	e := newFlowEditor(t, main, true, ops)
 	target := flowSource(t, e, "config.d/node.dae")
 
-	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex); err != nil {
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
 		t.Fatal(err)
 	}
 	ops.calls = 0
 
 	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
-	outcome, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_mock"}, index)
+	outcome, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_mock"}, index, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestConfigDeleteNodeRejectsProviderOwnedNode(t *testing.T) {
 	e := newFlowEditor(t, main, true, &fakeConfigOperations{})
 
 	index := nodeIndexWith(map[string]nodeRef{"n_sub": {Name: "sub-01", ProviderID: "p_abc"}})
-	_, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_sub"}, index)
+	_, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_sub"}, index, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
 		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
 	}
@@ -227,7 +227,7 @@ func TestConfigDeleteNodeRejectsProviderNodeSharingInlineName(t *testing.T) {
 	ops := &fakeConfigOperations{}
 	e := newFlowEditor(t, main, true, ops)
 
-	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "dup", Link: mockLink}, emptyNodeIndex); err != nil {
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "dup", Link: mockLink}, emptyNodeIndex, nil); err != nil {
 		t.Fatal(err)
 	}
 	ops.calls = 0
@@ -235,7 +235,7 @@ func TestConfigDeleteNodeRejectsProviderNodeSharingInlineName(t *testing.T) {
 	before, _ := os.ReadFile(target.abs)
 
 	index := nodeIndexWith(map[string]nodeRef{"n_sub": {Name: "dup", ProviderID: "p_sub"}})
-	_, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_sub"}, index)
+	_, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_sub"}, index, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
 		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
 	}
@@ -253,7 +253,7 @@ func TestConfigDeleteNodeIsIdempotentForUnknownID(t *testing.T) {
 	ops := &fakeConfigOperations{}
 	e := newFlowEditor(t, main, true, ops)
 
-	outcome, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_missing"}, emptyNodeIndex)
+	outcome, err := e.DeleteNode(context.Background(), nativeapi.NodeDeleteRequest{NodeID: "n_missing"}, emptyNodeIndex, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestConfigNodeWriteSharesTheConfigPutGuards(t *testing.T) {
 	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{
 		Name: "leak",
 		Link: "socks5://flow-secret@192.0.2.10:1080",
-	}, emptyNodeIndex)
+	}, emptyNodeIndex, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 403 || apiErr.Code != "permission_denied" {
 		t.Fatalf("got %d %s, want 403 permission_denied", apiErr.Status, apiErr.Code)
 	}
@@ -360,7 +360,7 @@ func TestConfigNodeWriteSharesTheConfigPutGuards(t *testing.T) {
 	_, err = e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{
 		Name: "racy",
 		Link: mockLink,
-	}, emptyNodeIndex)
+	}, emptyNodeIndex, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
 		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
 	}
@@ -373,7 +373,7 @@ func TestConfigNodeCreateRefusesAnApiSectionInjection(t *testing.T) {
 	ops := &fakeConfigOperations{}
 	e := newFlowEditor(t, main, true, ops)
 	injected := "socks5://192.0.2.10:1080\n}\napi {\n  secret: 'own'\n}\nnode {"
-	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "evil", Link: injected}, emptyNodeIndex)
+	_, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "evil", Link: injected}, emptyNodeIndex, nil)
 	if apiErr := flowAPIError(t, err); apiErr.Status != 422 {
 		t.Fatalf("got %d %s, want 422 unsupported_value", apiErr.Status, apiErr.Code)
 	}

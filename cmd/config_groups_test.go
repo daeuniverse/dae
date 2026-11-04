@@ -110,7 +110,7 @@ func TestConfigEditorPatchGroupConfigCommitsAndReplays(t *testing.T) {
 		}},
 	}
 	current := nativeapi.GroupConfigDocument{Config: nativeapi.GroupConfig{CheckInterval: intPointer(30)}}
-	_, _, accepted, err := editor.PatchGroupConfig(context.Background(), "proxy", current, revision, request)
+	_, _, accepted, err := editor.PatchGroupConfig(context.Background(), "proxy", current, revision, request, nil)
 	require.NoError(t, err)
 	require.NotNil(t, accepted)
 	require.Equal(t, nativeapi.OperationKindGroupUpdate, accepted.Kind)
@@ -120,7 +120,7 @@ func TestConfigEditorPatchGroupConfigCommitsAndReplays(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(updated), "check_interval: 60s")
 
-	_, _, replay, err := editor.PatchGroupConfig(context.Background(), "proxy", current, revision, request)
+	_, _, replay, err := editor.PatchGroupConfig(context.Background(), "proxy", current, revision, request, nil)
 	require.NoError(t, err)
 	require.Equal(t, accepted.OperationID, replay.OperationID)
 	require.Equal(t, 1, operations.calls)
@@ -129,12 +129,12 @@ func TestConfigEditorPatchGroupConfigCommitsAndReplays(t *testing.T) {
 	conflict.Operations = []nativeapi.GroupConfigPatchOperation{{
 		Op: "replace", Path: "/config/check_interval", Value: groupPatchJSON(90),
 	}}
-	_, _, _, err = editor.PatchGroupConfig(context.Background(), "proxy", current, revision, conflict)
+	_, _, _, err = editor.PatchGroupConfig(context.Background(), "proxy", current, revision, conflict, nil)
 	require.Equal(t, "idempotency_conflict", flowAPIError(t, err).Code)
 
 	stale := request
 	stale.IdempotencyKey = "group-patch-2"
-	_, _, _, err = editor.PatchGroupConfig(context.Background(), "proxy", current, revision, stale)
+	_, _, _, err = editor.PatchGroupConfig(context.Background(), "proxy", current, revision, stale, nil)
 	require.Equal(t, "stale_revision", flowAPIError(t, err).Code)
 	require.Equal(t, 1, operations.calls)
 }

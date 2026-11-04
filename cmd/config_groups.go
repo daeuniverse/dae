@@ -39,6 +39,7 @@ func (e *configEditor) PatchGroupConfig(
 	current nativeapi.GroupConfigDocument,
 	activeRevision string,
 	request nativeapi.GroupConfigPatchRequest,
+	resolve func() (any, error),
 ) (nativeapi.GroupConfigDocument, string, *nativeapi.OperationAccepted, error) {
 	if err := ctx.Err(); err != nil {
 		return nativeapi.GroupConfigDocument{}, "", nil, err
@@ -102,7 +103,7 @@ func (e *configEditor) PatchGroupConfig(
 	}
 	accepted, err := e.commitSourceUpdate(
 		ctx, target, content, nativeapi.OperationKindGroupUpdate,
-		request.IdempotencyKey, fingerprint,
+		request.IdempotencyKey, fingerprint, resolve,
 	)
 	if err != nil {
 		return nativeapi.GroupConfigDocument{}, "", nil, err

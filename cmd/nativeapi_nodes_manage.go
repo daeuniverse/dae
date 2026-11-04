@@ -28,21 +28,19 @@ func (p *nativeAPIProvider) CreateNode(ctx context.Context, req nativeapi.NodeCr
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.OperationAccepted{}, errNodeManagementUnavailable
 	}
-	accepted, err := p.config.CreateNode(ctx, req, p.nodeIndex)
-	if err != nil {
-		return nativeapi.OperationAccepted{}, err
-	}
 	// The contract asks a node_create operation for the Node it produced. The ID
 	// is derived the same way /nodes derives it, so the completed operation can
-	// read the resource from the generation the reload publishes.
-	p.operations.SetResultResolver(accepted.OperationID, func() (any, error) {
-		node, err := p.GetNode(context.Background(), nodeIDOfLink(req.Link, req.Name))
-		if err != nil {
-			return nil, err
+	// read the resource from the generation the reload publishes. The resolver is
+	// handed to the editor so it is installed with the operation, not after.
+	nodeID := nodeIDOfLink(req.Link, req.Name)
+	resolve := func() (any, error) {
+		node, nodeErr := p.GetNode(context.Background(), nodeID)
+		if nodeErr != nil {
+			return nil, nodeErr
 		}
 		return *node, nil
-	})
-	return accepted, nil
+	}
+	return p.config.CreateNode(ctx, req, p.nodeIndex, resolve)
 }
 
 // DeleteNode removes one inline node. A node a subscription delivered is
@@ -54,15 +52,13 @@ func (p *nativeAPIProvider) DeleteNode(ctx context.Context, req nativeapi.NodeDe
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.NodeDeleteOutcome{}, errNodeManagementUnavailable
 	}
-	outcome, err := p.config.DeleteNode(ctx, req, p.nodeIndex)
+	var resolve func() (any, error)
+	resolve = func() (any, error) {
+		return nativeapi.NodeDeleteResult{Deleted: 1}, nil
+	}
+	outcome, err := p.config.DeleteNode(ctx, req, p.nodeIndex, resolve)
 	if err != nil {
 		return nativeapi.NodeDeleteOutcome{}, err
-	}
-	if outcome.Accepted.OperationID != "" {
-		deleted := outcome.Deleted
-		p.operations.SetResultResolver(outcome.Accepted.OperationID, func() (any, error) {
-			return nativeapi.NodeDeleteResult{Deleted: deleted}, nil
-		})
 	}
 	return outcome, nil
 }
@@ -132,15 +128,12 @@ func (p *nativeAPIProvider) RefreshProvider(ctx context.Context, req nativeapi.P
 			Status: 404, Code: "capability_not_supported", Message: "This provider cannot be refreshed",
 		}
 	}
-	accepted, err := p.operations.StartOperation(ctx, nativeapi.OperationKindProviderRefresh, req.ProviderID, req.IdempotencyKey)
-	if err != nil {
-		return nativeapi.OperationAccepted{}, err
-	}
 	// A refresh reports the Provider whose nodes the reload replaced. A fetch
 	// that fell back to the cached copy still reloads successfully, so the
 	// failure has to travel through the resolver as an error; otherwise the
 	// operation would report success for a refresh that changed nothing.
-	p.operations.SetResultResolver(accepted.OperationID, func() (any, error) {
+	// The resolver is installed with the operation rather than after it.
+	return p.operations.StartOperationWithResult(ctx, nativeapi.OperationKindProviderRefresh, req.ProviderID, req.IdempotencyKey, func() (any, error) {
 		provider, err := p.GetProvider(context.Background(), req.ProviderID)
 		if err != nil {
 			return nil, err
@@ -150,7 +143,6 @@ func (p *nativeAPIProvider) RefreshProvider(ctx context.Context, req nativeapi.P
 		}
 		return *provider, nil
 	})
-	return accepted, nil
 }
 
 // providerRefreshError reports why a queued refresh did not load new nodes. The

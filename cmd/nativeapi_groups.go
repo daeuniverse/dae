@@ -430,17 +430,13 @@ func (p *nativeAPIProvider) PatchGroupConfig(
 	}
 	document, revision, accepted, err := p.config.PatchGroupConfig(
 		ctx, item.group.Name, current, active.configRevision(), request,
-	)
-	if err != nil || accepted == nil {
-		return document, revision, accepted, err
-	}
-	if resolver, ok := p.operations.(interface {
-		SetResultResolver(string, func() (any, error))
-	}); ok {
-		resolver.SetResultResolver(accepted.OperationID, func() (any, error) {
+		func() (any, error) {
 			updated, _, getErr := p.GetGroupConfig(context.Background(), groupID)
 			return updated, getErr
-		})
+		},
+	)
+	if err != nil {
+		return document, revision, accepted, err
 	}
 	return document, revision, accepted, nil
 }

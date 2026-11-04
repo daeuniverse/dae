@@ -75,9 +75,10 @@ func validateNodeLink(ctx context.Context, log *logrus.Logger, link string) (str
 	}
 	d, err := dialer.NewFromLinkContext(ctx, &dialer.GlobalOption{Log: log}, dialer.InstanceOption{DisableCheck: true}, link, "")
 	if err != nil {
-		// Parser errors quote the link, which carries the credential. Keep that
-		// detail in the log and answer with a reason that names only the scheme.
-		log.WithError(err).WithField("scheme", scheme).Debugln("node link rejected")
+		// Every parser error quotes the link, and the link carries the credential.
+		// Log only the scheme; the caller answers with a reason that names the
+		// scheme as well, so nothing echoes the link back to the client either.
+		log.WithField("scheme", scheme).Debugln("node link rejected")
 		return scheme, fmt.Errorf("the share link is not a supported %s link", scheme)
 	}
 	if d == nil {
@@ -289,7 +290,7 @@ func inlineNodeNames(text string) map[string]bool {
 // commitSourceUpdate validates content as the next configuration, backs up the
 // current bytes and queues kind. A failed start restores the previous bytes,
 // because no operation will ever read the rejected edit.
-func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSourceFile, content []byte, kind, idempotencyKey, fingerprint string) (nativeapi.OperationAccepted, error) {
+func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSourceFile, content []byte, kind, idempotencyKey, fingerprint string, resolve func() (any, error)) (nativeapi.OperationAccepted, error) {
 	if err := e.guardConfigWrite(target, content); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
@@ -307,13 +308,18 @@ func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSour
 	if fi, statErr := os.Stat(target.abs); statErr == nil {
 		mode = fi.Mode().Perm()
 	}
+	// Hold the read lock across write, queue and rollback: the reload worker
+	// must not read this candidate while it is still owned by an admission that
+	// may reject it.
+	unlockRead := e.lockConfigRead()
+	defer unlockRead()
 	if err := writeFileAtomic(target.abs+".bak", target.raw, 0o600); err != nil {
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config backup: %w", err)
 	}
 	if err := writeFileAtomic(target.abs, content, mode); err != nil {
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
 	}
-	accepted, err := e.operations.StartOperation(ctx, kind, target.abs+"\x00"+fingerprint, idempotencyKey)
+	accepted, err := e.operations.StartOperationWithResult(ctx, kind, target.abs+"\x00"+fingerprint, idempotencyKey, resolve)
 	if err != nil {
 		if restoreErr := writeFileAtomic(target.abs, target.raw, mode); restoreErr != nil {
 			e.log.WithError(restoreErr).Error("failed to restore config source after rejected operation")
@@ -347,8 +353,10 @@ func (e *configEditor) replayNode(key, fingerprint string) (nativeapi.OperationA
 	return prev.accepted, true, nil
 }
 
-// CreateNode writes one inline node into the managed node source.
-func (e *configEditor) CreateNode(ctx context.Context, req nativeapi.NodeCreateRequest, index nodeIndexFunc) (nativeapi.OperationAccepted, error) {
+// CreateNode writes one inline node into the managed node source. resolve turns
+// the completed operation into the Node body the contract asks for; it is
+// installed with the operation, before the reload is queued.
+func (e *configEditor) CreateNode(ctx context.Context, req nativeapi.NodeCreateRequest, index nodeIndexFunc, resolve func() (any, error)) (nativeapi.OperationAccepted, error) {
 	if err := ctx.Err(); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
@@ -393,7 +401,7 @@ func (e *configEditor) CreateNode(ctx context.Context, req nativeapi.NodeCreateR
 			Status: 422, Code: "unsupported_value", Message: err.Error(),
 		}
 	}
-	return e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeCreate, req.IdempotencyKey, fingerprint)
+	return e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeCreate, req.IdempotencyKey, fingerprint, resolve)
 }
 
 // rejectDuplicateNodeName enforces global uniqueness: a name may not collide
@@ -419,8 +427,9 @@ func (e *configEditor) rejectDuplicateNodeName(index nodeIndexFunc, target confi
 	return nil
 }
 
-// DeleteNode removes one inline node from the managed node source.
-func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteRequest, index nodeIndexFunc) (nativeapi.NodeDeleteOutcome, error) {
+// DeleteNode removes one inline node from the managed node source. resolve
+// reports the deletion count for the completed operation.
+func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteRequest, index nodeIndexFunc, resolve func() (any, error)) (nativeapi.NodeDeleteOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return nativeapi.NodeDeleteOutcome{}, err
 	}
@@ -472,7 +481,7 @@ func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteR
 		// node the file no longer defines (an edit that has not reloaded yet).
 		return nativeapi.NodeDeleteOutcome{}, nil
 	}
-	accepted, err = e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeDelete, req.IdempotencyKey, fingerprint)
+	accepted, err = e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeDelete, req.IdempotencyKey, fingerprint, resolve)
 	if err != nil {
 		return nativeapi.NodeDeleteOutcome{}, err
 	}

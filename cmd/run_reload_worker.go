@@ -117,7 +117,12 @@ func (w *reloadWorker) run() {
 			newConf.Api = w.conf.Api
 		} else {
 			var includes []string
+			// The read lock pairs with the API write path: a candidate that is
+			// still being admitted must not be read here, because the write rolls
+			// it back when the operation is rejected.
+			w.reloadManager.configReadMu.Lock()
 			newConf, includes, err = readConfig(cfgFile)
+			w.reloadManager.configReadMu.Unlock()
 			if err != nil {
 				w.log.WithFields(logrus.Fields{
 					"err": err,
