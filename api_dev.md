@@ -1419,6 +1419,8 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 **2026-11-04：除 12.7 的两条流程项外均已修复**，勾选项后附实现方式与测试位置；`api_dev.md` 本身按计划在功能收尾时删除。
 
+**2026-11-04 第三轮（13 节）：13.2–13.11、13.15 已修并以单测覆盖；13.9 的 `check_interval` 读投影、13.13、13.14 核查后确认为契约/设计约束，不改；13.7 的 decoder 收敛与 13.12 的分页语义明确延后（见 13.16）。**
+
 ### 12.1 优先级总览
 
 | 优先级 | 项目 | 后果 |
@@ -1516,3 +1518,224 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 - **分流 → 记录**：对 `coverage.kernel_block` 做 A/B 对照——字段存在时显示「6 个范围未完整观测」，人为删掉后变成「5 个」。说明面板确实读这个必填字段（缺失时不崩溃，但覆盖范围少一项）；恢复后一致。
 
 限制：fixture 是手写数据，所以这一轮只验证「契约 / UI 兼容」，不验证后端判断逻辑（刷新失败→操作失败、组补丁 422、游标 400/410）；那些由 12.2–12.4 的单测覆盖。
+
+## 13. 收尾工作（2026-11-04 第三轮审查核验）
+
+对 `issuecomment-6611606984`（Glassyiris，静态对抗审查，针对 `2b57ce1`）逐条核验。该轮比第二轮更深：多为并发所有权、写路径事务性与协议正确性，`2b57ce1..31e98b9` 的 6 个提交只覆盖了其中约四组，其余按下方清单处理。`- [ ]` 表示未修复。
+
+### 13.1 优先级总览
+
+| 优先级 | 项目 | 后果 |
+|---|---|---|
+| P0 | 冷启动 DNS 查询 nil 解引用（13.2） | 接口 500（handler 级 panic） |
+| P0 | 操作受理/重放/结果注册非事务（13.3） | 客户端拿到被拒工作的 202；结果退化成 reload 结果 |
+| P0 | 配置写入与 reload 读盘竞态（13.4） | 被拒的编辑仍可能生效 |
+| P0 | 凭据进日志（13.5） | 订阅 token 泄漏到 `/logs` |
+| P1 | 探针把 DNS-over-TCP 发到 443、不校验回包（13.6） | 探针结果不可信、槽位被占死 |
+| P1 | CORS 缺 PATCH、HEAD 进 SSE 死循环（13.7） | 面板无法 PATCH 组配置；HEAD 占住连接 |
+| P1 | `connection_id` 过滤丢弃全部、summary 缺字段（13.8） | 契约资源不可用 |
+| P1 | 组/规则投影：`Must` 恒 false、`check_interval` 读投影截断（13.9） | 客户端读到错误配置 |
+| P1 | DNS 视图/日志四处投影缺陷（13.10） | 诊断信息缺失或类型错 |
+| P1 | pin 快照缺 revision、flow 发布竞态（13.11） | 新 UDP 端点继承过期 pin；流字段读到空 |
+| P2 | 分页环滚动、SSE 生命周期（13.12） | 静默漏记录；shutdown 后仍收订阅 |
+| P2 | `direct_stats` 反向索引仍缺本地身份（13.13） | 已留痕的刻意偏离，仅剩记录 |
+| P3 | `api_dev.md` 落位、拆 PR（12.7） | 合并阻塞 |
+
+### 13.2 P0：冷启动 DNS 查询 panic
+
+- [x] `control/utils.go` 的 `Route` 无判空解引用 `routingResult.Mac`（已修：nil 时 MAC/pname/dscp 取零值，即「无内核元数据」；DNS 主动查询路径 `dnsRequestSnapshotFromUDPRequest(nil)` 本就是 nil-safe，panic 消除）：`control/dns_api.go:322,331` 传 nil `req` → `DnsRequestSnapshot.routingResultForRoute()` 返 nil（`control/dns_resolve.go:42-45`）→ `control/control_plane.go:2954` 传入 → `control/utils.go:35` `copy(mac16[10:], routingResult.Mac[:])` panic。`net/http` 兜住 handler panic，不会 daemon 级崩溃，但 `/dns/query` 对未命中缓存的目标必然 500。
+
+### 13.3 P0：操作受理、重放、结果注册的事务性
+
+- [x] **重放早于入队**（已修：store 拆三阶段 `Accept`（占键，不发布 replay）/ `CommitReplayKey`（入队成功后发布）/ `ReleaseReplayKey`（释放）；窗口内的同键请求返回 409 而不再是 202；测试 `TestReservedKeyIsNotReplayableUntilQueued`）：`cmd/nativeapi_operations.go:79` 先 `store.Accept`（写 replay 表、返回 202），`:94` 才 `queueReloadRequest`；并发同键请求在窗口内拿到 202，而原请求随后被 `409` 拒绝。
+- [x] **结果 resolver 在入队之后安装**（已修：新增 `StartOperationWithResult(ctx, kind, scope, key, resolve)`，resolver 与入队同一临界区安装，provider 在调用前排好 resolver；`SetResultResolver` 不再由调用方事后调用）：`cmd/nativeapi_nodes_manage.go:38`/`:63`/`:143`、`cmd/nativeapi_groups.go:440` 都在 `StartOperation` 返回后才 `SetResultResolver`；窗口内完成的写操作会退化成 `ReloadResult`。
+- [x] **编辑器 replay 表比操作存储小且 scope 不含内容**（已修：上限改为复用 `MaxOperationReplayKeys` 同源常量，`PUT /config/sources` 的 scope 并入候选内容哈希，与节点写一致）：`cmd/config_editor.go:41` 256 vs `component/nativeapi/provider.go:22` 1024；`:706` 的 scope 只有 `target.abs`，所以不同内容同键不会 409（store 侧会重放旧 accepted）。
+
+### 13.4 P0：配置写入与 reload 读盘的竞态
+
+- [x] **配置写入与 reload 读盘竞态**（已修：`reloadManager` 新增 `configReadMu`，两条写路径持锁跨「写盘 + 入队 + 回滚」，reload worker 持锁跨 `readConfig`；见 `configEditor.lockConfigRead`）：`guardConfigWrite`（`cmd/config_editor.go:680`）只采样一次 `reloadActive || reloadPending`，随后 `:702` 写盘；`cmd/run_reload_worker.go:120` 的 `readConfig` 无锁，可在"写盘 → 回滚"之间读到候选字节并发布，编辑器收到 409 却已生效。
+- [x] **向非 `api.dae` 源追加 `api {}` 会自锁**（已修：`guardConfigWrite` 拒绝在非监听源声明 api 段，返回 `403 listener_secret_in_content`；测试 `TestDeclaresApiSection`、`TestGuardConfigWriteRejectsSecondApiSection`）：向 `global.dae` 追加空 `api {}` 引入第二个 section origin（`config/config_merger.go:138-144`），下次布局校验判 `layout_unmanaged`（`cmd/config_layout.go:88-98`），此后所有写被 403 永久拒绝。
+  - 仍存余量：若磁盘上已经处于双 origin 状态，API 侧无法自愈（需人工改文件），这点按 P4-D7「不做自动修复」保留。
+
+### 13.5 P0：凭据进日志
+
+- [x] **三处泄漏**（已修：新增 `common.RedactURL` / `common.RedactInlineURLs`；节点链接日志不再带 parser 错误文本，订阅日志与传输错误统一脱敏，`/logs` 投影补 userinfo；测试 `common/redact_test.go`）：`cmd/config_nodes.go:80` 的 parser 错误文本含完整链接；`common/subscription/subscription.go:214/258` 打印订阅 URL；`cmd/nativeapi_observability.go:260-267` 只脱敏 bearer 与 query，`scheme://user:pass@host` 的 userinfo 原样保留。
+
+### 13.6 P1：探针协议与槽位
+
+- [x] **探针把 DNS 发到 443**（已修：新增 `probeDNSAddress`，DNS 探针固定 53 端口，TCP 只是同一端口上的长度前缀分帧；测试 `TestProbeDNSSpeaksDNSOnBothTransports`）：`probeDNS` 在 `transport=tcp` 时经 `probeDialAddress` 得到 `1.1.1.1:443`，再把 DNS-over-TCP 帧（2 字节长度前缀）写到 443（`cmd/nativeapi_probes.go:375,437,464`）。
+- [x] **回包不校验 ID/question**（已修：`parseDNSReply` 比对 transaction ID 与 question，header-only 回包不再算健康；测试 `TestParseDNSReplyRequiresMatchingIDAndQuestion`）：`parseDNSReply`（`:507-516`）只校验 `parser.Start` 与 `header.Response`，任意回包都算健康。
+- [x] **槽位无 watchdog**（已修：新增 `probeConnRegistry`，context 结束时主动 `Close` 探针打开的连接，即使传输层把 deadline 当 no-op，阻塞的读也会被中断以释放槽位；每次探测都登记连接）：`probeMaxActiveJobs = 4`（`component/nativeapi/provider.go:141`），只依赖协作式 ctx 与 `SetDeadline`；对不响应 ctx 的传输，4 个卡死探针可永久占满槽位。
+
+### 13.7 P1：HTTP 边界
+
+- [x] **CORS 缺 PATCH**（已修：预检白名单与 `Access-Control-Allow-Methods` 均含 `PATCH`；`TestCorsAndOriginChecks` 的写入方法循环加入 PATCH）：`component/nativeapi/middleware.go:110` 与 `:129`，而 `PATCH /groups/{id}/config` 是真实路由 → 跨域面板的组配置补丁必然被预检拒绝。
+- [x] **HEAD 进 SSE 死循环**（已修：`/logs` 与 `/events` 只接受 GET，HEAD 返回 405 + `Allow: GET`；测试 `TestStreamEndpointsRejectHead`）：`component/nativeapi/handlers_logs_events.go:95-96,118`，`isReadMethod` 含 HEAD。
+- [ ] lifecycle/DNS/probe 解码器缺完整 bounded-document 校验（超限拒绝 + 尾部多余数据拒绝），完整实现见 `handlers_groups.go:269-292` 的 `decodeLimitedJSON`。
+  - **未做（明确延后）**：需要把三处 decoder 统一到 `decodeLimitedJSON`，属接口收敛而非单点修复；已记入 13.12 之后的待办。
+
+### 13.8 P1：flows 资源
+
+- [x] **`connection_id` 过滤无条件丢弃**（已修：按 `connectionIDOfFlow(entry.ID)` 精确匹配；测试 `TestFlowSummaryCarriesConnectionID`）：`cmd/nativeapi_flows.go:277-279`，任何带该参数的请求都返回空。
+- [x] **summary 不填 `ConnectionID`**（已修：`nativeFlowSummary` 用与 `/connections` 相同的派生规则填 `connection_id`）：`nativeFlowSummary`（`:214-247`）不填 `ConnectionID`，而契约 `flows.yaml:1064` 列为必填。
+
+### 13.9 P1：组与规则投影
+
+- [x] **规则投影不填 `Must`**（已修：`outbound == must_rules` 时置 `Must`，与真实匹配器「设 must 并继续」的语义同源）：`control/routing_rules.go:43-46` 只填 `Expression`/`Outbound`，`/rules` 的 `must` 恒 false。
+- [~] **`check_interval` 读投影截断为整秒**（**纠正：按契约保留，不改**）：契约 `api/nodes-groups.yaml:1088-1091` 把该字段定义为「整秒、最小 1」，`1500ms` 本就无法在契约表示；会造成文件被静默改写的是**写回**，已在 12.4 按 diff 门控修好。读投影 `int(CheckInterval / time.Second)` 符合契约。
+
+### 13.10 P1：DNS 视图与日志
+
+- [x] **`CloneForReload` 丢 `Domain`/`QType`**（已修：clone 字面量补上两个不可变字段）：`control/dns_cache.go:207-214`。
+- [x] **缓存命中不记日志**（已修：`serveFromRespCacheWithRefresh_` 在写出缓存应答后 `recordDnsLog`（`cached: true`，带 rcode/answers/upstream），`/dns/log` 不再只看得见未命中）：`control/dns_controller_handle.go:336-339`。
+- [x] **命名 upstream 被导成 `asis`/`accept`**（已修：请求规则的非关键字 action 导出为 `upstream` 并带上游名，`nativeDnsUpstreamOf` 兼容「名字在 outbound 上」与「名字在参数里」两种写法；测试 `TestNativeDnsActionNamesTheUpstream`、`TestNativeDnsRulesProjectConfiguredForm`）：`cmd/nativeapi_dns.go:363-379`。
+- [x] **源 IP 与 `IP:port` 直接比较**（已修：新增 `dnsLogSrcMatches` 按 host 比较；测试 `TestDnsLogSrcMatchesIPLiteral`）：`cmd/nativeapi_dns.go:271` vs `control/dns_api.go:74`。
+
+### 13.11 P1：运行时选择与流快照
+
+- [x] **pin 快照缓存缺 revision**（已修：`egressBindingKey` 增加 `selection` 字段取 `group.SelectionRevision()`，`SetOverride`/`ClearOverride`/`SetSelection` 都会推进它，新流不会拿到携带旧 pin 的快照）：`control/egress_runtime.go:163-168`。
+- [x] **flow 发布早于字段写入**（已修：`routingResult` 从 `ControlPlane.adoptTCPFlow` → `SessionManager.adoptTCP` 传入，元数据在 `LoadOrStore` 之前写入，快照读到的已发布对象字段恒定）：`control/session_manager.go:536`、`control/tcp.go:305`、`control/session_flows.go:65`。
+- [x] **datapath 快照**（已修：读 `tcHooks` 指针时持 `tcHookMu`；多优先级 hook 组遍历全部 `entries` 并输出，共享 hook 的 program 名附 `@priority` 保持唯一；`:139-143` 只输出一个 program 的问题消除）：`control/datapath_snapshot.go:127`。
+
+### 13.12 P2：分页与 SSE 生命周期
+
+- [ ] `pageAfter` 只看锚点存活（`cmd/cursor.go:112`），环滚动 `[3,2,1] → [4,3,2]` 时静默跳过已淘汰的未读记录。
+  - **未做（明确延后）**：需要在游标 bind 里带存储的淘汰计数或代次，并定义「淘汰即 410」的语义；会影响现有游标兼容性，单独一轮做。
+- [ ] DNS log 的 `dl_<seq>` 在 store 重建后归零，而游标绑定只有 filters/limit + 进程级 `instance_id`。
+  - **未做（明确延后）**：同上，需要 store 级代次标识参与 bind。
+- [x] **SSE ready checkpoint 立即被拒**（已修：把「最老保留帧的前一帧」识别为合法边界，`stream.ready` 发出的 ID 重连可续传；测试 `TestFrameHubReadyCheckpointResumes`）：`cmd/nativeapi_observability.go:198`。
+- [x] **慢客户端淘汰不中断阻塞写**（已修：`streamFrames` 每帧 `SetWriteDeadline`，写出阻塞会报错退出，释放 handler 与 `max_clients` 槽位；常量 `SSEWriteTimeoutSeconds`）：慢客户端淘汰只关通道，写入仍是同步阻塞的 `w.Write`。
+- [x] **`closeAll` 后仍可注册**（已修：`frameHub` 增加 `closed` 状态，`open` 在关闭后返回 503；测试 `TestFrameHubRefusesStreamsAfterClose`）：`frameHub` 无 `closed` 状态，晚到 handler 的订阅可逃过 shutdown 清扫。
+
+### 13.13 P2：直连观测的刻意偏离
+
+- [~] `direct_reverse_map` 键仍缺本地地址（**保留不改**）：NAT 回包的本地地址是 SNAT 地址，record 时不可知，加上会永不匹配；误计由 300s 时效 + LRU 控制。
+
+### 13.14 P3：Revision 语义
+
+- [~] **禁用的 `api` 段不进 `Config.Revision`**（**核查后不改**）：`enabled: false` 时 `api` 段的每个字段都被 `enabled && x` 门控（`direct_stats`、`config_write` 均如此），监听器也不存在，因此该段的改动没有运行时影响，不产生 revision 变化是正确的；若将来 `enabled: false` 下出现有运行时效应的字段，必须同步把该段纳入哈希。
+
+### 13.15 DNS 刷新所有权与 upstream 名解析
+
+- [x] **主动查询丢掉 `needRefresh` 导致条目永久无法刷新**（已修：`dns_api.go` 在返回缓存作答时若 `needRefresh` 则启 `backgroundRefresh`）：`LookupDnsRespCache_` 用 CAS 占住 `refreshing` 标志，只有 `backgroundRefresh` 的 defer 会清除；主动查询丢弃该返回值后，这个条目的 CAS 恒失败，永远不再刷新。
+- [x] **强制 upstream 用渲染后的 URL 比较配置名**（已修：`Dns` 记录每个 upstream 的配置 tag（与 `upstreamName2Id` 同源），`UpstreamByName` 先按名匹配、再回退到 URL 形式；测试 `component/dns/upstream_name_test.go`）：`component/dns/dns.go` 原先只比 `candidate.String()`，而配置名（路由规则里写的名字）根本不等于渲染 URL，`/dns/query` 的 `upstream` 参数永远 422。
+
+### 13.16 仍待做（明确延后，非本轮范围）
+
+- lifecycle / DNS / probe 解码器统一到 `decodeLimitedJSON`（超限拒绝 + 尾部数据拒绝）。
+- 分页在环滚动 / store 重建下的语义：需要游标携带存储淘汰计数或代次，并定义 410 边界。
+- `api_dev.md` 落位与拆 PR（12.7 两条流程项）。
+
+## 14. 实机验证与 eBPF 热路径优化（2026-11-04）
+
+设备：OpenWrt 25.12.6 / x86_64 / kernel 6.12.112 / Celeron N4000（2 核）；WAN `eth3`(192.168.1.2)，LAN `lan-home`(192.168.12.1/24)，已用 P4 受管布局且 `api.enabled: true`、`config_write: true`、`direct_stats: false`。
+
+### 14.1 基线：`31e98b9` 上的现场复现（部署前）
+
+| 检查 | `31e98b9`（设备原二进制） | 本轮构建 |
+|---|---|---|
+| `POST /dns/query`（冷缓存） | **panic**：`http: panic serving … nil pointer dereference`，栈 `(*ControlPlane).Route` → `control/dns_api.go:331`，curl 得到空回复（`status=000`） | `200`，`upstream=tcp+udp://192.168.1.1:53`、`NOERROR`、9–12 ms |
+| CORS 预检 `PATCH /groups/{id}/config`（Origin=`https://demo.daeuniverse.org`） | `403`（Allow-Methods 无 PATCH） | `204`，`Allow-Methods: …, PATCH, …` |
+| `HEAD /api/v1/events` | 不返回（SSE 循环，3 s 超时） | 立即 `405` + `Allow: GET` |
+| `GET /api/v1/dns/rules`（`qname(geosite: apple) -> china`） | `action: "asis"`、`upstream: null` | `action: "upstream"`、`upstream: "china"` |
+| `GET /api/v1/flows` 的 `connection_id` | 字段缺失，带该参数的过滤恒空 | 字段存在（`c_f_…`），过滤生效 |
+
+结论：13.2 / 13.7 / 13.10 / 13.8 四条在真机上是可复现的缺陷，且修复后在真机上行为正确。
+
+### 14.2 eBPF 热路径：直连观察器（对应审查「不要把 LRU 每包更新」）
+
+改动（`control/kern/direct_stats.c`）：
+
+1. `direct_stats_remember` 改为 **lookup-first**：命中则仅原地 store（≤1 次/秒刷新时间戳），未命中才 `bpf_map_update_elem`。原来每个上传包无条件一次 LRU 更新。
+2. 回包分支删除 `direct_stats_remember(&rkey)`：该调用用「反向元组」当键，而索引只由上传方向写入、只由回包方向读取，因此这一次写是**永远查不到的条目**，同时按每包速度污染 LRU、挤压真正被读的条目。
+
+编译对象层面的差异（`llvm-objdump -d`，同一 clang 参数，部署到设备的那份对象）：
+
+| 程序 | 改前 lookup/update/ktime | 改后 |
+|---|---|---|
+| `direct_stats_wan_ingress_*`（回包方向） | 6 / **1** / 2 | 6 / **0** / 1 |
+| `direct_stats_lan_ingress_*`、`egress_*`（上传方向） | 3 / 1 / 1 | 4 / 1 / 2（update 只在建流时） |
+
+真机验证：
+
+- 内核 6.12.112 验证器接受新对象，8 个 `direct_stats_*` 程序全部挂载，`direct_reverse_map`/`direct_stats_map` 存在。
+- 计数正确：从 LAN 下载 41,943,040 字节，`down_bytes` 增 42,933,668（+2.4% 链路开销），`down_packets` 6,501（GSO 聚合后约 6.6 KB/skb）；250 MiB 下载时 `down_bytes` 266,396,159。
+- `bpftool map dump id <direct_reverse_map>` 可直接读取索引条目（注意内核把 map 名截断成 15 字节，`bpftool map dump name …` 会静默失败，必须用 id）。
+
+### 14.3 成本测量：`bpf_stats` 逐程序数字
+
+方法：`kernel.bpf_stats_enabled=1`，`bpftool prog show` 的 `run_cnt` / `run_time_ns` 取前后差；同一份 262,144,000 字节直连下载（LAN 客户端 → CN 镜像）。两版二进制只差 `direct_stats.c`。
+
+| 程序 | 旧 ns/次 | 新 ns/次 | 备注 |
+|---|---|---|---|
+| `direct_stats_wan_ingress_l2`（回包） | **2,106** | **959** | **−54%**；同一轮 `tproxy_wan_ingress_l2` 是 1,623 / 2,158 |
+| `direct_stats_lan_ingress_l2`（上传） | 3,084 | 2,641 | 只有 225 / 226 次运行，样本小 |
+| `direct_stats_egress_l2`（本机出站） | 282 | 342 | 早退分支，噪声量级 |
+| `tproxy_wan_ingress_l2`（参照） | 1,623 | 2,158 | 两轮条件不同，自身漂移 +33% |
+
+归一化（除以同轮 tproxy 自身成本）比绝对值更稳：观察器从 **1.30× tproxy** 降到 **0.44× tproxy**。按 1 Gbps / 1500 B 折算（≈83k skb/s）节约约 **95 ms/s ≈ 单个核心的 9.5%**；按实测 GSO 后 8.1k skb/s 折算约 0.9%。
+
+### 14.3.1 UDP 直连：已实现，但本拓扑测不到
+
+- 代码里 UDP 直连是**实现了的**：`udp_state->direct_passthrough = 1`（`control/kern/tproxy.c:3040` 缓存分支、`:3199` 新判定分支）。
+- `/routing/trace`（补上 `domain`/`pname` 后）对 `udp 203.107.6.88:123` 与 `udp 101.6.15.130:443` 都给出 `decision: determinate`, `outbound: direct`——不是被判成 proxy。
+- 但 148,480 个 UDP 包（16 条流，48 B）打过去后：`tproxy_wan_ingress_l2` 跑了 148,052 次、`direct_stats_wan_ingress_l2` 跑了 148,077 次（10.6 ms→714 ns/次），而 `direct_stats` 计数只涨了 66 个上行包 / 17 个下行包；`direct_reverse_map` 里没有对应条目。
+- 关键事实：**上传方向几乎不经过 LAN ingress 钩子**——同一轮 `tproxy_lan_ingress_l2` 只有 **139** 次运行，而 `tproxy_wan_egress_l2` 跑了 148,565 次。TCP 直连下载同样如此（262 MB 只有 225 次 `lan_ingress`，而 `wan_egress` 21,778 次）。被代理的流量（github 走 proxy）却能正常触发 `lan_ingress`（+87 次）。
+
+结论：`direct_stats` 的上行记账 `direct_stats_remember` 在这台设备上没有机会执行，回包侧就只能落到 `direct_stats_known` 且索引为空 → 计数为 0。这不是 `direct_stats` 的代码 bug，也不是 UDP 直连没实现，而是**本机 TC 钩子拓扑与审查方拓扑不同**：`lan-home` 是桥，dae 挂在桥 master 的 `tcx/ingress`，而客户端在桥成员口 `eth2.5` 上，内核直连转发路径上看不到 master 的 ingress 钩子；只有需要重定向（被代理）的流量才会命中。
+
+要在本机复现审查方的 UDP 基准，需要让转发流量真正穿过被 hook 的 ingress：把客户端接到 dae 直接绑定的非桥接口、改用 `dae0` 单臂路径，或把钩子挂到桥成员口。这属于拓扑改造，本轮未做。
+
+### 14.3.2 上一轮的进程级 CPU 测量为何失败
+
+同一份 TCP 下载用 `/proc/<pid>/stat` 计 CPU 时得到 11/13/22/41 ticks（250 MiB）与 25/38/43/55/111 ticks（小包 UDP），噪声 ±50 ticks，且 UDP 直连在本拓扑不成立——两者叠加导致无法分辨 <0.2 µs/包 的差异。`bpf_stats` 的逐程序数字才是可靠口径。
+
+### 14.4 上行记账：把观察器扩到桥成员口（P1 修正版）
+
+#### 14.4.1 需求前提的修正
+
+原始需求是「上行改在 WAN egress 记账」。**这个前提不成立**：WAN egress 的包已经过 SNAT，源地址/源端口被改写，其五元组永远不可能命中以 NAT 前元组为键的 `conn_state_map`；放在那里只会得到恒零。上行必须在**送达 NAT 之前的 ingress** 上观测，而这个 ingress 只能是桥成员口（见 14.3.1 的拓扑结论）。
+
+同理，也不能把 **tproxy** 一并扩到成员口：转发包会先撞成员口钩子、再撞 master 钩子，重定向/打标不是幂等操作，会二次动作。所以只扩**只读的观察器**。
+
+#### 14.4.2 实现
+
+- 新增 `control/bridge_members.go`：`selectBridgePorts`（纯函数，可测）+ `bridgePorts`（netlink 适配，`Type()=="bridge"` 才枚举，按 `MasterIndex` 选成员，按名字排序去重）。
+- `stageDirectStatsHooks` 拆成「按设备挂载」+「bridge 则对成员口用同一角色再挂一遍」（`stageDirectStatsHookForLink`）。角色（`wan`/`dual`）沿用 master 的判定；成员口一律按自己的 `EncapType` 决定 L2/L3（桥成员必为 ethernet）。
+- 成员口枚举在**绑定时**做一次，`HostVethName`（`dae0`）跳过；`netlink.LinkList` 失败只 Warn 不中断绑定（观测是可选项，不能影响转发）。
+- 单位测试 `control/bridge_members_test.go`：只选 `MasterIndex` 等于桥 index 的设备、排除桥自指、选择稳定可重复。
+
+#### 14.4.3 真机验证（内核 6.12.112）
+
+部署后 8 个 `direct_stats_*` 程序加载，`direct_stats_lan_ingress_l2` 在**成员口 `eth0`** 上开始按包运行（此前 master `lan-home` 上只有 87 次）。
+
+| 场景 | 载荷 | 观测结果 |
+|---|---|---|
+| 直连 TCP 下载（CN 镜像，客户端 `eth0`） | 104,857,600 字节 | `down_bytes` **+107,160,289**（+2.2% 链路开销）、`down_packets` +11,999；`up_bytes` **+914 KB / +10,525 包**（纯 ACK，≈87 B/包）；`direct_stats_lan_ingress_l2` run_cnt +10,647，与 `up_packets` 一致 |
+| 上一轮同场景（成员口未展开） | 262,144,000 字节 | `up_bytes` 恒零 |
+| 经代理下载（Cloudflare 20,000,000 字节） | — | `down_packets` 只 +77（若误计应 +13.8k）、`up_packets` 只 +725 → **代理流量确实被 `direct_passthrough` 排除** |
+| 空转本底（20 s，无主动流量） | — | `up_bytes` +147 KB、`down_bytes` +88 KB（≈7.4 KB/s，家用网内其它设备/keepalive 造成，比较增量时必须扣除） |
+
+三项需求的落点：① 排除 dae 自身代理流量 —— `conn_state.direct_passthrough` 闸门，实测 20 MB 代理下载零计入；② 只处理被 dae 监听的端口 —— 钩子只挂在 dae 已绑定的设备及其桥成员，未绑定的设备不挂；③ WAN 统计保留 —— `direct_stats_wan_ingress_*` 在 WAN 口继续计回包。
+
+#### 14.4.4 开销（`bpf_stats`，同一次 100 MB 直连下载的 run_cnt/run_time_ns 差）
+
+| 程序 | 位置 | ns/次 | 与 tproxy 比 |
+|---|---|---|---|
+| `direct_stats_wan_ingress_l2`（回包） | WAN 口 | **913** | tproxy_wan_ingress 1,918 → **0.48×** |
+| `direct_stats_lan_ingress_l2`（上行） | 桥成员口 `eth0` | **1,790** | 该接口上没有任何 tproxy 钩子在跑，无同轮参照 |
+| `direct_stats_egress_l2`（本机出站） | WAN 口 | 260 | tproxy_wan_egress 343 → 0.76× |
+
+上行侧 1,790 ns/次比回包侧高一倍：它多一次 `conn_state_map` 查表 + `direct_reverse_map` 的 LRU 查表/建条目。按 1 Gbps 纯 ACK 上限（≈2.0 Mpps）算不可忽视，但 ACK 速率实际远低于此（100 MB 下载只 10.6k 包）。
+
+#### 14.4.5 已知边界
+
+- 成员口在**绑定时**枚举一次：运行期 `br_add_if`/`br_del_if` 不触发 netlink link 事件，新加入的桥成员在下次 reload 前不会有观察器。
+- 桥套桥（bridge 的成员又是 bridge）不递归展开。
+- `direct_reverse_map`（12 MiB）仍然必要：回包方向在 WAN ingress 上看到的是 SNAT 后的元组，无法用 `conn_state_map` 反查。
+
+### 14.5 设备现场状态（已还原）
+
+- `/usr/bin/dae` 已还原为实验前二进制（`sha256 a57cfe3f…`，`dae version unstable-20261104.r918.31e98b9`）；本轮构建留在 `/usr/bin/dae.bak.31e98b9`→已用作还原源、新构建副本 `/tmp/dae.bridge`（`bc1479c5…`），旧观察器副本 `/tmp/dae.obs-old`（`89ad6b6b…`）/`/tmp/dae.obs-new`（`b4f45400…`）。
+- `/etc/dae/api.dae` `direct_stats` 已改回 `false`；`kernel.bpf_stats_enabled` 已改回 `0`；服务 `running`，观察器程序数 0，客户端经路由器访问外网 200 正常。
+
