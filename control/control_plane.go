@@ -64,6 +64,9 @@ type ControlPlane struct {
 	sessionManagerBinding atomic.Pointer[controlPlaneSessionManagerBinding]
 	egressRuntime         *egressRuntime
 	drainTracker          *controlPlaneDrainTracker
+	// key: ConnMetricKey, value: *atomic.Uint64
+	tcpConnectionTotals sync.Map
+	udpConnectionTotals sync.Map
 
 	controlPlaneRoutingEpochRuntime
 	controlPlaneDNSRuntime
@@ -3177,6 +3180,10 @@ func (c *ControlPlane) Close() (err error) {
 	c.UnlinkRoutingEpochPeer(nil)
 
 	return c.closeErr
+}
+
+func (c *ControlPlane) Outbounds() []*outbound.DialerGroup {
+	return c.outbounds
 }
 
 // StopDNSListener stops the DNS listener if it's running
