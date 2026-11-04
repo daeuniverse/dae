@@ -6,11 +6,16 @@
 package control
 
 import (
+	"errors"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func readDirectStatsSource(t *testing.T) string {
@@ -159,13 +164,13 @@ func TestDirectStatsRoleVariantsSkipUnusedLookups(t *testing.T) {
 // The observer's map is per generation; the retired accumulator is what keeps
 // the reported totals (and counter_since) process-wide across reloads.
 func TestRetiredDirectStatsAccumulatesAcrossGenerations(t *testing.T) {
-	directStatsRetired.mu.Lock()
-	directStatsRetired.counts = DirectStatsCounters{}
-	directStatsRetired.mu.Unlock()
+	directStatsTotals.mu.Lock()
+	directStatsTotals.retired = DirectStatsCounters{}
+	directStatsTotals.mu.Unlock()
 	t.Cleanup(func() {
-		directStatsRetired.mu.Lock()
-		directStatsRetired.counts = DirectStatsCounters{}
-		directStatsRetired.mu.Unlock()
+		directStatsTotals.mu.Lock()
+		directStatsTotals.retired = DirectStatsCounters{}
+		directStatsTotals.mu.Unlock()
 	})
 
 	accumulateDirectStats(DirectStatsCounters{UpBytes: 10, UpPackets: 1})
@@ -175,5 +180,73 @@ func TestRetiredDirectStatsAccumulatesAcrossGenerations(t *testing.T) {
 	want := DirectStatsCounters{UpBytes: 10, UpPackets: 1, DownBytes: 5, DownPackets: 2}
 	if got != want {
 		t.Fatalf("retired totals = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveDirectStatsRefusesKernelWithoutTCX(t *testing.T) {
+	previous := directStatsKernelVersion
+	t.Cleanup(func() { directStatsKernelVersion = previous })
+
+	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{6, 5, 0}, nil }
+	if ResolveDirectStats(nil, true) {
+		t.Fatal("observer enabled on a kernel without TCX")
+	}
+	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{}, errors.New("unknown") }
+	if ResolveDirectStats(nil, true) {
+		t.Fatal("observer enabled when the kernel version is unknown")
+	}
+	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{6, 6, 0}, nil }
+	if !ResolveDirectStats(nil, true) {
+		t.Fatal("observer refused on a TCX kernel")
+	}
+	if ResolveDirectStats(nil, false) {
+		t.Fatal("observer enabled without being requested")
+	}
+}
+
+func TestResolveDirectStatsWarnsWhenRefused(t *testing.T) {
+	previous := directStatsKernelVersion
+	t.Cleanup(func() { directStatsKernelVersion = previous })
+	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{5, 15, 0}, nil }
+
+	logger, hook := logrustest.NewNullLogger()
+	if ResolveDirectStats(logger, true) {
+		t.Fatal("observer enabled on 5.15")
+	}
+	if len(hook.AllEntries()) != 1 || hook.LastEntry().Level != logrus.WarnLevel {
+		t.Fatalf("want one warning, got %v", hook.AllEntries())
+	}
+}
+
+// The reply index must not attribute one host's reply to another, and a
+// non-direct WAN-direction state entry must not hide later replies.
+func TestDirectStatsKernelGuards(t *testing.T) {
+	source := readDirectStatsSource(t)
+	for _, want := range []string{
+		"val->ambiguous",
+		"direct_stats_same_host",
+		"if (st->meta.data.has_routing)",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("observer source lacks %q", want)
+		}
+	}
+}
+
+// Retiring an observer that is not live must not touch the totals, so the
+// replace path and the deferred close can both retire the same observer.
+func TestRetireDirectStatsObserverIsIdempotent(t *testing.T) {
+	directStatsTotals.mu.Lock()
+	directStatsTotals.retired = DirectStatsCounters{UpBytes: 7}
+	directStatsTotals.mu.Unlock()
+	t.Cleanup(func() {
+		directStatsTotals.mu.Lock()
+		directStatsTotals.retired = DirectStatsCounters{}
+		directStatsTotals.mu.Unlock()
+	})
+
+	retireDirectStatsObserver(&directStatsObserver{})
+	if got := retiredDirectStats().UpBytes; got != 7 {
+		t.Fatalf("retired = %d, want 7", got)
 	}
 }

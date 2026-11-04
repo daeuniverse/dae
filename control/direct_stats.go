@@ -40,6 +40,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -84,52 +86,116 @@ func ConfigureDirectStats(enabled bool) {
 	directStatsEnabled.Store(enabled)
 }
 
+// directStatsKernelVersion is replaceable so tests can model older kernels.
+var directStatsKernelVersion = internal.KernelVersion
+
+// directStatsKernelSupported reports whether the running kernel has TCX. The
+// observer is only offered there: it hooks bridge ports and link ordering
+// relative to tproxy through TCX, and the classic-TC fallback has no ordering
+// or qdisc guarantees on those ports.
+func directStatsKernelSupported() (bool, string) {
+	version, err := directStatsKernelVersion()
+	if err != nil {
+		return false, "unknown"
+	}
+	return !version.Less(consts.TCXFeatureVersion), version.String()
+}
+
+// ResolveDirectStats returns whether the direct-traffic observer may be turned
+// on. A request on a kernel without TCX is refused with a warning, so the
+// optional observer can never stop the data plane from starting.
+func ResolveDirectStats(log *logrus.Logger, requested bool) bool {
+	if !requested {
+		return false
+	}
+	if ok, version := directStatsKernelSupported(); !ok {
+		if log != nil {
+			log.Warnf("api.direct_stats requires TCX (Linux %v or later) but the running kernel is %v; direct traffic observation is disabled", consts.TCXFeatureVersion.String(), version)
+		}
+		return false
+	}
+	return true
+}
+
 // DirectStatsEnabled reports the current observation switch.
 func DirectStatsEnabled() bool {
 	return directStatsEnabled.Load()
 }
 
-// directStatsRetired holds the counters of generations that already closed.
-// The observer's map belongs to one generation, so without this a reload
-// restarted the totals while counter_since (process-level) stayed, and the two
-// resources disagreed about what "since" meant.
-var directStatsRetired struct {
-	mu     sync.Mutex
-	counts DirectStatsCounters
+// directStatsTotals holds the counters of generations that already closed, and
+// the observers that are still live. The observer's map belongs to one
+// generation, so a reload used to restart the totals while counter_since
+// (process-level) stayed. During a staged reload the outgoing generation keeps
+// counting until it drains, so the snapshot sums the retired total and every
+// live observer: reading only the newest one made the figure dip.
+var directStatsTotals struct {
+	mu      sync.Mutex
+	retired DirectStatsCounters
+	live    map[*directStatsObserver]struct{}
+}
+
+func registerDirectStatsObserver(observer *directStatsObserver) {
+	directStatsTotals.mu.Lock()
+	defer directStatsTotals.mu.Unlock()
+	if directStatsTotals.live == nil {
+		directStatsTotals.live = make(map[*directStatsObserver]struct{})
+	}
+	directStatsTotals.live[observer] = struct{}{}
+}
+
+// retireDirectStatsObserver folds a closing observer's counters into the
+// retired total and drops it from the live set in one step, so a concurrent
+// snapshot sees its counters exactly once. Retiring twice is a no-op.
+func retireDirectStatsObserver(observer *directStatsObserver) {
+	directStatsTotals.mu.Lock()
+	defer directStatsTotals.mu.Unlock()
+	if _, ok := directStatsTotals.live[observer]; !ok {
+		return
+	}
+	delete(directStatsTotals.live, observer)
+	if counters, err := readDirectStatsFrom(observer); err == nil {
+		directStatsTotals.retired = addDirectStats(directStatsTotals.retired, counters)
+	}
+}
+
+func addDirectStats(a, b DirectStatsCounters) DirectStatsCounters {
+	return DirectStatsCounters{
+		UpBytes:     a.UpBytes + b.UpBytes,
+		UpPackets:   a.UpPackets + b.UpPackets,
+		DownBytes:   a.DownBytes + b.DownBytes,
+		DownPackets: a.DownPackets + b.DownPackets,
+	}
 }
 
 func accumulateDirectStats(counters DirectStatsCounters) {
-	directStatsRetired.mu.Lock()
-	defer directStatsRetired.mu.Unlock()
-	directStatsRetired.counts.UpBytes += counters.UpBytes
-	directStatsRetired.counts.UpPackets += counters.UpPackets
-	directStatsRetired.counts.DownBytes += counters.DownBytes
-	directStatsRetired.counts.DownPackets += counters.DownPackets
+	directStatsTotals.mu.Lock()
+	defer directStatsTotals.mu.Unlock()
+	directStatsTotals.retired = addDirectStats(directStatsTotals.retired, counters)
 }
 
 func retiredDirectStats() DirectStatsCounters {
-	directStatsRetired.mu.Lock()
-	defer directStatsRetired.mu.Unlock()
-	return directStatsRetired.counts
+	directStatsTotals.mu.Lock()
+	defer directStatsTotals.mu.Unlock()
+	return directStatsTotals.retired
 }
 
-// DirectStatsSnapshot returns counters summed across CPUs. It returns zeros
-// when observation is off or has never been loaded.
+// DirectStatsSnapshot returns counters summed across CPUs and generations. It
+// returns zeros when observation is off or has never been loaded.
 func (c *ControlPlane) DirectStatsSnapshot() (DirectStatsCounters, error) {
 	if c == nil || c.core == nil {
 		return DirectStatsCounters{}, nil
 	}
-	current, err := c.core.readDirectStats()
-	if err != nil {
-		return DirectStatsCounters{}, err
+	directStatsTotals.mu.Lock()
+	defer directStatsTotals.mu.Unlock()
+	total := directStatsTotals.retired
+	for observer := range directStatsTotals.live {
+		current, err := readDirectStatsFrom(observer)
+		if err != nil {
+			return DirectStatsCounters{}, err
+		}
+		total = addDirectStats(total, current)
 	}
-	retired := retiredDirectStats()
-	return DirectStatsCounters{
-		UpBytes:     retired.UpBytes + current.UpBytes,
-		UpPackets:   retired.UpPackets + current.UpPackets,
-		DownBytes:   retired.DownBytes + current.DownBytes,
-		DownPackets: retired.DownPackets + current.DownPackets,
-	}, nil
+	return total, nil
 }
 
 // stageDirectStatsHooks attaches the observer to a link dae already binds.
@@ -141,33 +207,43 @@ func (c *ControlPlane) DirectStatsSnapshot() (DirectStatsCounters, error) {
 // On a dual-role interface both binds stage the same spec, which is an
 // idempotent upsert.
 //
-// A bridge also gets the observer on its member devices. Traffic forwarded
-// through a bridge is received on the port and never passes the master's
-// ingress hook, so a hook on the master alone counts nothing but traffic
-// addressed to the bridge itself. Only the observer is expanded: tproxy keeps
+// A bridge gets the observer on its member devices instead of on the master for
+// ingress: traffic is received on the port, and routed traffic then crosses the
+// master's ingress too, so observing both would count it twice. Only the
+// observer is expanded: tproxy keeps
 // running where it is, because running the redirect path twice on one packet
 // (once on the port, once on the master) is not an idempotent operation.
 func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool, wan bool, dual bool) error {
 	if !directStatsEnabled.Load() {
 		return nil
 	}
-	if err := c.stageDirectStatsHookForLink(link, layer2, wan, dual); err != nil {
-		return err
-	}
 	ports, err := bridgePorts(link)
 	if err != nil {
 		// Observation is optional; a failed enumeration must not break binding.
 		c.log.WithError(err).Warnf("direct stats observer: cannot list bridge ports of %v", link.Attrs().Name)
-		return nil
+		ports = nil
 	}
+	var observed []netlink.Link
 	for _, port := range ports {
-		if port.Attrs().Name == HostVethName {
-			continue
+		if port.Attrs().Name != HostVethName {
+			observed = append(observed, port)
 		}
+	}
+	// Traffic routed through a bridge enters the port and then the master, and
+	// both hooks share the counters. Ingress is therefore observed on the ports
+	// alone; the master keeps only the WAN egress hook, which sees locally
+	// generated packets that never cross a port's ingress.
+	masterIngress := len(observed) == 0
+	if err := c.stageDirectStatsHookForLink(link, layer2, wan, dual, masterIngress, true); err != nil {
+		return err
+	}
+	for _, port := range observed {
 		// Bridge ports are Ethernet devices, whatever the master reports.
 		portLayer2 := port.Attrs().EncapType == "ether"
 		c.log.Infof("Bind direct stats observer to bridge port %v of %v", port.Attrs().Name, link.Attrs().Name)
-		if err := c.stageDirectStatsHookForLink(port, portLayer2, wan, dual); err != nil {
+		// Best effort, like every other bind: the clsact qdisc may exist.
+		_ = c.addQdisc(port)
+		if err := c.stageDirectStatsHookForLink(port, portLayer2, wan, dual, true, false); err != nil {
 			return err
 		}
 	}
@@ -175,7 +251,7 @@ func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool,
 }
 
 // stageDirectStatsHookForLink stages the observer hooks for one device.
-func (c *controlPlaneCore) stageDirectStatsHookForLink(link netlink.Link, layer2 bool, wan bool, dual bool) error {
+func (c *controlPlaneCore) stageDirectStatsHookForLink(link netlink.Link, layer2 bool, wan bool, dual bool, ingressHook bool, egressHook bool) error {
 	coll, err := c.ensureDirectStatsCollection()
 	if err != nil {
 		// Observation is optional: a hook that cannot load must never break
@@ -189,10 +265,12 @@ func (c *controlPlaneCore) stageDirectStatsHookForLink(link netlink.Link, layer2
 		c.log.Warnf("direct stats observer has no %q program; skipping hooks", ingressName)
 		return nil
 	}
-	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, directStatsPriority, 0x2023, ingress, consts.AppName+"_"+ingressName, nil)); err != nil {
-		return fmt.Errorf("install direct stats ingress hook: %w", err)
+	if ingressHook {
+		if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, directStatsPriority, 0x2023, ingress, consts.AppName+"_"+ingressName, nil)); err != nil {
+			return fmt.Errorf("install direct stats ingress hook: %w", err)
+		}
 	}
-	if !wan {
+	if !wan || !egressHook {
 		return nil
 	}
 	egress := coll.Programs[egressName]
@@ -255,21 +333,17 @@ func (c *controlPlaneCore) ensureDirectStatsCollection() (*ebpf.Collection, erro
 	}
 	if c.directStats != nil {
 		// Fold the replaced observer's totals in before its map goes away.
-		// We already hold directStatsMu here, so read the observer directly.
-		if counters, err := readDirectStatsFrom(c.directStats); err == nil {
-			accumulateDirectStats(counters)
-		}
+		retireDirectStatsObserver(c.directStats)
 		c.directStats.coll.Close()
 	}
 	observer := &directStatsObserver{coll: coll, connState: bpf.ConnStateMap}
+	registerDirectStatsObserver(observer)
 	c.directStats = observer
 	c.addDeferFunc(func() error {
-		// This generation's counters leave with its map; accumulate them first
-		// so the process-level figure survives the reload. The observer is
+		// This generation's counters leave with its map; retire them first so
+		// the process-level figure survives the reload. The observer is
 		// captured because c.directStats may already name a successor.
-		if counters, err := readDirectStatsFrom(observer); err == nil {
-			accumulateDirectStats(counters)
-		}
+		retireDirectStatsObserver(observer)
 		coll.Close()
 		return nil
 	})
