@@ -140,10 +140,42 @@ func (c *ControlPlane) DirectStatsSnapshot() (DirectStatsCounters, error) {
 // replies, and an interface bound with both roles runs the combined program.
 // On a dual-role interface both binds stage the same spec, which is an
 // idempotent upsert.
+//
+// A bridge also gets the observer on its member devices. Traffic forwarded
+// through a bridge is received on the port and never passes the master's
+// ingress hook, so a hook on the master alone counts nothing but traffic
+// addressed to the bridge itself. Only the observer is expanded: tproxy keeps
+// running where it is, because running the redirect path twice on one packet
+// (once on the port, once on the master) is not an idempotent operation.
 func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool, wan bool, dual bool) error {
 	if !directStatsEnabled.Load() {
 		return nil
 	}
+	if err := c.stageDirectStatsHookForLink(link, layer2, wan, dual); err != nil {
+		return err
+	}
+	ports, err := bridgePorts(link)
+	if err != nil {
+		// Observation is optional; a failed enumeration must not break binding.
+		c.log.WithError(err).Warnf("direct stats observer: cannot list bridge ports of %v", link.Attrs().Name)
+		return nil
+	}
+	for _, port := range ports {
+		if port.Attrs().Name == HostVethName {
+			continue
+		}
+		// Bridge ports are Ethernet devices, whatever the master reports.
+		portLayer2 := port.Attrs().EncapType == "ether"
+		c.log.Infof("Bind direct stats observer to bridge port %v of %v", port.Attrs().Name, link.Attrs().Name)
+		if err := c.stageDirectStatsHookForLink(port, portLayer2, wan, dual); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stageDirectStatsHookForLink stages the observer hooks for one device.
+func (c *controlPlaneCore) stageDirectStatsHookForLink(link netlink.Link, layer2 bool, wan bool, dual bool) error {
 	coll, err := c.ensureDirectStatsCollection()
 	if err != nil {
 		// Observation is optional: a hook that cannot load must never break

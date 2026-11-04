@@ -230,17 +230,37 @@ direct_stats_reverse(const struct tuples_key *in, struct tuples_key *out)
 	out->l4proto = in->l4proto;
 }
 
+// An existing index entry only has to stay younger than the age bound, so it is
+// refreshed in place at most once a second. Touching the LRU on every packet is
+// what made the observer expensive: bpf_map_update_elem moves the element and
+// can allocate, while a store through the looked-up pointer does not.
+#define DIRECT_STATS_REVERSE_REFRESH_NS (1000000000ULL)
+
 // Records the upload tuple of a direct flow under the NAT-independent key.
+//
+// The steady state is an entry that already exists, so this looks the key up
+// first and writes only on a miss. Doing the reverse, an unconditional
+// bpf_map_update_elem per upload packet, paid a map write plus a helper call on
+// every packet of every direct flow.
 static __always_inline void
 direct_stats_remember(const struct tuples_key *key)
 {
 	struct direct_reverse_key rk = {};
-	__u64 now = bpf_ktime_get_ns();
+	__u64 *last_seen;
 
 	rk.remote_ip = key->dip;
 	rk.remote_port = key->dport;
 	rk.local_port = key->sport;
 	rk.l4proto = key->l4proto;
+
+	last_seen = bpf_map_lookup_elem(&direct_reverse_map, &rk);
+	if (last_seen) {
+		__u64 now = bpf_ktime_get_ns();
+		if (now > *last_seen && now - *last_seen >= DIRECT_STATS_REVERSE_REFRESH_NS)
+			*last_seen = now;
+		return;
+	}
+	__u64 now = bpf_ktime_get_ns();
 	bpf_map_update_elem(&direct_reverse_map, &rk, &now, BPF_ANY);
 }
 
@@ -326,7 +346,11 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 			if (direct_stats_is_direct(st)) {
 				direct_stats_add(DIRECT_STATS_DOWNLOAD_BYTES,
 						 DIRECT_STATS_DOWNLOAD_PACKETS, len);
-				direct_stats_remember(&rkey);
+				// No index write here. The index is keyed by the upload
+				// tuple and only the reply path reads it, so writing the
+				// reversed key inserted an entry no lookup can ever hit,
+				// at one LRU update per reply packet plus eviction
+				// pressure on the entries that are actually read.
 			}
 			return DIRECT_STATS_CONTINUE;
 		}
