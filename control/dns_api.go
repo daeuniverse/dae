@@ -303,7 +303,14 @@ func (c *DnsController) QueryDns(ctx context.Context, domain string, qtypes []ui
 			baseKey := c.cacheKey(qname, qtype)
 			responseCacheKey := c.responseCacheKey(baseKey, nil, upstreamIndex, upstream)
 			if !bypass {
-				if packed, _ := c.LookupDnsRespCache_(msg, responseCacheKey, false); packed != nil {
+				if packed, needRefresh := c.LookupDnsRespCache_(msg, responseCacheKey, false); packed != nil {
+					// The lookup just claimed the entry's refreshing flag by CAS, and
+					// only backgroundRefresh clears it. Dropping needRefresh here would
+					// leave the flag set for good, so every later refresh of this entry
+					// would be skipped.
+					if needRefresh {
+						go c.backgroundRefresh(responseCacheKey, msg, nil, upstreamIndex, upstream)
+					}
 					response := new(dnsmessage.Msg)
 					if unpackErr := response.Unpack(packed); unpackErr == nil {
 						result.Cached = true

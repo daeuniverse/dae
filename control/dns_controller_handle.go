@@ -517,6 +517,23 @@ func (c *DnsController) serveFromRespCacheWithRefresh_(dnsMessage *dnsmessage.Ms
 	if err := c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter, dnsMessage); err != nil {
 		return true, err
 	}
+	// A cache hit answers a real query, so it belongs in the DNS log like an
+	// upstream answer does. Returning before recording left /dns/log blind to
+	// every hit, which made a pure cache-serving resolver look idle.
+	if len(dnsMessage.Question) > 0 {
+		status := "NOERROR"
+		var answers []dnsmessage.RR
+		packed := new(dnsmessage.Msg)
+		if unpackErr := packed.Unpack(resp); unpackErr == nil {
+			status = dnsRcodeName(packed.Rcode)
+			answers = packed.Answer
+		}
+		upstreamName := ""
+		if upstream != nil {
+			upstreamName = upstream.String()
+		}
+		c.recordDnsLog(dnsMessage.Question[0], req, status, true, upstreamName, answers, 0)
+	}
 	if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]
 		l := c.log.WithFields(logrus.Fields{

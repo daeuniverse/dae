@@ -8,6 +8,7 @@ package cmd
 import (
 	"context"
 	stderrors "errors"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,7 +269,7 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 				continue
 			}
 		}
-		if filter.Src != "" && record.Src != filter.Src {
+		if filter.Src != "" && !dnsLogSrcMatches(record.Src, filter.Src) {
 			continue
 		}
 		var src *string
@@ -340,21 +341,23 @@ func (p *nativeAPIProvider) DnsRules(ctx context.Context) (nativeapi.DnsRuleList
 func nativeDnsRules(kind string, rules []control.DnsRuleSnapshot, fallback control.DnsRuleSnapshot) []nativeapi.DnsRoutingRule {
 	result := make([]nativeapi.DnsRoutingRule, 0, len(rules)+1)
 	for index, rule := range rules {
+		action := nativeDnsAction(kind, rule.Action)
 		result = append(result, nativeapi.DnsRoutingRule{
 			RuleID:     "dns-" + kind + ":" + strconv.Itoa(index),
 			Index:      uint64(index),
 			Expression: rule.Expression,
-			Action:     nativeDnsAction(kind, rule.Action),
-			Upstream:   nativeDnsUpstream(kind, rule.Action, rule.Upstream),
+			Action:     action,
+			Upstream:   nativeDnsUpstreamOf(action, rule.Action, rule.Upstream),
 			Kind:       "rule",
 		})
 	}
+	fallbackAction := nativeDnsAction(kind, fallback.Action)
 	result = append(result, nativeapi.DnsRoutingRule{
 		RuleID:     "dns-" + kind + ":fallback",
 		Index:      uint64(len(result)),
 		Expression: fallback.Expression,
-		Action:     nativeDnsAction(kind, fallback.Action),
-		Upstream:   nativeDnsUpstream(kind, fallback.Action, fallback.Upstream),
+		Action:     fallbackAction,
+		Upstream:   nativeDnsUpstreamOf(fallbackAction, fallback.Action, fallback.Upstream),
 		Kind:       "fallback",
 	})
 	return result
@@ -368,7 +371,10 @@ func nativeDnsAction(kind, action string) string {
 		case "upstream", "asis", "reject":
 			return action
 		}
-		return "asis"
+		// Anything else is a configured upstream name: the rule sends the query
+		// there, which the contract spells action "upstream". Reporting "asis"
+		// claimed the query went to its original destination instead.
+		return "upstream"
 	default:
 		switch action {
 		case "accept", "reject", "requery":
@@ -378,15 +384,24 @@ func nativeDnsAction(kind, action string) string {
 	}
 }
 
-func nativeDnsUpstream(kind, action, upstream string) *string {
-	action = strings.ToLower(action)
-	if (kind == "request" && action != "upstream") || (kind == "response" && action != "requery") {
+// nativeDnsUpstreamOf names the upstream a rule reaches. The contract requires
+// it for action upstream/requery and forbids it otherwise. A request rule writes
+// the name as the outbound itself ("-> alidns") and requery writes it as a
+// parameter, so both forms resolve here.
+func nativeDnsUpstreamOf(action, rawAction, upstream string) *string {
+	switch action {
+	case "upstream", "requery":
+	default:
 		return nil
 	}
-	if upstream == "" {
-		return nil
+	if upstream != "" {
+		return &upstream
 	}
-	return &upstream
+	if rawAction != "" && !strings.EqualFold(rawAction, action) {
+		name := rawAction
+		return &name
+	}
+	return nil
 }
 
 // QueryDns runs an active query through the same routing and cache.
@@ -468,4 +483,18 @@ func (p *nativeAPIProvider) allowDnsQuery(now time.Time) bool {
 	}
 	p.dnsQueryCount++
 	return true
+}
+
+// dnsLogSrcMatches compares the recorded client address with the filter value.
+// The log records the source as the datapath saw it (address and port), while
+// the contract's src filter is an IP literal.
+func dnsLogSrcMatches(recorded, wanted string) bool {
+	if recorded == wanted {
+		return true
+	}
+	host, _, err := net.SplitHostPort(recorded)
+	if err != nil {
+		return false
+	}
+	return host == wanted
 }
