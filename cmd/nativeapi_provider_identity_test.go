@@ -26,7 +26,7 @@ func TestUntaggedSubscriptionNodeHasOwnProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inline dialer: %v", err)
 	}
-	defer inline.Close()
+	defer func() { _ = inline.Close() }()
 	if got := providerIDOf(inline.Property().ProviderTag); got != inlineProviderID {
 		t.Fatalf("inline provider id = %q, want %q", got, inlineProviderID)
 	}
@@ -41,7 +41,7 @@ func TestUntaggedSubscriptionNodeHasOwnProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscription dialer: %v", err)
 	}
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 	sub.SetProviderTag(providerKey)
 
 	if got := sub.Property().SubscriptionTag; got != "" {

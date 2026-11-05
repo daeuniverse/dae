@@ -50,7 +50,7 @@ func TestPprofServerStartsAndStops(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("pprof status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	stopPprofServer(&server)
 	if server != nil {
@@ -63,7 +63,7 @@ func TestPprofServerStartsAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("port %d still bound after stopPprofServer: %v", port, err)
 	}
-	reclaim.Close()
+	_ = reclaim.Close()
 }
 
 // TestPprofServerReportsBindFailure covers the defect that made a reloaded
@@ -75,7 +75,7 @@ func TestPprofServerReportsBindFailure(t *testing.T) {
 	if err != nil {
 		t.Skipf("could not hold port %d: %v", port, err)
 	}
-	defer holder.Close()
+	defer func() { _ = holder.Close() }()
 
 	server, err := startPprofServer(port)
 	if err == nil {
@@ -104,7 +104,7 @@ func TestRefreshPprofServer(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if resp, err := http.Get(pprofURL(port)); err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			break
 		}
 		if time.Now().After(deadline) {
