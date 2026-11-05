@@ -350,13 +350,6 @@ func (c *controlPlaneCore) ensureDirectStatsCollection() (*ebpf.Collection, erro
 	return coll, nil
 }
 
-func (c *controlPlaneCore) readDirectStats() (DirectStatsCounters, error) {
-	c.directStatsMu.Lock()
-	observer := c.directStats
-	c.directStatsMu.Unlock()
-	return readDirectStatsFrom(observer)
-}
-
 func readDirectStatsFrom(observer *directStatsObserver) (DirectStatsCounters, error) {
 	if observer == nil {
 		return DirectStatsCounters{}, nil
