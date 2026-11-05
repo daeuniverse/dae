@@ -17,9 +17,12 @@ import (
 type managingNodes struct {
 	canManage bool
 	created   NodeCreateRequest
+	updated   NodeUpdateRequest
 	deleted   NodeDeleteRequest
+	updateOut NodeUpdateOutcome
 	outcome   NodeDeleteOutcome
 	createErr error
+	updateErr error
 }
 
 func (p *managingNodes) ListNodes(context.Context, string, int, string) (NodeList, error) {
@@ -40,6 +43,14 @@ func (p *managingNodes) CreateNode(_ context.Context, req NodeCreateRequest) (Op
 		return OperationAccepted{}, p.createErr
 	}
 	return OperationAccepted{OperationID: "op-node-1", Kind: OperationKindNodeCreate, Status: "queued", Href: "/api/v1/operations/op-node-1"}, nil
+}
+
+func (p *managingNodes) UpdateNode(_ context.Context, req NodeUpdateRequest) (NodeUpdateOutcome, error) {
+	p.updated = req
+	if p.updateErr != nil {
+		return NodeUpdateOutcome{}, p.updateErr
+	}
+	return p.updateOut, nil
 }
 
 func (p *managingNodes) DeleteNode(_ context.Context, req NodeDeleteRequest) (NodeDeleteOutcome, error) {
@@ -178,6 +189,99 @@ func TestDeleteNodeWithoutManagementAnswers404(t *testing.T) {
 	recorder := doConfigRequest(server, http.MethodDelete, "/api/v1/nodes/n_mock", "", nil)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestUpdateNodeQueuesOperation(t *testing.T) {
+	nodes := &managingNodes{
+		canManage: true,
+		updateOut: NodeUpdateOutcome{Updated: 1, Accepted: OperationAccepted{
+			OperationID: "op-node-2", Kind: OperationKindNodeUpdate, Status: "queued", Href: "/api/v1/operations/op-node-2",
+		}},
+	}
+	server := newManageServer(t, nodes, nil)
+
+	recorder := doConfigRequest(server, http.MethodPatch, "/api/v1/nodes/n_mock",
+		`{"name":"mock-02","link":"socks5://192.0.2.11:1080"}`, map[string]string{"Idempotency-Key": "key-3"})
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Location"); got != "/api/v1/operations/op-node-2" {
+		t.Fatalf("Location = %q", got)
+	}
+	updated := nodes.updated
+	if updated.NodeID != "n_mock" || updated.IdempotencyKey != "key-3" {
+		t.Fatalf("forwarded request = %+v", updated)
+	}
+	if updated.Name == nil || *updated.Name != "mock-02" || updated.Link == nil || *updated.Link != "socks5://192.0.2.11:1080" {
+		t.Fatalf("forwarded values = %+v", updated)
+	}
+}
+
+func TestUpdateNodeKeepsOmittedFields(t *testing.T) {
+	// A patch that only names a link must not invent a name: a nil field is
+	// what tells the provider to keep the current value.
+	nodes := &managingNodes{canManage: true, updateOut: NodeUpdateOutcome{Updated: 1}}
+	server := newManageServer(t, nodes, nil)
+
+	recorder := doConfigRequest(server, http.MethodPatch, "/api/v1/nodes/n_mock", `{"link":"socks5://192.0.2.11:1080"}`, nil)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", recorder.Code, recorder.Body.String())
+	}
+	if nodes.updated.Name != nil {
+		t.Fatalf("name = %q, want nil", *nodes.updated.Name)
+	}
+	if nodes.updated.Link == nil || *nodes.updated.Link != "socks5://192.0.2.11:1080" {
+		t.Fatalf("link = %v", nodes.updated.Link)
+	}
+}
+
+func TestUpdateNodeNoChangeAnswers200(t *testing.T) {
+	nodes := &managingNodes{canManage: true, updateOut: NodeUpdateOutcome{Updated: 0}}
+	server := newManageServer(t, nodes, nil)
+
+	recorder := doConfigRequest(server, http.MethodPatch, "/api/v1/nodes/n_mock", `{"name":"mock-01"}`, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decodeJSON(t, recorder)
+	if body["updated"] != float64(0) {
+		t.Fatalf("body = %v, want updated 0", body)
+	}
+}
+
+func TestUpdateNodeRequiresAField(t *testing.T) {
+	server := newManageServer(t, &managingNodes{canManage: true}, nil)
+
+	recorder := doConfigRequest(server, http.MethodPatch, "/api/v1/nodes/n_mock", `{}`, nil)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", recorder.Code)
+	}
+}
+
+func TestUpdateNodeWithoutManagementAnswers404(t *testing.T) {
+	server := newManageServer(t, &managingNodes{canManage: false}, nil)
+
+	recorder := doConfigRequest(server, http.MethodPatch, "/api/v1/nodes/n_mock", `{"name":"mock-02"}`, nil)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", recorder.Code)
+	}
+	if code := errorCode(t, recorder); code != codeCapabilityNotSupported {
+		t.Fatalf("code = %s", code)
+	}
+}
+
+func TestUpdateNodeRequiresJSON(t *testing.T) {
+	server := newManageServer(t, &managingNodes{canManage: true}, nil)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/n_mock", strings.NewReader(`{"name":"mock-02"}`))
+	req.Host = "127.0.0.1:9527"
+	req.RemoteAddr = "127.0.0.1:50000"
+	req.Header.Set("Content-Type", "text/plain")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", recorder.Code)
 	}
 }
 

@@ -5,7 +5,7 @@
 > 本文是实施计划，不是最终契约文档。契约以 `api-standardize/api/openapi.yaml` 为准
 > （分模块文件：`api/{config,discovery,nodes-groups,runtime,dns,rules,operations-probes,...}.yaml`；仓库 `source/` 下是文档站点，不含 schema）。
 >
-> 实现状态（2026-11-03 同步，对照 `ef6514e`）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。另已接入 `routing_trace`（`POST /routing/trace`，仅 `resolve: "none"`，规则步骤超过 4096 时不可用）、`runtime/direct-stats`（需 `api.direct_stats`）、P4 配置源级读写（受 `api.config_write` + 受管目录布局闸门）。仍声明不可用的是 `runtime/settings`、`auth/*`；providers 的创建/删除与 geodata 的 update 返回 `404 capability_not_supported`；`nodes` 写端点随写入闸门开放（关闭时 `404`），`providers/{id}/refresh` 只依赖 operations（运行期 `can_refresh=true`，仅订阅可刷新）。另有 `api.disable_connection_bytes`（停发连接的累计字节）、`runtime/outbounds` 不再输出 builtin `block` 行、`flows.coverage.kernel_block` 移除。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。**2026-10-31 的线上联调修复（直连流量归属、节点延迟、`/rules` 体积、`/policies` 选区、`purpose` 取值、内存 cgroup）见「10. 联调问题修复纪要」。**
+> 实现状态（2026-11-03 同步，对照 `ef6514e`）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。另已接入 `routing_trace`（`POST /routing/trace`，仅 `resolve: "none"`，规则步骤超过 4096 时不可用）、`runtime/direct-stats`（需 `api.direct_stats`）、P4 配置源级读写（受 `api.config_write` + 受管目录布局闸门）。仍声明不可用的是 `runtime/settings`、`auth/*`；providers 的创建/删除与 geodata 的 update 返回 `404 capability_not_supported`；`nodes` 写端点随写入闸门开放（关闭时 `404`），另新增契约外的 `PATCH /api/v1/nodes/{node_id}`（改名/换链接，见 3 节 P4-7 的 2026-11-05 补充），`providers/{id}/refresh` 只依赖 operations（运行期 `can_refresh=true`，仅订阅可刷新）。另有 `api.disable_connection_bytes`（停发连接的累计字节）、`runtime/outbounds` 不再输出 builtin `block` 行、`flows.coverage.kernel_block` 移除。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。**2026-10-31 的线上联调修复（直连流量归属、节点延迟、`/rules` 体积、`/policies` 选区、`purpose` 取值、内存 cgroup）见「10. 联调问题修复纪要」。**
 >
 > **P4（配置写入：DNS / Routing 模块编辑）已于 2026-11-01 立项并落地，见 3 节 P4 章节。**
 > 闸门关闭时（未开 `api.config_write` 或目录布局不受管），`config*` 写端点返回 `403 permission_denied`，而 `PATCH /groups/{id}/config` 与 `POST/DELETE /nodes` 返回 `404 capability_not_supported`（对应能力位 `config.writable` / `groups.config_patch` / `nodes.can_manage` 同时为 false）。
@@ -864,6 +864,29 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 
 **已知偏离**：契约允许 `201`（同步生效）或 `202` + 操作；dae 只有异步，统一 `202`。`provider_refresh` 的结果是 reload 结果而非契约里的 Provider 快照。
 
+**节点编辑（2026-11-05 补充，契约外扩展）**：契约 `nodes-groups.yaml` 与 honk、doona 前端（build `99fcca4`）都只有新增/删除，没有编辑端点，因此 dae 自行定义：
+
+- `PATCH /api/v1/nodes/{node_id}`，body `{"name"?: string, "link"?: string}`，缺省字段保留当前值（`null`/缺省同义），至少给一个，否则 `400 invalid_request`。
+- 只改 inline 节点：先判定存在与归属，再校验值（未知 id `404 resource_not_found`、订阅/文件来源 `404 capability_not_supported` 先于 422）。
+- 名称用 `validateNodeName`，链接用 `validateNodeLink`（真实 dialer 解析 + host:port）；校验同时返回引擎将派生的节点 id（`nodeIDOf(property)`，插件链接会被归一化，不能用原始串哈希预测）。
+- 换链接守卫：目标链接被其他 inline 条目或已加载节点占用 → `409 state_conflict`（节点 ID 由链接派生，两条同链接会塌成一个节点）。
+- 索引里有而 `node.dae` 里已无该行 → `409 state_conflict`；无 key 形式（`node { 'ss://…' }`）没有名称可寻址，首期不支持通过 API 编辑。
+- 首期按行定位条目：同一行写多个条目（`a: 'x' b: 'y'`）时只有第一个可寻址；节点写不带 `If-Match`，语义为 last-writer-wins（外部同时手改以最后一次写入为准）。
+- 写盘复用 `commitSourceUpdate`（`.bak` + 原子写 + 全链校验 + 写后 reload），操作类型 `node_update`，结果为新 `Node`；改链接会得到新节点 id，改名 id 不变。
+- 文本改写保留该行的缩进、冒号后间距、行尾注释与换行风格（`updateNodeEntry` / `rewriteNodeLine`）；无引号裸值以行尾为终止符，不会吞掉下一行换行。
+- 完成操作的结果解析改成“按名称/由写路径算出的规范 id”定位节点（`nodeByName` / `resolve(nodeID)`），不再由适配层预测 id；`POST /nodes` 的 resolver 一并改为按名称查找。
+- 改名只重写 `node.dae`，不会改写其他源（`group.dae`）里的 filter/default/final 引用；需要时另行修改。
+
+**doona 编辑节点按钮的兼容条件（2026-11-05 实测 demo 前端 bundle）**：节点页的「节点操作 → 编辑…」并不调用 `PATCH /nodes`，而是：
+
+1. `GET /config` 取源清单，在 `kind = main|include` 的源文本里按名称定位 node 条目（要求恰好一条，且源的 `writable = true`、哈希可校验）；
+2. 本地重写源文本（改名时同时改同一源内的引用），先 `POST /config/validate`（`{mode:"syntax", sources:[{id:"node", content:"node { ... }\n"}]}`）；
+3. `PUT /config/sources/{id}` + `If-Match = content_sha256` 写回，等 `202` 操作完成。
+
+第 2 步在 dae 原先返回 `404 resource_not_found`（把 `id` 当成源引用），会让编辑直接失败。已按契约修正：`id` 是请求内诊断标识，未命中现有源时作为独立候选校验（见 `candidateOverrides`）；新增 `TestConfigValidateAcceptsAnUnknownRequestLocalID` 与端到端 `TestNodeEditFlowOverHTTP`（读源 → 校验 → If-Match 写入）。
+
+**真机联调（2026-11-05，OpenWrt x86_64 + 本地构建替换 `/usr/bin/dae`）**：API 侧全部通过——`PATCH /nodes/{id}` 改名（`202` + `node_update` → `succeeded`，文件与 `/nodes` 同步）、no-op `200 {"updated":0}`、重名 `409`、坏链接 `422`、未知 id `404`；`POST /config/validate` 以 `id:"node"` 返回 `valid:true`；`PUT /config/sources/{subscription.dae}` 改写订阅标签后 `/providers` 由 `testsub` 变为新标签、删除后 provider 消失。**前端限制**：设备自带 doona（build `99fcca4`）的节点页「编辑…」/「更多操作 → 编辑」只对 `engine.name === "honk"` 生效——`Xn(discovery).daeText` 对 dae 为 `false`，`vn(config.writable, source.writable, hashComplete)` 因此恒假；include 源的节点「移除」也被前端按 "声明于主配置文件以外的文件" 禁用。dae 能走通的界面路径是节点来源/节点行的「打开配置文件」→ 内置源编辑器 → 应用（实测改名 `testsub` → `testsub_ui` 生效）。要让节点页直接编辑，需要前端改为调用 `PATCH /nodes/{id}`（或在 doona 内新增 dae 描述符）；daemon 侧无需再改。
+
 **测试方案**：
 
 - mock 数据：`cmd` 包内用临时 managed 目录 + mock 分享链接（`vless://`、`trojan://`、`ss://`）覆盖：写入文本形态、重名 `409`、坏 scheme `422`、订阅节点 `404`、闸门关闭 `404`、写后 reload 只排队一次。
@@ -903,6 +926,7 @@ P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"
 | GET | `/api/v1/nodes` | 节点列表（`group_id` / `limit` / `cursor`） |
 | GET | `/api/v1/nodes/{node_id}` | 节点详情 |
 | POST | `/api/v1/nodes` | 新增 inline 节点（写入闸门；202 + `node_create`） |
+| PATCH | `/api/v1/nodes/{node_id}` | 编辑 inline 节点的名称/链接（写入闸门；202 + `node_update`，无变化 200 `{"updated":0}`） |
 | DELETE | `/api/v1/nodes/{node_id}` | 删除 inline 节点（写入闸门；202 + `node_delete`，未知 id 幂等 200） |
 | GET | `/api/v1/runtime/outbounds` | 按出站累计计数器（reload 保留） |
 | GET | `/api/v1/runtime/memory` | 进程 / cgroup / eBPF 内存 |

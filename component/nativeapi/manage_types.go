@@ -9,7 +9,8 @@ package nativeapi
 // nodes. Only the nodes written in the managed node source are editable; a node
 // that a subscription or file provider delivered is managed by that provider.
 type NodeCapabilities struct {
-	// CanManage reports whether inline nodes can be created and deleted.
+	// CanManage reports whether inline nodes can be created, updated and
+	// deleted.
 	CanManage bool
 }
 
@@ -32,6 +33,23 @@ type NodeDeleteRequest struct {
 type NodeDeleteOutcome struct {
 	Accepted OperationAccepted
 	Deleted  int
+}
+
+// NodeUpdateRequest asks the provider to change one inline node. A nil Name or
+// Link keeps the current value; the caller sets at least one of them.
+type NodeUpdateRequest struct {
+	NodeID         string
+	Name           *string
+	Link           *string
+	IdempotencyKey string
+}
+
+// NodeUpdateOutcome reports what an update did. Updated is zero when the
+// request named the values the node already has, which answers 200 with
+// updated 0 instead of writing the same line and starting a reload.
+type NodeUpdateOutcome struct {
+	Accepted OperationAccepted
+	Updated  int
 }
 
 // ProviderCapabilities describes provider actions beyond listing.

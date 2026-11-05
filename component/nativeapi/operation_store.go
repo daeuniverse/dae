@@ -29,6 +29,7 @@ const (
 	OperationKindResume          = "resume"
 	OperationKindProbe           = "probe"
 	OperationKindNodeCreate      = "node_create"
+	OperationKindNodeUpdate      = "node_update"
 	OperationKindNodeDelete      = "node_delete"
 	OperationKindProviderRefresh = "provider_refresh"
 	OperationKindGroupUpdate     = "group_update"

@@ -27,6 +27,7 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 - `GET /api/v1/datapath` — eBPF 挂载点、routing generation 与 map 占用
 - `GET /api/v1/nodes?group_id=&limit=&cursor=`
 - `GET /api/v1/nodes/{node_id}`
+- `PATCH /api/v1/nodes/{node_id}` — 改 inline 节点的名称和/或链接（受配置写入闸门约束）
 - `POST /api/v1/operations/reload`
 - `POST /api/v1/operations/suspend`
 - `POST /api/v1/operations/resume`
@@ -55,6 +56,18 @@ listener 的配置、认证、TLS、Host/Origin 校验与自托管前端见
 两者都排队一个 reload，分别以 `202` + `node_create` / `node_delete` 操作返回；
 `DELETE` 对未知 id 保持幂等（`200 {"deleted": 0}`）。
 
+`PATCH /api/v1/nodes/{node_id}` 编辑 inline 节点，body 为 `{"name"?: string, "link"?: string}`：
+缺省字段保留当前值（显式 `null` 同义），至少给一个。它同样排队一个 reload 并以 `202` + `node_update`
+操作返回，结果为新节点；只改名称时节点 id 不变，改链接会得到新的 id（id 由引擎解析链接后的
+dialer 派生，插件链接可能先被归一化）。先判定节点存在与归属，再校验值：未知 id `404 resource_not_found`、
+订阅/文件来源 `404 capability_not_supported`（即使 body 里的链接非法）；名称与链接非法时
+`422 unsupported_value`，重名 `409 state_conflict`。换链接时目标链接被其他 inline 条目或已加载节点占用
+也返回 `409 state_conflict`：API 用链接标识节点，两条同链接的条目会塌成一个节点。生成代次领先于文件
+（`node.dae` 里已无该行）返回 `409 state_conflict`；以无 key 形式书写（`node { 'ss://…' }`）的条目没有
+名称可供寻址，不能通过 API 编辑，需直接改文件。patch 的两值都是节点已有值时不做写入、不触发
+reload，返回 `200 {"updated": 0}`。该端点是 dae 在契约之外的扩展：契约
+（`api-standardize`）目前只定义新增与删除。
+
 `POST /api/v1/providers/{provider_id}/refresh` 不受该闸门约束：`providers.can_refresh`
 只取决于 operations 是否接好，因此 API 运行期恒为 true。只有 `kind == subscription` 的
 provider 可以刷新，inline/file provider 返回 `404 capability_not_supported`；刷新排队一个
@@ -70,6 +83,10 @@ provider 可以刷新，inline/file provider 返回 `404 capability_not_supporte
 配置支持源级编辑及受限的组配置编辑：`GET /api/v1/config`、
 `GET /api/v1/config/sources/{source_id}`、
 `PUT /api/v1/config/sources/{source_id}`（需 `If-Match`）与 `POST /api/v1/config/validate`。
+`POST /api/v1/config/validate` 的 `sources[].id` 按契约是请求内诊断标识：缺省用 `source-N`；
+命中现有可见源 id 时作为该源的候选覆盖（dae 扩展），未命中时作为独立候选校验（不落盘），
+只有 `path` 指向真实文件；因此前端以 `id: "node"` 校验重写后的 node 块不会得到 `404`。
+改名（`PATCH /nodes/{id}` 或前端节点编辑）只改节点所在源，不会重写其他源里的组过滤/规则引用。
 契约没有 `GET /api/v1/config/sources` 列表路由：源清单取自 `GET /api/v1/config` 的
 `sources[]`，对集合路径的非 `POST` 请求返回 `405`。写入仅当 `api.config_write = true`
 且配置目录符合受管布局（`config.dae` 引入 `config.d/*.dae` 与 `api.dae`）时可用；

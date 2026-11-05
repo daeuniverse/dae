@@ -28,19 +28,39 @@ func (p *nativeAPIProvider) CreateNode(ctx context.Context, req nativeapi.NodeCr
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.OperationAccepted{}, errNodeManagementUnavailable
 	}
-	// The contract asks a node_create operation for the Node it produced. The ID
-	// is derived the same way /nodes derives it, so the completed operation can
-	// read the resource from the generation the reload publishes. The resolver is
-	// handed to the editor so it is installed with the operation, not after.
-	nodeID := nodeIDOfLink(req.Link, req.Name)
+	// The contract asks a node_create operation for the Node it produced. Node
+	// names are unique across providers, so the completed operation looks the
+	// node up by name: predicting the id would hash the raw link, which a plugin
+	// link may be normalized from before the engine derives its id. The resolver
+	// is handed to the editor so it is installed with the operation, not after.
 	resolve := func() (any, error) {
-		node, nodeErr := p.GetNode(context.Background(), nodeID)
+		node, nodeErr := p.nodeByName(req.Name)
 		if nodeErr != nil {
 			return nil, nodeErr
 		}
 		return *node, nil
 	}
 	return p.config.CreateNode(ctx, req, p.nodeIndex, resolve)
+}
+
+// UpdateNode changes the name and/or link of one inline node. A changed link
+// changes the node id, so the editor hands the resolver the id the write will
+// publish rather than letting the adapter predict it.
+func (p *nativeAPIProvider) UpdateNode(ctx context.Context, req nativeapi.NodeUpdateRequest) (nativeapi.NodeUpdateOutcome, error) {
+	if p.config == nil {
+		return nativeapi.NodeUpdateOutcome{}, errNodeManagementUnavailable
+	}
+	if !p.NodeCapabilities().CanManage {
+		return nativeapi.NodeUpdateOutcome{}, errNodeManagementUnavailable
+	}
+	resolve := func(nodeID string) (any, error) {
+		node, nodeErr := p.GetNode(context.Background(), nodeID)
+		if nodeErr != nil {
+			return nil, nodeErr
+		}
+		return *node, nil
+	}
+	return p.config.UpdateNode(ctx, req, p.nodeIndex, resolve)
 }
 
 // DeleteNode removes one inline node. A node a subscription delivered is
@@ -67,6 +87,26 @@ var errNodeManagementUnavailable = &nativeapi.APIError{
 	Status:  404,
 	Code:    "capability_not_supported",
 	Message: "node management is not supported by this engine",
+}
+
+// nodeByName returns the node the running generation publishes under name.
+// Names are unique across providers, so this needs no id prediction.
+func (p *nativeAPIProvider) nodeByName(name string) (*nativeapi.Node, error) {
+	active, err := p.activeGeneration()
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := active.nodes("")
+	if err != nil {
+		return nil, err
+	}
+	for i := range nodes {
+		if nodes[i].Name == name {
+			node := nodes[i]
+			return &node, nil
+		}
+	}
+	return nil, nativeapi.NewAPIError(404, "resource_not_found", "node not found")
 }
 
 // nodeIndex maps the running generation's nodes by ID, with the provider that

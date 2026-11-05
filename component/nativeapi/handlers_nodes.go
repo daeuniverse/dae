@@ -49,12 +49,16 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "resource is not supported by this engine")
 		return
 	}
+	if r.Method == http.MethodPatch {
+		s.handleUpdateNode(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete {
 		s.handleDeleteNode(w, r)
 		return
 	}
 	if !isReadMethod(r.Method) {
-		writeMethodNotAllowed(w, requestID, "GET, HEAD, DELETE")
+		writeMethodNotAllowed(w, requestID, "GET, HEAD, PATCH, DELETE")
 		return
 	}
 	nodeID := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
@@ -112,6 +116,61 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAccepted(w, accepted)
+}
+
+// handleUpdateNode changes the name and/or link of one inline node. The engine
+// rewrites the node's line in the managed node source and reloads, so the answer
+// is the queued operation; a patch that names the values the node already has
+// writes nothing and answers 200 with updated 0.
+func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
+	requestID := requestIDFromContext(r.Context())
+	nodeID := strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/")
+	if nodeID == "" || strings.Contains(nodeID, "/") {
+		writeError(w, requestID, http.StatusNotFound, codeResourceNotFound, "resource not found")
+		return
+	}
+	if !s.nodes.NodeCapabilities().CanManage {
+		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "node management is not supported by this engine")
+		return
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
+	// Pointers separate "keep the current value" from an explicit empty value,
+	// which the provider then rejects through its own validation.
+	var body struct {
+		Name *string `json:"name"`
+		Link *string `json:"link"`
+	}
+	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &body); err != nil {
+		if err == errLimitedJSONBodyTooLarge {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
+		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if body.Name == nil && body.Link == nil {
+		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "name or link is required")
+		return
+	}
+	outcome, err := s.nodes.UpdateNode(r.Context(), NodeUpdateRequest{
+		NodeID:         nodeID,
+		Name:           body.Name,
+		Link:           body.Link,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+	})
+	if err != nil {
+		s.writeProviderFailure(w, requestID, err)
+		return
+	}
+	if outcome.Updated == 0 {
+		// The node already carries these values: no write, no reload.
+		writeJSON(w, http.StatusOK, map[string]int{"updated": 0})
+		return
+	}
+	writeAccepted(w, outcome.Accepted)
 }
 
 // handleDeleteNode removes one inline node. A node that a provider delivered is

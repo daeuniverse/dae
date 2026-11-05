@@ -62,7 +62,9 @@ func validateNodeName(name string) error {
 // validateNodeLink builds a dialer from the link, which is the same parse the
 // reload performs, and then checks the address it produced. The dialer alone is
 // not enough: a protocol dialer parses lazily, so a link without host and port
-// still constructs and only fails when someone dials it.
+// still constructs and only fails when someone dials it. The returned id is the
+// one the rest of the API derives from the same dialer, which a plugin link may
+// normalize before it is hashed.
 func validateNodeLink(ctx context.Context, log *logrus.Logger, link string) (string, error) {
 	scheme := shareLinkScheme(link)
 	if scheme == "" {
@@ -93,7 +95,7 @@ func validateNodeLink(ctx context.Context, log *logrus.Logger, link string) (str
 	if err != nil || host == "" || port == "" {
 		return scheme, fmt.Errorf("the share link has no host and port")
 	}
-	return scheme, nil
+	return nodeIDOf(property), nil
 }
 
 // shareLinkScheme returns the lowercased URI scheme, or "" when the text is not
@@ -207,6 +209,128 @@ func removeNodeEntry(text, name string) (string, bool) {
 	return text, false
 }
 
+// updateNodeEntry rewrites the line that defines oldName, keeping the entry's
+// indentation and any trailing comment. It reports whether the name was found.
+func updateNodeEntry(text, oldName, newName, link string) (string, bool, error) {
+	start := nodeBlockPattern.FindStringIndex(text)
+	if start == nil {
+		return text, false, nil
+	}
+	open := strings.Index(text[start[0]:], "{") + start[0]
+	closeIdx := matchingBrace(text, open)
+	if closeIdx < 0 {
+		return text, false, nil
+	}
+	quoted, err := quoteNodeValue(link)
+	if err != nil {
+		return text, false, err
+	}
+	offset := open + 1
+	for _, line := range strings.SplitAfter(text[open+1:closeIdx], "\n") {
+		if key, ok := nodeLineKey(line); ok && key == oldName {
+			rewritten := rewriteNodeLine(line, newName, quoted)
+			return text[:offset] + rewritten + text[offset+len(line):], true, nil
+		}
+		offset += len(line)
+	}
+	return text, false, nil
+}
+
+// rewriteNodeLine replaces the key and value of one "name: value" line while
+// keeping its indentation, the spacing after the colon and any trailing comment.
+func rewriteNodeLine(line, name, quoted string) string {
+	trimmed := strings.TrimLeft(line, " \t")
+	indent := line[:len(line)-len(trimmed)]
+	colon := strings.Index(trimmed, ":")
+	if colon < 0 {
+		return line
+	}
+	rest := trimmed[colon+1:]
+	valueStart := len(rest) - len(strings.TrimLeft(rest, " \t"))
+	return indent + name + ":" + rest[:valueStart] + quoted + nodeValueTail(rest[valueStart:])
+}
+
+// nodeValueTail returns what follows the value on the same line: a trailing
+// comment and the line ending. A value that cannot be read returns "" so the
+// rewrite drops it instead of copying it into the new line.
+func nodeValueTail(value string) string {
+	if value == "" {
+		return ""
+	}
+	if value[0] == '\'' || value[0] == '"' {
+		if end := strings.IndexByte(value[1:], value[0]); end >= 0 {
+			return value[end+2:]
+		}
+		return ""
+	}
+	for i := 0; i < len(value); i++ {
+		if isNodeValueDelimiter(value[i]) {
+			return value[i:]
+		}
+	}
+	return ""
+}
+
+// isNodeValueDelimiter reports whether c ends an unquoted node value. The line
+// ending is a delimiter too: an unquoted value runs to the end of the line, and
+// dropping it would glue the next entry onto the rewritten one.
+func isNodeValueDelimiter(c byte) bool {
+	switch c {
+	case '#', ' ', '\t', '\r', '\n':
+		return true
+	}
+	return false
+}
+
+// nodeLinkOf reads the link a node block defines under name. The managed line
+// is the source of truth for an inline node's current link, which the runtime
+// projection does not carry.
+func nodeLinkOf(text, name string) (string, bool) {
+	start := nodeBlockPattern.FindStringIndex(text)
+	if start == nil {
+		return "", false
+	}
+	open := strings.Index(text[start[0]:], "{") + start[0]
+	closeIdx := matchingBrace(text, open)
+	if closeIdx < 0 {
+		return "", false
+	}
+	for _, line := range strings.Split(text[open+1:closeIdx], "\n") {
+		if key, ok := nodeLineKey(line); ok && key == name {
+			return nodeLineValue(line)
+		}
+	}
+	return "", false
+}
+
+// nodeLineValue returns the value of a "name: value" line without its quotes.
+func nodeLineValue(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return "", false
+	}
+	colon := strings.Index(trimmed, ":")
+	if colon < 0 {
+		return "", false
+	}
+	rest := strings.TrimLeft(trimmed[colon+1:], " \t")
+	if rest == "" {
+		return "", false
+	}
+	if rest[0] == '\'' || rest[0] == '"' {
+		if end := strings.IndexByte(rest[1:], rest[0]); end >= 0 {
+			return rest[1 : 1+end], true
+		}
+		return "", false
+	}
+	for i := 0; i < len(rest); i++ {
+		if isNodeValueDelimiter(rest[i]) {
+			return rest[:i], true
+		}
+	}
+	return rest, true
+}
+
 // nodeLineKey returns the key of a "name: value" line.
 func nodeLineKey(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
@@ -285,6 +409,32 @@ func inlineNodeNames(text string) map[string]bool {
 		}
 	}
 	return names
+}
+
+// inlineNodeLinks maps every link the node block defines to the name that
+// defines it. A relink must not reuse a link: the API derives a node's identity
+// from its link, so two entries with one link collapse into one node.
+func inlineNodeLinks(text string) map[string]string {
+	links := map[string]string{}
+	start := nodeBlockPattern.FindStringIndex(text)
+	if start == nil {
+		return links
+	}
+	open := strings.Index(text[start[0]:], "{") + start[0]
+	closeIdx := matchingBrace(text, open)
+	if closeIdx < 0 {
+		return links
+	}
+	for _, line := range strings.Split(text[open+1:closeIdx], "\n") {
+		name, ok := nodeLineKey(line)
+		if !ok {
+			continue
+		}
+		if link, ok := nodeLineValue(line); ok {
+			links[link] = name
+		}
+	}
+	return links
 }
 
 // commitSourceUpdate validates content as the next configuration, backs up the
@@ -427,6 +577,152 @@ func (e *configEditor) rejectDuplicateNodeName(index nodeIndexFunc, target confi
 	return nil
 }
 
+// nodeUpdateFingerprint binds an Idempotency-Key to one node and one pair of
+// proposed values, with an explicit marker so a missing value cannot collide
+// with an empty one.
+func nodeUpdateFingerprint(req nativeapi.NodeUpdateRequest) string {
+	name, link := "\x00", "\x00"
+	if req.Name != nil {
+		name = "\x01" + *req.Name
+	}
+	if req.Link != nil {
+		link = "\x01" + *req.Link
+	}
+	return rawSHA256([]byte("node_update\x00" + req.NodeID + "\x00" + name + "\x00" + link))
+}
+
+// UpdateNode rewrites one inline node's line in the managed node source. A nil
+// Name or Link keeps the current value. The write reuses the config PUT guards
+// (listener secret, API section, running reload) and the create path's
+// validation, and a patch that names the values the node already has writes
+// nothing and starts no reload. resolve receives the node id the reload will
+// publish, which the write itself computes from the effective link.
+func (e *configEditor) UpdateNode(ctx context.Context, req nativeapi.NodeUpdateRequest, index nodeIndexFunc, resolve func(nodeID string) (any, error)) (nativeapi.NodeUpdateOutcome, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	fingerprint := nodeUpdateFingerprint(req)
+	accepted, ok, err := e.replayNode(req.IdempotencyKey, fingerprint)
+	if err != nil {
+		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	if ok {
+		return nativeapi.NodeUpdateOutcome{Accepted: accepted, Updated: 1}, nil
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	all, err := e.loadSources()
+	if err != nil {
+		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	if ok, _ := e.layoutOK(all); !ok {
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 404, Code: "capability_not_supported", Message: "node management is not supported by this engine",
+		}
+	}
+	target, err := e.nodeSource(all)
+	if err != nil {
+		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	refs, err := e.nodeRefs(index)
+	if err != nil {
+		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	ref, found := refs[req.NodeID]
+	if !found {
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 404, Code: "resource_not_found", Message: "node not found",
+		}
+	}
+	// Check ownership before touching the file. Editing by name first would
+	// rewrite an inline node that merely shares the name with the subscription
+	// node the caller named, because names are global.
+	if ref.ProviderID != inlineProviderID {
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 404, Code: "capability_not_supported", Message: "Only inline nodes can be updated; edit the provider instead",
+		}
+	}
+	currentLink, found := nodeLinkOf(string(target.raw), ref.Name)
+	if !found {
+		// The generation may be ahead of the file (a write that has not
+		// reloaded yet), or the entry is a keyless link, which has no name to
+		// address. Neither can be edited from here.
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 409, Code: "state_conflict",
+			Message: "the managed node source has no editable \"name: link\" entry for this node; reload or edit the file directly",
+		}
+	}
+	name, link := ref.Name, currentLink
+	if req.Name != nil {
+		name = *req.Name
+	}
+	if req.Link != nil {
+		link = *req.Link
+	}
+	if name == ref.Name && link == currentLink {
+		return nativeapi.NodeUpdateOutcome{}, nil
+	}
+
+	// Values are validated only once the node is known to be editable, so an
+	// unknown id or a provider-owned node answers 404 rather than 422. The
+	// returned id is what the reload will publish after the write.
+	if req.Name != nil {
+		if err := validateNodeName(name); err != nil {
+			return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+				Status: 422, Code: "unsupported_value", Message: err.Error(),
+			}
+		}
+	}
+	nodeID, err := validateNodeLink(ctx, e.log, link)
+	if err != nil {
+		// The reason is built from sanitized parts only: it never echoes the
+		// link, which may carry a credential.
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 422, Code: "unsupported_value", Message: err.Error(),
+		}
+	}
+	if link != currentLink {
+		// The API identifies a node by its link, so reusing a link would merge
+		// two entries into one node and leave one of them unmanageable.
+		if owner, taken := inlineNodeLinks(string(target.raw))[link]; taken && owner != ref.Name {
+			return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+				Status: 409, Code: "state_conflict", Message: "Another inline node already uses this link",
+			}
+		}
+		if nodeID != req.NodeID {
+			if _, taken := refs[nodeID]; taken {
+				return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+					Status: 409, Code: "state_conflict", Message: "Another node already uses this link",
+				}
+			}
+		}
+	}
+	if name != ref.Name {
+		if err := e.rejectDuplicateNodeName(index, target, name); err != nil {
+			return nativeapi.NodeUpdateOutcome{}, err
+		}
+	}
+	updated, found, err := updateNodeEntry(string(target.raw), ref.Name, name, link)
+	if err != nil {
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 422, Code: "unsupported_value", Message: err.Error(),
+		}
+	}
+	if !found {
+		return nativeapi.NodeUpdateOutcome{}, &nativeapi.APIError{
+			Status: 409, Code: "state_conflict", Message: "the node is not defined in the managed node source; reload to reconcile",
+		}
+	}
+	accepted, err = e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeUpdate, req.IdempotencyKey, fingerprint, func() (any, error) {
+		return resolve(nodeID)
+	})
+	if err != nil {
+		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	return nativeapi.NodeUpdateOutcome{Accepted: accepted, Updated: 1}, nil
+}
+
 // DeleteNode removes one inline node from the managed node source. resolve
 // reports the deletion count for the completed operation.
 func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteRequest, index nodeIndexFunc, resolve func() (any, error)) (nativeapi.NodeDeleteOutcome, error) {
@@ -489,13 +785,18 @@ func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteR
 }
 
 func (e *configEditor) lookupNode(index nodeIndexFunc, nodeID string) (nodeRef, bool, error) {
-	if index == nil {
-		return nodeRef{}, false, nil
-	}
-	refs, err := index()
+	refs, err := e.nodeRefs(index)
 	if err != nil {
 		return nodeRef{}, false, err
 	}
 	ref, ok := refs[nodeID]
 	return ref, ok, nil
+}
+
+// nodeRefs snapshots the running generation's node index.
+func (e *configEditor) nodeRefs(index nodeIndexFunc) (map[string]nodeRef, error) {
+	if index == nil {
+		return nil, nil
+	}
+	return index()
 }

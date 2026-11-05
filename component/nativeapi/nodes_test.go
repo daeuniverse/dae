@@ -30,6 +30,10 @@ func (p *fakeNodeProvider) CreateNode(context.Context, NodeCreateRequest) (Opera
 	return OperationAccepted{}, &APIError{Status: 404, Code: "capability_not_supported", Message: "node management is not supported by this engine"}
 }
 
+func (p *fakeNodeProvider) UpdateNode(context.Context, NodeUpdateRequest) (NodeUpdateOutcome, error) {
+	return NodeUpdateOutcome{}, &APIError{Status: 404, Code: "capability_not_supported", Message: "node management is not supported by this engine"}
+}
+
 func (p *fakeNodeProvider) DeleteNode(context.Context, NodeDeleteRequest) (NodeDeleteOutcome, error) {
 	return NodeDeleteOutcome{}, &APIError{Status: 404, Code: "capability_not_supported", Message: "node management is not supported by this engine"}
 }
@@ -176,6 +180,7 @@ func TestNodesManagementIsNotSupported(t *testing.T) {
 		path   string
 	}{
 		{http.MethodPost, "/api/v1/nodes"},
+		{http.MethodPatch, "/api/v1/nodes/n_1"},
 		{http.MethodDelete, "/api/v1/nodes/n_1"},
 	} {
 		response := doRequest(server, request.method, request.path, remote, nil)

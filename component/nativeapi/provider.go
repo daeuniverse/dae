@@ -66,8 +66,8 @@ type OperationProvider interface {
 	GetOperation(ctx context.Context, operationID string) (Operation, bool, error)
 }
 
-// NodeProvider serves the read-only node inventory. A nil provider makes the
-// resource unavailable in capabilities.
+// NodeProvider serves the node inventory and the writes to inline nodes. A nil
+// provider makes the resource unavailable in capabilities.
 type NodeProvider interface {
 	// ListNodes returns one page. An empty groupID lists every node; an
 	// unknown groupID is reported through *APIError.
@@ -77,6 +77,8 @@ type NodeProvider interface {
 	NodeCapabilities() NodeCapabilities
 	// CreateNode writes one inline node into the managed node source.
 	CreateNode(ctx context.Context, req NodeCreateRequest) (OperationAccepted, error)
+	// UpdateNode changes the name and/or link of one inline node.
+	UpdateNode(ctx context.Context, req NodeUpdateRequest) (NodeUpdateOutcome, error)
 	// DeleteNode removes one inline node from the managed node source.
 	DeleteNode(ctx context.Context, req NodeDeleteRequest) (NodeDeleteOutcome, error)
 }

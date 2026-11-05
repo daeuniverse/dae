@@ -265,6 +265,358 @@ func TestConfigDeleteNodeIsIdempotentForUnknownID(t *testing.T) {
 	}
 }
 
+// nodeStringPtr is the "value is set" form of a NodeUpdateRequest field.
+func nodeStringPtr(value string) *string { return &value }
+
+func TestUpdateNodeEntryRewritesLineInPlace(t *testing.T) {
+	text := "# keep me\nnode {\n    old: 'socks5://192.0.2.1:1080' # trailing\n    other: 'socks5://192.0.2.2:1080'\n}\n# and me\n"
+	got, ok, err := updateNodeEntry(text, "old", "new", mockLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("old was not found")
+	}
+	want := "# keep me\nnode {\n    new: '" + mockLink + "' # trailing\n    other: 'socks5://192.0.2.2:1080'\n}\n# and me\n"
+	if got != want {
+		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
+	}
+	if _, ok, _ := updateNodeEntry(text, "missing", "new", mockLink); ok {
+		t.Fatal("an unknown name must not match")
+	}
+	if _, _, err := updateNodeEntry(text, "old", "new", "vless://192.0.2.1:1\"'"); err == nil {
+		t.Fatal("a link with both quote characters must be refused")
+	}
+}
+
+func TestUpdateNodeEntryKeepsBareValuesAndLineEndings(t *testing.T) {
+	// An unquoted value runs to the end of the line. Dropping the line ending
+	// there would glue the next entry onto the rewritten one.
+	text := "node {\n  a: socks5://192.0.2.1:1080\n  b: 'socks5://192.0.2.2:1080'\n}\n"
+	got, ok, err := updateNodeEntry(text, "a", "a", mockLink)
+	if err != nil || !ok {
+		t.Fatalf("updateNodeEntry: %v, ok=%v", err, ok)
+	}
+	want := "node {\n  a: '" + mockLink + "'\n  b: 'socks5://192.0.2.2:1080'\n}\n"
+	if got != want {
+		t.Fatalf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestNodeLinkOfReadsTheManagedValue(t *testing.T) {
+	text := "node {\n  a: 'socks5://192.0.2.1:1080'\n  b: \"socks5://192.0.2.2:1080\"\n  c: socks5://192.0.2.3:1080 # bare\n}\n"
+	cases := map[string]string{
+		"a": "socks5://192.0.2.1:1080",
+		"b": "socks5://192.0.2.2:1080",
+		"c": "socks5://192.0.2.3:1080",
+	}
+	for name, want := range cases {
+		got, ok := nodeLinkOf(text, name)
+		if !ok || got != want {
+			t.Fatalf("nodeLinkOf(%q) = %q, %v; want %q", name, got, ok, want)
+		}
+	}
+	if _, ok := nodeLinkOf(text, "missing"); ok {
+		t.Fatal("an unknown name must not resolve")
+	}
+}
+
+func TestConfigUpdateNodeRenamesAndRelinks(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	target := flowSource(t, e, "config.d/node.dae")
+
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	ops.calls = 0
+	relinked := "socks5://user:pass@192.0.2.11:1080"
+
+	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
+	outcome, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Name:   nodeStringPtr("mock-02"),
+		Link:   nodeStringPtr(relinked),
+	}, index, func(nodeID string) (any, error) { return nodeID, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Updated != 1 {
+		t.Fatalf("updated = %d, want 1", outcome.Updated)
+	}
+	if ops.calls != 1 || ops.resolver == nil {
+		t.Fatalf("StartOperation calls = %d, resolver installed = %v", ops.calls, ops.resolver != nil)
+	}
+	if result, err := ops.resolver(); err != nil || result != nodeIDOfLink(relinked, "mock-02") {
+		t.Fatalf("resolver returned %v, %v", result, err)
+	}
+	content, err := os.ReadFile(target.abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "mock-02: '"+relinked+"'") {
+		t.Fatalf("node not updated:\n%s", content)
+	}
+	if strings.Contains(string(content), "mock-01") {
+		t.Fatalf("the old name is still present:\n%s", content)
+	}
+	if bak, _ := os.ReadFile(target.abs + ".bak"); !strings.Contains(string(bak), "mock-01") {
+		t.Fatalf("backup must hold the previous bytes: %q", bak)
+	}
+}
+
+func TestConfigUpdateNodeKeepsNameWhenOnlyTheLinkChanges(t *testing.T) {
+	// A nil field keeps the current value, so a link-only patch must not rename
+	// the node to the empty string.
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	target := flowSource(t, e, "config.d/node.dae")
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
+	relinked := "socks5://user:pass@192.0.2.11:1080"
+	if _, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Link:   nodeStringPtr(relinked),
+	}, index, nil); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(target.abs)
+	if !strings.Contains(string(content), "mock-01: '"+relinked+"'") {
+		t.Fatalf("node not updated in place:\n%s", content)
+	}
+}
+
+func TestConfigUpdateNodeRejectsDuplicateName(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	target := flowSource(t, e, "config.d/node.dae")
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(target.abs)
+	ops.calls = 0
+
+	// A name a subscription delivered is taken too: names are global.
+	index := nodeIndexWith(
+		map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}},
+		map[string]nodeRef{"n_sub": {Name: "taken", ProviderID: "p_abc"}},
+	)
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Name:   nodeStringPtr("taken"),
+	}, index, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
+		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
+	}
+	if after, _ := os.ReadFile(target.abs); string(after) != string(before) {
+		t.Fatal("a rejected update must not touch the file")
+	}
+	if ops.calls != 0 {
+		t.Fatal("a rejected update must not queue a reload")
+	}
+}
+
+func TestConfigUpdateNodeRejectsUnsupportedLink(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	target := flowSource(t, e, "config.d/node.dae")
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(target.abs)
+	ops.calls = 0
+
+	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Link:   nodeStringPtr("vless://not-a-real-node"),
+	}, index, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 422 || apiErr.Code != "unsupported_value" {
+		t.Fatalf("got %d %s, want 422 unsupported_value", apiErr.Status, apiErr.Code)
+	}
+	if after, _ := os.ReadFile(target.abs); string(after) != string(before) {
+		t.Fatal("a rejected link must not touch the file")
+	}
+	if ops.calls != 0 {
+		t.Fatal("a rejected update must not queue a reload")
+	}
+}
+
+func TestConfigUpdateNodeRejectsProviderOwnedNode(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+
+	index := nodeIndexWith(map[string]nodeRef{"n_sub": {Name: "sub-01", ProviderID: "p_abc"}})
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_sub",
+		Name:   nodeStringPtr("sub-02"),
+	}, index, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
+		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
+	}
+	if ops.calls != 0 {
+		t.Fatal("a rejected update must not queue a reload")
+	}
+}
+
+func TestConfigUpdateNodeRejectsALinkAnotherInlineNodeUses(t *testing.T) {
+	// A node's API identity is derived from its link, so a relink that reuses an
+	// existing link would merge two entries into one node.
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	target := flowSource(t, e, "config.d/node.dae")
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	other := "socks5://user:pass@192.0.2.12:1080"
+	// The second node exists in the file but not yet in the running index: the
+	// file check has to catch it alone.
+	content, _ := os.ReadFile(target.abs)
+	updated := insertNodeEntryOrFail(t, string(content), "mock-02", other)
+	if err := os.WriteFile(target.abs, []byte(updated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(target.abs)
+	ops.calls = 0
+
+	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Link:   nodeStringPtr(other),
+	}, index, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
+		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
+	}
+	if after, _ := os.ReadFile(target.abs); string(after) != string(before) {
+		t.Fatal("a rejected relink must not touch the file")
+	}
+	if ops.calls != 0 {
+		t.Fatal("a rejected relink must not queue a reload")
+	}
+}
+
+func TestConfigUpdateNodeRejectsALinkAnotherNodeUses(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	ops.calls = 0
+
+	taken := "socks5://user:pass@192.0.2.13:1080"
+	index := nodeIndexWith(
+		map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}},
+		map[string]nodeRef{nodeIDOfLink(taken, "sub-01"): {Name: "sub-01", ProviderID: "p_abc"}},
+	)
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Link:   nodeStringPtr(taken),
+	}, index, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
+		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
+	}
+}
+
+func TestConfigUpdateNodeChecksTheNodeBeforeItsValues(t *testing.T) {
+	// An unknown id answers 404 even when the patch carries a value the engine
+	// could not parse: the node has to exist before its values are judged.
+	main, _ := newManagedTree(t)
+	e := newFlowEditor(t, main, true, &fakeConfigOperations{})
+
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_missing",
+		Link:   nodeStringPtr("vless://not-a-real-node"),
+	}, emptyNodeIndex, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "resource_not_found" {
+		t.Fatalf("got %d %s, want 404 resource_not_found", apiErr.Status, apiErr.Code)
+	}
+}
+
+func TestConfigUpdateNodeUnknownIDIs404(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_missing",
+		Name:   nodeStringPtr("mock-02"),
+	}, emptyNodeIndex, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "resource_not_found" {
+		t.Fatalf("got %d %s, want 404 resource_not_found", apiErr.Status, apiErr.Code)
+	}
+}
+
+func TestConfigUpdateNodeWithoutAFileLineIs409(t *testing.T) {
+	// The generation can still hold a node the managed file no longer defines,
+	// e.g. someone removed the line by hand without a reload.
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+
+	index := nodeIndexWith(map[string]nodeRef{"n_stale": {Name: "ghost", ProviderID: inlineProviderID}})
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_stale",
+		Name:   nodeStringPtr("ghost-2"),
+	}, index, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 409 || apiErr.Code != "state_conflict" {
+		t.Fatalf("got %d %s, want 409 state_conflict", apiErr.Status, apiErr.Code)
+	}
+}
+
+func TestConfigUpdateNodeNoOpWritesNothing(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	target := flowSource(t, e, "config.d/node.dae")
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(target.abs)
+	ops.calls = 0
+
+	index := nodeIndexWith(map[string]nodeRef{"n_mock": {Name: "mock-01", ProviderID: inlineProviderID}})
+	outcome, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Name:   nodeStringPtr("mock-01"),
+		Link:   nodeStringPtr(mockLink),
+	}, index, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Updated != 0 {
+		t.Fatalf("updated = %d, want 0", outcome.Updated)
+	}
+	if after, _ := os.ReadFile(target.abs); string(after) != string(before) {
+		t.Fatal("a no-op patch must not rewrite the file")
+	}
+	if ops.calls != 0 {
+		t.Fatal("a no-op patch must not queue a reload")
+	}
+}
+
+func TestConfigUpdateNodeRequiresWritesEnabled(t *testing.T) {
+	main, _ := newManagedTree(t)
+	e := newFlowEditor(t, main, false, &fakeConfigOperations{})
+
+	_, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID: "n_mock",
+		Name:   nodeStringPtr("mock-02"),
+	}, emptyNodeIndex, nil)
+	if apiErr := flowAPIError(t, err); apiErr.Status != 404 || apiErr.Code != "capability_not_supported" {
+		t.Fatalf("got %d %s, want 404 capability_not_supported", apiErr.Status, apiErr.Code)
+	}
+}
+
 func TestValidateNodeLinkAcceptsRealShareLinks(t *testing.T) {
 	// Mock links in the shapes the panel pastes: the same parse the reload does
 	// has to accept them, otherwise a stored node would break the next reload.

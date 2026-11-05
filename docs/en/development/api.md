@@ -29,6 +29,7 @@ Current implementation:
   `409 state_conflict`, and `fixed` answers `422 unsupported_value`
 - `GET /api/v1/nodes?group_id=&limit=&cursor=`
 - `GET /api/v1/nodes/{node_id}`
+- `PATCH /api/v1/nodes/{node_id}` — rename and/or relink an inline node (gated on configuration writes)
 - `POST /api/v1/operations/reload`
 - `POST /api/v1/operations/suspend`
 - `POST /api/v1/operations/resume`
@@ -59,6 +60,26 @@ gated on the configuration write switch: `nodes.can_manage` is true only with
 with a `node_create` or `node_delete` operation; `DELETE` stays idempotent for an
 unknown id (`200 {"deleted": 0}`).
 
+`PATCH /api/v1/nodes/{node_id}` edits an inline node. The body is
+`{"name"?: string, "link"?: string}`: an omitted field (or an explicit `null`)
+keeps its current value and at least one must be set. It also queues a reload and
+answers `202` with a `node_update` operation whose result is the node; a rename
+keeps the node id, a new link produces a new one (the id is derived from the
+dialer the engine parses the link into, which may normalize a plugin link).
+Existence and ownership are resolved before the values are checked: an unknown id
+is `404 resource_not_found` and a subscription or file node is
+`404 capability_not_supported` even when the body carries an invalid link; a bad
+name or link answers `422 unsupported_value` and a taken name `409 state_conflict`.
+A relink whose link another inline entry or already loaded node uses is
+`409 state_conflict` too, because the API identifies a node by its link and two
+entries with one link collapse into a single node. A generation that is ahead of
+the file (the line is gone) answers `409 state_conflict`; a keyless entry
+(`node { 'ss://…' }`) has no name to address and cannot be edited through the API
+— edit the file instead. A patch that repeats the node's current values writes
+nothing, starts no reload and answers `200 {"updated": 0}`. This endpoint is a
+dae extension: the contract (`api-standardize`) currently defines creation and
+deletion only.
+
 `POST /api/v1/providers/{provider_id}/refresh` does not depend on that switch:
 `providers.can_refresh` only needs the operations adapter, so it is true whenever
 the API runs. Only a `subscription` provider can be refreshed — an inline or file
@@ -78,13 +99,20 @@ queries, and currently supports `resolve: "none"` only; `resolve: "live"` answer
 Configuration supports source-level editing plus restricted group-config
 editing: `GET /api/v1/config`, `GET /api/v1/config/sources/{source_id}`,
 `PUT /api/v1/config/sources/{source_id}` (requires `If-Match`) and
-`POST /api/v1/config/validate`. The contract has no `GET /api/v1/config/sources`
-list route: the source list comes from `GET /api/v1/config`'s `sources[]`, and a
-non-`POST` request to the collection path answers `405`. Writes are available
-only when `api.config_write = true` and the config directory follows the managed
-layout (`config.dae` includes `config.d/*.dae` and `api.dae`); otherwise they
-answer `403 permission_denied` with `details.reason`, and nothing is written.
-Deliberate deviations from the contract:
+`POST /api/v1/config/validate`. A `sources[].id` is the contract's request-local
+diagnostic label: it defaults to `source-N`, overrides the visible source with
+that id when one exists (a dae extension), and otherwise validates as a
+standalone candidate that is never written; only `path` names a file. A
+syntax check of a rewritten node block under `id: "node"` therefore does not
+answer `404`. A rename (through `PATCH /nodes/{id}` or the dashboard editor)
+rewrites the node's own source only; group filters and rules in other sources
+keep the old name until they are updated separately. The contract has no
+`GET /api/v1/config/sources` list route: the source list comes from
+`GET /api/v1/config`'s `sources[]`, and a non-`POST` request to the collection
+path answers `405`. Writes are available only when `api.config_write = true` and
+the config directory follows the managed layout (`config.dae` includes
+`config.d/*.dae` and `api.dae`); otherwise they answer `403 permission_denied`
+with `details.reason`, and nothing is written.
 
 Group config patches use `application/json-patch+json` and require the strong
 `If-Match` revision from the config `ETag`. Only `/config/check_interval`
@@ -92,6 +120,8 @@ Group config patches use `application/json-patch+json` and require the strong
 change queues a reload and answers `202` with a `group_update` operation;
 `groups.config_patch` and each group's `capabilities.mutable_config` reflect
 whether writes are currently available.
+
+Deliberate deviations from the contract:
 
 - `api.dae` is hidden. It is omitted from `sources[]`, and its id answers
   `404 resource_not_found`, the same as an unknown id. Capabilities report it in

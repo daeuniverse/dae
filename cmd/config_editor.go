@@ -470,11 +470,6 @@ func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativea
 		var target configSourceFile
 		var ok bool
 		switch {
-		case r.ID != "":
-			if hiddenIDs[r.ID] {
-				return nil, nil, nil, errHiddenSourceRef
-			}
-			target, ok = byID[r.ID]
 		case r.Path != "":
 			abs := filepath.Clean(filepath.Join(e.baseDir, filepath.FromSlash(r.Path)))
 			if filepath.Base(abs) == hiddenConfigSourceName {
@@ -491,6 +486,20 @@ func (e *configEditor) candidateOverrides(all []configSourceFile, reqs []nativea
 					Code:    "unsupported_value",
 					Message: "the path is not part of the include tree, so its content cannot be validated",
 				}
+			}
+		case r.ID != "":
+			if hiddenIDs[r.ID] {
+				return nil, nil, nil, errHiddenSourceRef
+			}
+			target, ok = byID[r.ID]
+			if !ok {
+				// The contract's id is a request-local diagnostic label; only a
+				// path names a file. An id that matches a visible source still
+				// overrides it, which is what the config editor uses. A label the
+				// tree does not know is a standalone candidate, not an error: the
+				// node editor validates a node block under a label of its own.
+				anonymous = append(anonymous, anonymousValidationSource{id: r.ID, content: *r.Content})
+				continue
 			}
 		default:
 			// Request-local ID, defaulted exactly as the contract describes.
