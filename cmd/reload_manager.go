@@ -593,21 +593,24 @@ func (m *reloadManager) startControlPlaneRetirement(
 	}(task)
 }
 
-func (m *reloadManager) refreshPprofServer(server **http.Server, port uint16) {
+// refreshPprofServer reconciles the pprof listener with the reloaded port. The
+// error is returned instead of dropped: a port that cannot be bound is worth a
+// line in the reload log, but it must not fail a reload whose datapath is
+// already healthy.
+func (m *reloadManager) refreshPprofServer(server **http.Server, port uint16) error {
 	if server == nil {
-		return
+		return nil
 	}
-	if *server != nil {
-		pprofCtx, pprofCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = (*server).Shutdown(pprofCtx)
-		pprofCancel()
-		*server = nil
+	stopPprofServer(server)
+	if port == 0 {
+		return nil
 	}
-	if port != 0 {
-		pprofAddr := "localhost:" + strconv.Itoa(int(port))
-		*server = &http.Server{Addr: pprofAddr, Handler: nil}
-		go func() { _ = (*server).ListenAndServe() }()
+	srv, err := startPprofServer(port)
+	if err != nil {
+		return err
 	}
+	*server = srv
+	return nil
 }
 
 func dnsConfigEqual(oldConf *config.Config, newConf *config.Config) bool {

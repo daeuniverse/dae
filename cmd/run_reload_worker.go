@@ -496,7 +496,9 @@ func (w *reloadWorker) run() {
 		w.reloadManager.beginHandoff()
 		releaseReloadTransition()
 
-		w.reloadManager.refreshPprofServer(&w.pprofServer, newConf.Global.PprofPort)
+		if err := w.reloadManager.refreshPprofServer(&w.pprofServer, newConf.Global.PprofPort); err != nil {
+			w.log.WithError(err).Warnln("[Reload] Failed to apply pprof port")
+		}
 
 		notifyRunStateChange(w.runStateChanges)
 

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -424,9 +423,11 @@ func (r *Runner) Run() (err error) {
 		listener:          listener,
 	}
 	if conf.Global.PprofPort != 0 {
-		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-		w.pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go func() { _ = w.pprofServer.ListenAndServe() }()
+		if pprofServer, err := startPprofServer(conf.Global.PprofPort); err != nil {
+			log.WithError(err).Warnln("Failed to start pprof server")
+		} else {
+			w.pprofServer = pprofServer
+		}
 	}
 	sigs := make(chan os.Signal, 1)
 	// Keep internal wake-ups separate so queued OS signals cannot mask reload handoff notifications.
