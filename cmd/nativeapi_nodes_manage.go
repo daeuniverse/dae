@@ -72,8 +72,7 @@ func (p *nativeAPIProvider) DeleteNode(ctx context.Context, req nativeapi.NodeDe
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.NodeDeleteOutcome{}, errNodeManagementUnavailable
 	}
-	var resolve func() (any, error)
-	resolve = func() (any, error) {
+	resolve := func() (any, error) {
 		return nativeapi.NodeDeleteResult{Deleted: 1}, nil
 	}
 	outcome, err := p.config.DeleteNode(ctx, req, p.nodeIndex, resolve)
