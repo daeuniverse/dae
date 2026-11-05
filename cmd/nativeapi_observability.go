@@ -199,11 +199,12 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 			if oldestSeq > 0 {
 				boundary = oldestSeq - 1
 			}
-			if h.seq == 0 && lastEventID == h.frameID(0) {
+			switch {
+			case h.seq == 0 && lastEventID == h.frameID(0):
 				readySeq = 0
-			} else if h.length > 0 && lastEventID == h.frameID(boundary) {
+			case h.length > 0 && lastEventID == h.frameID(boundary):
 				readySeq = boundary
-			} else {
+			default:
 				return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
 			}
 		}
