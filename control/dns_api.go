@@ -123,7 +123,7 @@ func (c *DnsController) DnsLogEpoch() uint64 {
 	if c == nil || c.dnsControllerStore == nil {
 		return 0
 	}
-	return c.dnsControllerStore.dnsLogEpoch
+	return c.dnsLogEpoch
 }
 
 // DnsLogRecords returns the retained DNS log records, newest last.
