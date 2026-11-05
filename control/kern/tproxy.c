@@ -1041,6 +1041,32 @@ report_parse_passthrough(int ret)
 	}
 }
 
+// Without an L2 header the verifier places the IP header at NET_IP_ALIGN (2),
+// so a field at a multiple of 4 sits at 2 mod 4 and strict-alignment kernels
+// reject a 4-byte load of it. On that path pkt_load32 reads such a field as two
+// 2-byte halves, and pkt_load16 reads 2-byte fields as volatile so clang cannot
+// fuse neighbouring halves into one such 4-byte load.
+static __always_inline __u16 pkt_load16(const void *p, __u32 link_h_len)
+{
+	if (link_h_len == ETH_HLEN)
+		return *(const __u16 *)p;
+	return *(const volatile __u16 *)p;
+}
+
+static __always_inline __u32 pkt_load32(const void *p, __u32 link_h_len)
+{
+	union {
+		__u16 half[2];
+		__u32 word;
+	} v;
+
+	if (link_h_len == ETH_HLEN)
+		return *(const __u32 *)p;
+	v.half[0] = pkt_load16(p, link_h_len);
+	v.half[1] = pkt_load16((const __u16 *)p + 1, link_h_len);
+	return v.word;
+}
+
 // Fast-path packet parsing via bpf_skb_pull_data + direct access.
 // Returns 0 on success, -1 for slow-path fallback, -EFAULT for malformed.
 static __always_inline int
@@ -1119,8 +1145,8 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 		((__u8 *)iph)[0] = ((const __u8 *)iph_ptr)[0];
 		iph->tos = iph_ptr->tos;
 		iph->protocol = iph_ptr->protocol;
-		iph->saddr = iph_ptr->saddr;
-		iph->daddr = iph_ptr->daddr;
+		iph->saddr = pkt_load32(&iph_ptr->saddr, link_h_len);
+		iph->daddr = pkt_load32(&iph_ptr->daddr, link_h_len);
 		*ihl = iphdr_ihl(iph_ptr);
 		*l4proto = iph_ptr->protocol;
 
@@ -1139,17 +1165,17 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 
 			if ((void *)(tcph_ptr + 1) > data_end)
 				return -1;
-			tcph->source = tcph_ptr->source;
-			tcph->dest = tcph_ptr->dest;
-			tcph->seq = tcph_ptr->seq;
-			tcph->ack_seq = tcph_ptr->ack_seq;
+			tcph->source = pkt_load16(&tcph_ptr->source, link_h_len);
+			tcph->dest = pkt_load16(&tcph_ptr->dest, link_h_len);
+			tcph->seq = pkt_load32(&tcph_ptr->seq, link_h_len);
+			tcph->ack_seq = pkt_load32(&tcph_ptr->ack_seq, link_h_len);
 			// Data offset + flags, read through the raw accessors for
 			// the same reason as the IP version/ihl byte above. The
 			// reserved nibble is zero in a valid header and is not read
 			// by any consumer of the copied struct.
 			((__u8 *)tcph)[12] = tcph_doff(tcph_ptr) << 4;
 			((__u8 *)tcph)[13] = tcph_flags(tcph_ptr);
-			tcph->window = tcph_ptr->window;
+			tcph->window = pkt_load16(&tcph_ptr->window, link_h_len);
 			*listener_l4proto = tcp_listener_l4proto(tcph_ptr);
 			return 0;
 		}
@@ -1158,10 +1184,10 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 
 			if ((void *)(udph_ptr + 1) > data_end)
 				return -1;
-			udph->source = udph_ptr->source;
-			udph->dest = udph_ptr->dest;
-			udph->len = udph_ptr->len;
-			udph->check = udph_ptr->check;
+			udph->source = pkt_load16(&udph_ptr->source, link_h_len);
+			udph->dest = pkt_load16(&udph_ptr->dest, link_h_len);
+			udph->len = pkt_load16(&udph_ptr->len, link_h_len);
+			udph->check = pkt_load16(&udph_ptr->check, link_h_len);
 			*listener_l4proto = IPPROTO_UDP;
 			return 0;
 		}
@@ -1177,23 +1203,25 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 			return -1;
 
 		/* Preserve version, traffic class, and flow label for DSCP extraction. */
-		__builtin_memcpy(ipv6h, ipv6h_ptr, 4);
+		__u32 ipv6h_word0 = pkt_load32(ipv6h_ptr, link_h_len);
+
+		__builtin_memcpy(ipv6h, &ipv6h_word0, 4);
 		ipv6h->nexthdr = ipv6h_ptr->nexthdr;
 		ipv6h->payload_len = ipv6h_ptr->payload_len;
 		__u32 *saddr_dst = (__u32 *)ipv6h->saddr.in6_u.u6_addr32;
 		const __u32 *saddr_src = (const __u32 *)ipv6h_ptr->saddr.in6_u.u6_addr32;
 
-		saddr_dst[0] = saddr_src[0];
-		saddr_dst[1] = saddr_src[1];
-		saddr_dst[2] = saddr_src[2];
-		saddr_dst[3] = saddr_src[3];
+		saddr_dst[0] = pkt_load32(&saddr_src[0], link_h_len);
+		saddr_dst[1] = pkt_load32(&saddr_src[1], link_h_len);
+		saddr_dst[2] = pkt_load32(&saddr_src[2], link_h_len);
+		saddr_dst[3] = pkt_load32(&saddr_src[3], link_h_len);
 		__u32 *daddr_dst = (__u32 *)ipv6h->daddr.in6_u.u6_addr32;
 		const __u32 *daddr_src = (const __u32 *)ipv6h_ptr->daddr.in6_u.u6_addr32;
 
-		daddr_dst[0] = daddr_src[0];
-		daddr_dst[1] = daddr_src[1];
-		daddr_dst[2] = daddr_src[2];
-		daddr_dst[3] = daddr_src[3];
+		daddr_dst[0] = pkt_load32(&daddr_src[0], link_h_len);
+		daddr_dst[1] = pkt_load32(&daddr_src[1], link_h_len);
+		daddr_dst[2] = pkt_load32(&daddr_src[2], link_h_len);
+		daddr_dst[3] = pkt_load32(&daddr_src[3], link_h_len);
 
 		*l4proto = ipv6h_ptr->nexthdr;
 		*ihl = sizeof(struct ipv6hdr) / 4;
@@ -1244,17 +1272,17 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 
 			if ((void *)(tcph_ptr + 1) > data_end)
 				return -1;
-			tcph->source = tcph_ptr->source;
-			tcph->dest = tcph_ptr->dest;
-			tcph->seq = tcph_ptr->seq;
-			tcph->ack_seq = tcph_ptr->ack_seq;
+			tcph->source = pkt_load16(&tcph_ptr->source, link_h_len);
+			tcph->dest = pkt_load16(&tcph_ptr->dest, link_h_len);
+			tcph->seq = pkt_load32(&tcph_ptr->seq, link_h_len);
+			tcph->ack_seq = pkt_load32(&tcph_ptr->ack_seq, link_h_len);
 			// Data offset + flags, read through the raw accessors for
 			// the same reason as the IP version/ihl byte above. The
 			// reserved nibble is zero in a valid header and is not read
 			// by any consumer of the copied struct.
 			((__u8 *)tcph)[12] = tcph_doff(tcph_ptr) << 4;
 			((__u8 *)tcph)[13] = tcph_flags(tcph_ptr);
-			tcph->window = tcph_ptr->window;
+			tcph->window = pkt_load16(&tcph_ptr->window, link_h_len);
 			*listener_l4proto = tcp_listener_l4proto(tcph_ptr);
 			return 0;
 		}
@@ -1263,10 +1291,10 @@ parse_transport_fast(struct __sk_buff *skb, __u32 link_h_len,
 
 			if ((void *)(udph_ptr + 1) > data_end)
 				return -1;
-			udph->source = udph_ptr->source;
-			udph->dest = udph_ptr->dest;
-			udph->len = udph_ptr->len;
-			udph->check = udph_ptr->check;
+			udph->source = pkt_load16(&udph_ptr->source, link_h_len);
+			udph->dest = pkt_load16(&udph_ptr->dest, link_h_len);
+			udph->len = pkt_load16(&udph_ptr->len, link_h_len);
+			udph->check = pkt_load16(&udph_ptr->check, link_h_len);
 			*listener_l4proto = IPPROTO_UDP;
 			return 0;
 		}

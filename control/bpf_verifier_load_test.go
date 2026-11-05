@@ -17,6 +17,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 var verifierProcessedInsns = regexp.MustCompile(`processed \d+ insns \(limit \d+\)`)
@@ -26,6 +27,9 @@ var verifierProcessedInsns = regexp.MustCompile(`processed \d+ insns \(limit \d+
 // verifier walks. It checks that the verifier accepts each program, not a
 // particular processed-instruction count, because that count moves with the
 // clang and kernel versions; the counts are logged so growth stays visible.
+// Each combination is also loaded with BPF_F_STRICT_ALIGNMENT, which applies
+// the packet alignment rules of kernels without efficient unaligned access,
+// such as LoongArch with ARCH_STRICT_ALIGN (#1159), on any host.
 func TestProductionProgramsLoad(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("loading BPF programs requires root")
@@ -35,15 +39,17 @@ func TestProductionProgramsLoad(t *testing.T) {
 	}
 	for _, redirectPeer := range []uint8{0, 1} {
 		for _, currentTask := range []uint8{0, 1} {
-			name := fmt.Sprintf("redirect_peer=%d,current_task=%d", redirectPeer, currentTask)
-			t.Run(name, func(t *testing.T) {
-				loadProductionProgramsForTest(t, redirectPeer, currentTask)
-			})
+			for _, strictAlign := range []bool{false, true} {
+				name := fmt.Sprintf("redirect_peer=%d,current_task=%d,strict_align=%t", redirectPeer, currentTask, strictAlign)
+				t.Run(name, func(t *testing.T) {
+					loadProductionProgramsForTest(t, redirectPeer, currentTask, strictAlign)
+				})
+			}
 		}
 	}
 }
 
-func loadProductionProgramsForTest(t *testing.T, useRedirectPeer, hasBpfGetCurrentTask uint8) {
+func loadProductionProgramsForTest(t *testing.T, useRedirectPeer, hasBpfGetCurrentTask uint8, strictAlign bool) {
 	t.Helper()
 	spec, err := loadBpf()
 	if err != nil {
@@ -51,6 +57,11 @@ func loadProductionProgramsForTest(t *testing.T, useRedirectPeer, hasBpfGetCurre
 	}
 	for _, m := range spec.Maps {
 		m.Pinning = ebpf.PinNone
+	}
+	if strictAlign {
+		for _, p := range spec.Programs {
+			p.Flags |= unix.BPF_F_STRICT_ALIGNMENT
+		}
 	}
 	param := struct {
 		tproxyPort           uint32
