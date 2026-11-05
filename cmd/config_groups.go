@@ -14,7 +14,6 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,10 +23,8 @@ import (
 
 const groupSourceName = "group.dae"
 
-// groupBlockPattern matches a group block header. A trailing comment and CRLF
-// are allowed: the managed layout accepts such a file, so the patch must find
-// the block the layout check already accepted.
-var groupBlockPattern = regexp.MustCompile(`(?m)^[ \t]*group[ \t]*\{[ \t]*(?:#[^\r\n]*)?\r?$`)
+// groupBlockPattern matches the opening of the group section.
+var groupBlockPattern = sectionBlockPattern("group")
 
 func (e *configEditor) GroupConfigPatchAvailable() bool {
 	return e != nil && e.ConfigCapabilities().Writable

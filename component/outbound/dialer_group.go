@@ -42,6 +42,7 @@ type DialerGroup struct {
 
 	selectionState   atomic.Pointer[dialerGroupSelectionState]
 	selectionStateMu sync.Mutex
+	selectionWriteMu sync.Mutex
 
 	// selectionIndexes holds the runtime-selected member per transport for
 	// `select` groups. Index 0 is TCP and 1 is UDP. The values start at the
@@ -156,6 +157,8 @@ func (g *DialerGroup) SnapshotForEstablishedFlow(selected *dialer.Dialer) *Diale
 	if g == nil {
 		return nil
 	}
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
 	view := &DialerGroup{
 		log:                    g.log,
 		Name:                   g.Name,
@@ -310,9 +313,10 @@ func (g *DialerGroup) SetSelection(network SelectionNetwork, index int) (uint64,
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
 	// Re-selecting the current member changes nothing, so it must not bump the
-	// revision: every revision adds an egress snapshot per group that lives
-	// until the next reload.
+	// revision.
 	if g.selectionIndexes[slot].Swap(int64(index)) == int64(index) {
 		return g.selectionRevision.Load(), nil
 	}
@@ -361,6 +365,8 @@ func (g *DialerGroup) SetOverride(network SelectionNetwork, index int) (uint64, 
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
 	if g.overrideIndexes[slot].Swap(int64(index)) == int64(index) {
 		return g.selectionRevision.Load(), nil
 	}
@@ -386,6 +392,8 @@ func (g *DialerGroup) setBoth(slots []atomic.Int64, index int) (uint64, error) {
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
 	changed := false
 	for i := range slots {
 		if slots[i].Swap(int64(index)) != int64(index) {
@@ -403,6 +411,8 @@ func (g *DialerGroup) ClearOverrideBoth() (uint64, error) {
 	if g == nil {
 		return 0, fmt.Errorf("nil dialer group")
 	}
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
 	for i := range g.overrideIndexes {
 		g.overrideIndexes[i].Store(-1)
 	}
@@ -420,6 +430,8 @@ func (g *DialerGroup) ClearOverride(network SelectionNetwork) (uint64, error) {
 	if slot < 0 {
 		return 0, fmt.Errorf("unsupported selection network %q", network)
 	}
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
 	g.overrideIndexes[slot].Store(-1)
 	return g.selectionRevision.Add(1), nil
 }

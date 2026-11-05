@@ -62,6 +62,17 @@ func TestInsertNodeEntryAppendsBlock(t *testing.T) {
 	}
 }
 
+func TestNodeBlockPatternMatchesCommentAndCRLF(t *testing.T) {
+	for _, block := range []string{"node { # inline nodes\n", "node {\r\n"} {
+		if !nodeBlockPattern.MatchString(block) {
+			t.Errorf("node block pattern does not match %q", block)
+		}
+	}
+	if nodeBlockPattern.MatchString("node min {\n") {
+		t.Fatal("node block pattern matched a named subsection")
+	}
+}
+
 func TestRemoveNodeEntryKeepsSurroundingText(t *testing.T) {
 	text := "# keep me\nnode {\n  keep: 'socks5://192.0.2.1:1080'\n  drop: 'socks5://192.0.2.2:1080' # trailing\n}\n# and me\n"
 	got, ok := removeNodeEntry(text, "drop")

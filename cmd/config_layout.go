@@ -24,6 +24,10 @@ var (
 	commentPattern        = regexp.MustCompile(`(?m)#.*$`)
 )
 
+func sectionBlockPattern(section string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(section) + `[ \t]*\{[ \t]*(?:#[^\r\n]*)?\r?$`)
+}
+
 // detectManagedLayout reports whether the tree rooted at mainPath follows the
 // managed layout, and the reason when it does not. sources are the files the
 // merger reached.

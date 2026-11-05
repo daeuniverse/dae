@@ -285,8 +285,8 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 `GET /api/v1/runtime` 的 `traffic.observed_by` 为 `"userspace"`：`traffic.bytes` 中的
 每个字节都由用户态 relay 统计，因此是 payload 字节。数据面不经用户态转发的流量（内核直接
 路由的流，或从未到达 relay 的 `must_direct` 流量）**不**计入。因此在直连为主的部署上，这个
-数字会低于真实链路速率。这是有意的取舍：另一条路是在数据面里维护每包计数与直连流索引，
-而所有安装（包括从不开启该 API 的）都要为它付费。
+数字会低于真实链路速率。这是有意的取舍：直连流量统计由可选 API 观测器提供；只有开启
+`api.direct_stats` 的部署才承担每包内核开销。
 
 速率由每秒运行一次的采样器基于进程总量计算，转发路径上的每次记账只需一次原子加。
 
@@ -316,8 +316,9 @@ builtin `block` 行不再暴露：被封锁的流量在数据面被直接丢弃�
 计数器恒为 0。
 
 数字是链路字节且只是下界：观测程序在 tproxy 之前运行，每条流的第一个包和重启前已存在的流
-都会漏计，ICMP/分片被跳过；NAT 网关上单请求交互的回包侧，要等第二次上行重新填充 LRU 流索引
-后才能识别。该数字不会并入 `runtime.traffic`，后者仍然只统计 userspace 可见流量。
+都会漏计，ICMP/分片被跳过；NAT 网关上，SNAT 后的回包 tuple 无法匹配 `conn_state_map`，
+且回包无法识别所属 LAN 主机，因此不计入回包流量。该数字不会并入 `runtime.traffic`，
+后者仍然只统计 userspace 可见流量。
 观测计数会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读既有
 资源的控制台无需认识本端点也能看到直连流量。该行此时是混合口径：内核直连的链路字节
 加上 relay 统计到的 `must_direct` payload 字节。
@@ -327,24 +328,37 @@ builtin `block` 行不再暴露：被封锁的流量在数据面被直接丢弃�
 直连流量不会进入用户态，所以直连吞吐再高也不会增加用户态 CPU 或堆内存。开销有上界，
 且都在内核里：
 
-- 内存是与流量无关的固定上限。`direct_stats_map` 是 4 个 `u64` 的 per-CPU 数组；
-  `direct_reverse_map` 是 LRU 哈希，上限 131072 条（key 24 字节、value 8 字节，外加内核
-  哈希开销，最多约十 MB 量级），流量暴增时淘汰旧条目而不是继续增长；`conn_state_map`
-  是 tproxy 自己的表，通过 map replacement 复用，不会再分配一份。
+- 内存固定且与流量无关。`direct_stats_map` 是 4 个 `u64` 的 per-CPU 数组；
+  `conn_state_map` 是 tproxy 自己的表，通过 map replacement 复用，不会再分配一份。
 - CPU 与包速率成正比，而不是字节速率。入向程序按接口角色选择：仅 LAN 的钩子只查上行 tuple，
   仅 WAN 的钩子只查回包 tuple，同时承担两种角色的接口运行合并版本。入向包对钩子能看到的每个
   方向各查一次 `conn_state_map`，直到某个方向命中即止（角色专用钩子一次，合并版本最多两次）；仅当流是直连时才做一次 per-CPU 计数更新（无原子操作，不共享 cacheline）。
-  被 tproxy 标记为代理的流在命中条目后直接结束，不会触碰 `direct_reverse_map`，因此代理流量
-  只付查找开销、没有 map 更新。`direct_reverse_map` 只在两个方向都没有 `conn_state_map`
-  条目时才会被查询（NAT 网关回包场景），且只为直连流更新。WAN 角色多运行一个 egress 程序，
-  对转发包提前退出，其余情况做一次查找。只有在极高包速率的小包场景下开销才可能变得可见；
+  被 tproxy 标记为代理的流在命中条目后直接结束，因此代理流量只付查找开销、没有计数器更新。
+  WAN 角色多运行一个 egress 程序，对转发包提前退出，其余情况做一次查找。只有在极高包速率
+  的小包场景下开销才可能变得可见；
   大包的批量传输主要受网卡与协议栈支配。
 - 失败被隔离：对象加载失败时 dae 只打印告警、跳过钩子并继续转发，API 返回 0。
 - `api.direct_stats` 关闭时不会加载对象，也不挂任何钩子。
 
-以上结论来自阅读程序本身，不是基准测试结果。要在真实系统上度量，可设置
-`sysctl kernel.bpf_stats_enabled=1`，再用 `bpftool prog show` 读取 `dae_direct_stats_*`
-程序的 `run_cnt` 与 `run_time_ns`；`bpftool map show` 可查看 map 占用的内存。
+关闭 NAT 回包 fallback 之前，一次 Linux 6.18 实测统计了最忙钩子的每包中位纳秒数
+（所有程序耗时求和），每个单元运行三次，测试主机负载为 1–4。下表比较关闭与开启观测器；
+观测器为可选功能，不属于主分支基线。当前实现不再分配或更新 NAT 反向索引，因此这些数字
+仅供参考，不代表当前代码的实测成本。
+
+| 流量 | 关闭观测器 | 开启观测器 | 增幅 |
+|---|---:|---:|---:|
+| 普通 TCP 下载 | 903 | 1067 | 18% |
+| 普通 TCP 上传 | 1374 | 1829 | 33% |
+| 普通 UDP，64 B，256 个流 | 326 | 572 | 75% |
+| NAT TCP 下载 | 832 | 1029 | 24% |
+| NAT TCP 上传 | 1481 | 1912 | 29% |
+| NAT UDP，64 B，256 个流 | 352 | 590 | 68% |
+
+当时实测 BPF memlock 在关闭观测器时为 9.4 MiB，开启时为 24.4 MiB；当前实现的 memlock
+尚未测量。数据只代表该主机与负载，不构成性能保证。要在其他系统度量，可设置
+`sysctl kernel.bpf_stats_enabled=1`，再用
+`bpftool prog show` 读取 `dae_direct_stats_*` 程序的 `run_cnt` 与 `run_time_ns`；
+`bpftool map show` 可查看 map 占用的内存。
 
 ### 内存
 

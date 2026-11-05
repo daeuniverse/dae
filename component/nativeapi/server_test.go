@@ -8,6 +8,7 @@ package nativeapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -457,6 +458,18 @@ func TestRequestSizeLimits(t *testing.T) {
 	}
 	if body := decodeJSON(t, bigBodyRecord); body["request_id"] == nil {
 		t.Fatal("error response must include request_id")
+	}
+}
+
+func TestEmptyJSONBodyRejectsChunkedSecondDocumentPastLimit(t *testing.T) {
+	const limit = 1024
+	body := "{}" + strings.Repeat(" ", limit) + `{"second":true}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/operations/test", strings.NewReader(body))
+	request.ContentLength = -1
+	request.Header.Set("Content-Type", "application/json")
+	err := validateEmptyJSONBody(request, limit)
+	if !errors.Is(err, errLimitedJSONBodyTooLarge) && !errors.Is(err, errInvalidJSONBody) {
+		t.Fatalf("validateEmptyJSONBody accepted padded second JSON document: err=%v", err)
 	}
 }
 

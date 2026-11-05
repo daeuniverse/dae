@@ -15,9 +15,8 @@
  * egress, where the ingress_ifindex guard leaves only locally generated
  * sockets: forwarded packets were counted at LAN ingress and must not be
  * counted twice. Download is observed at WAN ingress, the only hook every reply
- * crosses. `direct_reverse_map` carries the NAT-independent flow index that
- * makes the reply side matchable on a masquerading gateway, where SNAT rewrites
- * the destination and the reversed tuple no longer reaches conn_state_map.
+ * crosses. On a masquerading gateway, SNAT rewrites the reply destination, so
+ * the reversed tuple cannot reach conn_state_map; those reply bytes are omitted.
  *
  * conn_state_map is shared with tproxy.c and is reached through
  * CollectionOptions.MapReplacements, so the key and value layouts below must
@@ -110,42 +109,6 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } direct_stats_map SEC(".maps");
-
-// NAT-independent index of direct flows, read in the reply direction.
-//
-// On a masquerading gateway SNAT rewrites the destination of a reply to the WAN
-// address, so reversing its tuple never matches the conn_state entry the
-// upload created. What survives translation is the remote endpoint and the
-// local port (SNAT preserves the port unless it has to remap a collision), so
-// those fields are the key. The value is refreshed on both directions and
-// doubles as an LRU access. Only flows the datapath forwarded directly are
-// recorded, so a proxied flow can never be recognised here.
-struct direct_reverse_key {
-	union ip6 remote_ip;
-	__u16 remote_port;
-	__u16 local_port;
-	__u8 l4proto;
-	__u8 pad[3];
-};
-
-// The local address cannot be part of the key (a reply carries the translated
-// one), so the value remembers which LAN host created the entry. A second host
-// reusing the same remote endpoint and port marks the entry ambiguous, and an
-// ambiguous entry counts nothing until it expires, so the figure stays a lower
-// bound instead of attributing another host's traffic to a direct flow.
-struct direct_reverse_val {
-	__u64 last_seen;
-	union ip6 local_ip;
-	__u8 ambiguous;
-	__u8 pad[7];
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
-	__uint(max_entries, 131072);
-	__type(key, struct direct_reverse_key);
-	__type(value, struct direct_reverse_val);
-} direct_reverse_map SEC(".maps");
 
 // Builds the tuple of the packet at l3_off in the same representation as
 // tproxy's get_tuples. Non-first IP fragments and L4 protocols other than
@@ -242,103 +205,6 @@ direct_stats_reverse(const struct tuples_key *in, struct tuples_key *out)
 	out->l4proto = in->l4proto;
 }
 
-// An existing index entry only has to stay younger than the age bound, so it is
-// refreshed in place at most once a second. Touching the LRU on every packet is
-// what made the observer expensive: bpf_map_update_elem moves the element and
-// can allocate, while a store through the looked-up pointer does not.
-#define DIRECT_STATS_REVERSE_REFRESH_NS (1000000000ULL)
-
-// A reply must arrive while the index entry is still fresh. A finished flow
-// leaves its key behind (the map is an LRU, not a timer), so without an age
-// bound a later flow that reuses the port could be counted as direct.
-#define DIRECT_STATS_REVERSE_MAX_AGE_NS (300ULL * 1000000000ULL)
-
-static __always_inline bool
-direct_stats_same_host(const union ip6 *a, const union ip6 *b)
-{
-	return a->u6_addr64[0] == b->u6_addr64[0] &&
-	       a->u6_addr64[1] == b->u6_addr64[1];
-}
-
-// Records the upload tuple of a direct flow under the NAT-independent key.
-//
-// The steady state is an entry that already exists, so this looks the key up
-// first and writes only on a miss. Doing the reverse, an unconditional
-// bpf_map_update_elem per upload packet, paid a map write plus a helper call on
-// every packet of every direct flow.
-static __always_inline void
-direct_stats_remember(const struct tuples_key *key)
-{
-	struct direct_reverse_key rk = {};
-	struct direct_reverse_val *val;
-	__u64 now = bpf_ktime_get_ns();
-
-	rk.remote_ip = key->dip;
-	rk.remote_port = key->dport;
-	rk.local_port = key->sport;
-	rk.l4proto = key->l4proto;
-
-	val = bpf_map_lookup_elem(&direct_reverse_map, &rk);
-	if (val) {
-		bool expired = now > val->last_seen &&
-			       now - val->last_seen > DIRECT_STATS_REVERSE_MAX_AGE_NS;
-
-		if (expired) {
-			// The previous owner is gone: the current sender takes over.
-			val->local_ip = key->sip;
-			val->ambiguous = 0;
-			val->last_seen = now;
-			return;
-		}
-		if (val->ambiguous)
-			return;
-		if (!direct_stats_same_host(&val->local_ip, &key->sip)) {
-			val->ambiguous = 1;
-			val->last_seen = now;
-			return;
-		}
-		if (now > val->last_seen &&
-		    now - val->last_seen >= DIRECT_STATS_REVERSE_REFRESH_NS)
-			val->last_seen = now;
-		return;
-	}
-	{
-		struct direct_reverse_val nv = {};
-
-		nv.last_seen = now;
-		nv.local_ip = key->sip;
-		bpf_map_update_elem(&direct_reverse_map, &rk, &nv, BPF_ANY);
-	}
-}
-
-// Answers whether a reply packet belongs to a recorded direct flow. The caller
-// passes the packet's own tuple, so its source is the remote endpoint. A hit
-// refreshes the entry; an ambiguous entry is never a hit.
-static __always_inline bool
-direct_stats_known(const struct tuples_key *key)
-{
-	struct direct_reverse_key rk = {};
-	struct direct_reverse_val *val;
-
-	rk.remote_ip = key->sip;
-	rk.remote_port = key->sport;
-	rk.local_port = key->dport;
-	rk.l4proto = key->l4proto;
-
-	val = bpf_map_lookup_elem(&direct_reverse_map, &rk);
-	if (!val)
-		return false;
-	__u64 now = bpf_ktime_get_ns();
-	if (now > val->last_seen && now - val->last_seen > DIRECT_STATS_REVERSE_MAX_AGE_NS) {
-		bpf_map_delete_elem(&direct_reverse_map, &rk);
-		return false;
-	}
-	if (val->ambiguous)
-		return false;
-	val->last_seen = now;
-	return true;
-}
-
 static __always_inline void
 direct_stats_add(__u32 bytes_key, __u32 packets_key, __u64 len)
 {
@@ -379,9 +245,8 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 	// the reversed key must be fully initialized before it is looked up.
 	__builtin_memset(&rkey, 0, sizeof(rkey));
 
-	// A live entry settles the flow: only direct flows are counted and the
-	// NAT index holds direct flows exclusively, so a proxied packet stops at
-	// the entry after a single lookup.
+	// A live entry settles the flow: only direct flows are counted, so a
+	// proxied packet stops at the entry after a single lookup.
 	if (role != DIRECT_STATS_ROLE_LAN) {
 		// Download: the packet is the reply, so its reversed tuple is the key.
 		direct_stats_reverse(&key, &rkey);
@@ -398,9 +263,7 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 				return DIRECT_STATS_CONTINUE;
 			}
 			// An entry that carries a routing decision belongs to a proxied
-			// flow. One without a decision is the WAN-direction entry tproxy
-			// creates for the first reply of a direct flow on a NAT gateway;
-			// later replies still have to be matched through the index.
+			// flow.
 			if (st->meta.data.has_routing)
 				return DIRECT_STATS_CONTINUE;
 		}
@@ -413,18 +276,10 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 			if (direct_stats_is_direct(st)) {
 				direct_stats_add(DIRECT_STATS_UPLOAD_BYTES,
 						 DIRECT_STATS_UPLOAD_PACKETS, len);
-				direct_stats_remember(&key);
 			}
 			return DIRECT_STATS_CONTINUE;
 		}
 	}
-
-	// NAT gateway: SNAT rewrote the reply's destination, so the reversed tuple
-	// cannot reach the entry the upload created. The three-field index survives
-	// the translation because SNAT preserves the local port.
-	if (role != DIRECT_STATS_ROLE_LAN && direct_stats_known(&key))
-		direct_stats_add(DIRECT_STATS_DOWNLOAD_BYTES,
-				 DIRECT_STATS_DOWNLOAD_PACKETS, len);
 
 	return DIRECT_STATS_CONTINUE;
 }
@@ -448,7 +303,6 @@ direct_stats_egress(struct __sk_buff *skb, __u32 l3_off)
 	if (direct_stats_is_direct(st)) {
 		direct_stats_add(DIRECT_STATS_UPLOAD_BYTES,
 				 DIRECT_STATS_UPLOAD_PACKETS, len);
-		direct_stats_remember(&key);
 	}
 	return DIRECT_STATS_CONTINUE;
 }

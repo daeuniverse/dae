@@ -218,18 +218,24 @@ func TestResolveDirectStatsWarnsWhenRefused(t *testing.T) {
 	}
 }
 
-// The reply index must not attribute one host's reply to another, and a
-// non-direct WAN-direction state entry must not hide later replies.
-func TestDirectStatsKernelGuards(t *testing.T) {
+// A reply without a conn_state match cannot safely be attributed to a LAN host
+// on a SNAT gateway, so it must not use a remote/local-port fallback key.
+func TestDirectStatsOmitsUnattributableNATReplies(t *testing.T) {
 	source := readDirectStatsSource(t)
-	for _, want := range []string{
-		"val->ambiguous",
-		"direct_stats_same_host",
-		"if (st->meta.data.has_routing)",
-	} {
-		if !strings.Contains(source, want) {
-			t.Errorf("observer source lacks %q", want)
+	for _, absent := range []string{"direct_reverse_map", "direct_stats_known", "direct_stats_remember"} {
+		if strings.Contains(source, absent) {
+			t.Errorf("observer still uses %q for NAT reply attribution", absent)
 		}
+	}
+	if !strings.Contains(source, "if (st->meta.data.has_routing)") {
+		t.Fatal("a conn_state entry with routing metadata must not be counted as direct")
+	}
+	spec, err := loadDirectstats()
+	if err != nil {
+		t.Fatalf("load observer spec: %v", err)
+	}
+	if spec.Maps["direct_reverse_map"] != nil {
+		t.Fatal("generated observer still allocates the unsafe NAT reverse map")
 	}
 }
 

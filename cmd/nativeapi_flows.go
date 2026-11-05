@@ -393,17 +393,17 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 	}
 	now := time.Now()
 	bind := pageCursorBind(filter.Network, filter.State, filter.ConnectionID, filter.Limit)
-	after := ""
+	after, expectNext := "", ""
 	if filter.Cursor != "" {
-		parsed, err := decodePageCursor(status.InstanceID, "flows", bind, filter.Cursor, now)
+		parsed, next, err := decodePageCursorNext(status.InstanceID, "flows", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.FlowList{}, err
 		}
-		after = parsed
+		after, expectNext = parsed, next
 	}
 	// Flow IDs are stable across reads, so they anchor the walk while finished
 	// flows keep arriving at the head of the history.
-	page, next, err := pageAfter(matched, func(entry control.SessionFlowHistoryEntry) string { return entry.ID }, after, filter.Limit, status.InstanceID, "flows", bind, now)
+	page, next, err := pageAfterExpecting(matched, func(entry control.SessionFlowHistoryEntry) string { return entry.ID }, after, expectNext, filter.Limit, status.InstanceID, "flows", bind, now)
 	if err != nil {
 		return nativeapi.FlowList{}, err
 	}

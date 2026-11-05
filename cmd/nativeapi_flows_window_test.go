@@ -289,6 +289,22 @@ func TestFlowWindowsTolerateMissingGeneration(t *testing.T) {
 	}
 }
 
+func TestFlowWindowDemandWakesSampler(t *testing.T) {
+	fixture := newWindowFixture(time.Unix(1_700_000_000, 0))
+	fixture.tracker.measure(nil, time.Second)
+	select {
+	case <-fixture.tracker.wake:
+	default:
+		t.Fatal("new window demand did not wake the sampler")
+	}
+	fixture.tracker.measure(nil, time.Second)
+	select {
+	case <-fixture.tracker.wake:
+		t.Fatal("repeated polling woke the sampler unnecessarily")
+	default:
+	}
+}
+
 // A dashboard that polls at its own cadence works without the sampler: the
 // request itself is an observation, so the second poll measures the interval
 // between the two polls.

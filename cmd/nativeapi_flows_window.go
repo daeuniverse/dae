@@ -86,12 +86,14 @@ type flowWindowTracker struct {
 	// observe walks the live flows' cumulative counters.
 	observe func(yield func(control.FlowByteCounter))
 	now     func() time.Time
+	wake    chan struct{}
 }
 
 func newFlowWindowTracker(observe func(yield func(control.FlowByteCounter))) *flowWindowTracker {
 	return &flowWindowTracker{
 		observe: observe,
 		now:     time.Now,
+		wake:    make(chan struct{}, 1),
 	}
 }
 
@@ -118,13 +120,20 @@ func (t *flowWindowTracker) measure(flows []control.SessionFlowSnapshot, window 
 	}
 	now := t.now()
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.demand == nil {
 		t.demand = make(map[int64]time.Time)
 	}
+	for seconds, requestedAt := range t.demand {
+		if now.Sub(requestedAt) > flowWindowDemandIdle {
+			delete(t.demand, seconds)
+		}
+	}
+	previousInterval := t.intervalLocked()
+	wakeSampler := len(t.demand) == 0
 	// Demand is registered even for an empty match: the next poll of the same
 	// window must still find a baseline.
 	t.demand[int64(window/time.Second)] = now
+	wakeSampler = wakeSampler || t.intervalLocked() < previousInterval
 	measured := make(map[string]flowWindowBytes, len(flows))
 	tolerance := t.intervalLocked()
 	for _, flow := range flows {
@@ -145,6 +154,13 @@ func (t *flowWindowTracker) measure(flows []control.SessionFlowSnapshot, window 
 		upload, download, ok := t.windowLocked(flow, window, now, tolerance)
 		if ok {
 			measured[flow.ID] = flowWindowBytes{upload: upload, download: download}
+		}
+	}
+	t.mu.Unlock()
+	if wakeSampler {
+		select {
+		case t.wake <- struct{}{}:
+		default:
 		}
 	}
 	return measured
@@ -175,7 +191,16 @@ func (t *flowWindowTracker) run() {
 	timer := time.NewTimer(flowWindowMinInterval)
 	defer timer.Stop()
 	for {
-		<-timer.C
+		select {
+		case <-timer.C:
+		case <-t.wake:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
 		timer.Reset(t.sampleOnce())
 	}
 }

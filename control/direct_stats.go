@@ -16,7 +16,7 @@ package control
 //
 // The observer is read-only over conn_state_map: it decides whether a flow is
 // direct by reading the flag tproxy already set, and it never writes a mark or
-// a verdict. Its own maps are the counters and a NAT-independent flow index.
+// a verdict. Its only map is the per-CPU counter array.
 //
 // The count is a lower bound, and the omissions are deliberate rather than
 // papered over:
@@ -28,10 +28,8 @@ package control
 //   - ICMP, non-initial fragments and other non-TCP/UDP pass-throughs are not
 //     counted;
 //   - a flow that predates a restart has no conn_state at all;
-//   - the download side of a flow that never sent a second upload packet (a
-//     one-request UDP exchange) is not recognised on a NAT gateway;
-//   - the flow index is an LRU: an idle flow that gets evicted loses the reply
-//     side until its upload is seen again.
+//   - on a NAT gateway, replies whose post-SNAT tuple cannot match conn_state
+//     are omitted because the reply packet does not identify its LAN host.
 
 import (
 	"fmt"
@@ -77,6 +75,11 @@ type DirectStatsCounters struct {
 type directStatsObserver struct {
 	coll      *ebpf.Collection
 	connState *ebpf.Map
+}
+
+type directStatsBridgeRole struct {
+	wan  bool
+	dual bool
 }
 
 // ConfigureDirectStats sets whether interfaces bound from now on include the
@@ -217,6 +220,14 @@ func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool,
 	if !directStatsEnabled.Load() {
 		return nil
 	}
+	if link.Type() == "bridge" {
+		c.directStatsBridgeMu.Lock()
+		if c.directStatsBridges == nil {
+			c.directStatsBridges = make(map[int]directStatsBridgeRole)
+		}
+		c.directStatsBridges[link.Attrs().Index] = directStatsBridgeRole{wan: wan, dual: dual}
+		c.directStatsBridgeMu.Unlock()
+	}
 	ports, err := bridgePorts(link)
 	if err != nil {
 		// Observation is optional; a failed enumeration must not break binding.
@@ -248,6 +259,24 @@ func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool,
 		}
 	}
 	return nil
+}
+
+func (c *controlPlaneCore) attachDirectStatsBridgePort(link netlink.Link) {
+	if link == nil || link.Attrs() == nil || link.Attrs().MasterIndex == 0 {
+		return
+	}
+	c.directStatsBridgeMu.RLock()
+	role, ok := c.directStatsBridges[link.Attrs().MasterIndex]
+	c.directStatsBridgeMu.RUnlock()
+	if !ok || !c.beginBpfHookAttach() {
+		return
+	}
+	defer c.endBpfHookAttach()
+	_ = c.addQdisc(link)
+	layer2 := link.Attrs().EncapType == "ether"
+	if err := c.stageDirectStatsHookForLink(link, layer2, role.wan, role.dual, true, false); err != nil {
+		c.log.WithError(err).Warnf("direct stats observer: cannot attach to bridge port %v", link.Attrs().Name)
+	}
 }
 
 // stageDirectStatsHookForLink stages the observer hooks for one device.

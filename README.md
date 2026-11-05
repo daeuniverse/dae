@@ -14,6 +14,8 @@
 
 To enhance traffic split performance as much as possible, dae employs the transparent proxy and traffic split suite within the Linux kernel using eBPF. As a result, dae can enable direct traffic to bypass the proxy application's forwarding, facilitating genuine direct traffic passage. Through this remarkable feat, there is minimal performance loss and negligible additional resource consumption for direct traffic.
 
+The optional `api.direct_stats` observer is disabled by default and adds per-packet kernel work when enabled. See the [API development notes](./docs/en/development/api.md#overhead) for measurements and details.
+
 As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ray-core to meet the needs of users more freely.
 
 ## Features

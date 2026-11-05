@@ -28,13 +28,12 @@ func (p *nativeAPIProvider) CreateNode(ctx context.Context, req nativeapi.NodeCr
 	if !p.NodeCapabilities().CanManage {
 		return nativeapi.OperationAccepted{}, errNodeManagementUnavailable
 	}
-	// The contract asks a node_create operation for the Node it produced. Node
-	// names are unique across providers, so the completed operation looks the
-	// node up by name: predicting the id would hash the raw link, which a plugin
-	// link may be normalized from before the engine derives its id. The resolver
-	// is handed to the editor so it is installed with the operation, not after.
+	// The contract asks a node_create operation for the inline Node it produced.
+	// Predicting the id would hash the raw link, which a plugin link may
+	// normalize before the engine derives its id. The resolver is handed to the
+	// editor so it is installed with the operation, not after.
 	resolve := func() (any, error) {
-		node, nodeErr := p.nodeByName(req.Name)
+		node, nodeErr := p.nodeByName(req.Name, inlineProviderID)
 		if nodeErr != nil {
 			return nil, nodeErr
 		}
@@ -88,9 +87,9 @@ var errNodeManagementUnavailable = &nativeapi.APIError{
 	Message: "node management is not supported by this engine",
 }
 
-// nodeByName returns the node the running generation publishes under name.
-// Names are unique across providers, so this needs no id prediction.
-func (p *nativeAPIProvider) nodeByName(name string) (*nativeapi.Node, error) {
+// nodeByName returns the node the running generation publishes under name and
+// provider, without predicting its ID from a link that a plugin may normalize.
+func (p *nativeAPIProvider) nodeByName(name, providerID string) (*nativeapi.Node, error) {
 	active, err := p.activeGeneration()
 	if err != nil {
 		return nil, err
@@ -99,13 +98,24 @@ func (p *nativeAPIProvider) nodeByName(name string) (*nativeapi.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range nodes {
-		if nodes[i].Name == name {
-			node := nodes[i]
-			return &node, nil
-		}
+	if node := findNodeByNameAndProvider(nodes, name, providerID); node != nil {
+		return node, nil
 	}
 	return nil, nativeapi.NewAPIError(404, "resource_not_found", "node not found")
+}
+
+func findNodeByNameAndProvider(nodes []nativeapi.Node, name, providerID string) *nativeapi.Node {
+	for i := range nodes {
+		nodeProviderID := inlineProviderID
+		if nodes[i].ProviderID != nil {
+			nodeProviderID = *nodes[i].ProviderID
+		}
+		if nodes[i].Name == name && nodeProviderID == providerID {
+			node := nodes[i]
+			return &node
+		}
+	}
+	return nil
 }
 
 // nodeIndex maps the running generation's nodes by ID, with the provider that

@@ -377,9 +377,8 @@ forever. These numbers are what `capabilities.probes.limits` advertises.
 bytes. Traffic the datapath forwards without userspace - a flow routed `direct`
 in the kernel, or `must_direct` traffic that never reaches the relay - is **not**
 counted, so the totals read lower than the real link speed on a direct-heavy
-deployment. That is deliberate: the alternative was a per-packet counter and a
-pass-through flow index in the datapath, paid for by every installation
-including the ones that never enable this API.
+deployment. That is deliberate: direct traffic accounting is an opt-in API observer, so
+only deployments that enable `api.direct_stats` pay its per-packet kernel cost.
 
 Rates are produced by a sampler that runs once per second over the process
 totals, so the forwarding path only performs one atomic add per record.
@@ -418,9 +417,9 @@ zero.
 
 The figure is link bytes and a lower bound: the observer runs before tproxy, so
 the first packet of each flow and flows that predate a restart are missed,
-ICMP/fragments are skipped, and the reply side of a one-request exchange on a
-NAT gateway is only recognised once a second upload re-populates the LRU flow
-index. It is not summed into `runtime.traffic`, whose total stays userspace-only.
+ICMP/fragments are skipped, and replies whose post-SNAT tuple cannot match
+`conn_state_map` are not counted on a NAT gateway because the packet does not
+identify its LAN host. It is not summed into `runtime.traffic`, whose total stays userspace-only.
 The counters are folded into the builtin `direct` row of
 `GET /api/v1/runtime/outbounds`, so a panel that only reads the existing
 resources shows direct traffic without knowing this endpoint. The row then mixes
@@ -432,12 +431,9 @@ counted.
 Direct traffic never reaches userspace, so a high direct throughput does not add
 userspace CPU or heap. The cost is bounded and lives in the kernel:
 
-- Memory is a fixed ceiling independent of traffic. `direct_stats_map` is a
-  per-CPU array of four `u64` counters. `direct_reverse_map` is an LRU hash
-  capped at 131072 entries (24-byte key, 8-byte value, plus kernel hash
-  overhead; on the order of ten MB at most), so a flood of flows evicts old
-  entries instead of growing. `conn_state_map` is tproxy's own map, reused via a
-  map replacement, and is not allocated again.
+- Memory is fixed and independent of traffic. `direct_stats_map` is a per-CPU
+  array of four `u64` counters. `conn_state_map` is tproxy's own map, reused via
+  a map replacement, and is not allocated again.
 - CPU scales with packet rate, not byte rate. The ingress program is chosen by
   interface role: a LAN-only hook looks up only the upload tuple, a WAN-only
   hook only the reply tuple, and an interface bound with both roles runs the
@@ -445,20 +441,36 @@ userspace CPU or heap. The cost is bounded and lives in the kernel:
   direction the hook can see, until an entry answers (one for a role-specific
   hook, at most two for the combined one), and a per-CPU counter update (no atomics, no cross-CPU cacheline sharing)
   when the flow is direct. A flow tproxy has marked as proxied stops at that
-  entry and never touches `direct_reverse_map`, so proxied traffic pays the
-  lookups but no map update. `direct_reverse_map` is only consulted when
-  neither direction has a `conn_state_map` entry (the NAT-gateway reply case)
-  and is updated only for direct flows. The WAN role runs one extra egress
-  program, which exits early for forwarded packets and otherwise does one
-  lookup. Expect the cost to become visible only at very high packet rates
-  with small packets; large-packet bulk transfers are dominated by the NIC and
-  the stack.
+  entry, so proxied traffic pays the lookups but no counter update. The WAN
+  role runs one extra egress program, which exits early for forwarded packets
+  and otherwise does one lookup. Expect the cost to become visible only at
+  very high packet rates with small packets; large-packet bulk transfers are
+  dominated by the NIC and the stack.
 - Failure is isolated: if the object cannot load, dae logs a warning, skips the
   hooks and keeps forwarding; the API reports zeros.
 - With `api.direct_stats` off the object is never loaded and nothing is attached.
 
-These figures are derived from reading the program, not from a benchmark. To
-measure on a real system, set `sysctl kernel.bpf_stats_enabled=1` and read
+Before NAT reply fallback was removed, a live benchmark on Linux 6.18 measured
+the median nanoseconds per packet at the busiest hook, summing all programs,
+with three runs per cell on a host at load average 1–4. It compares the
+observer off with it on; the observer was opt-in and not part of the main
+baseline. The current observer no longer allocates or updates the NAT reverse
+map, so these numbers are a reference for that earlier revision, not a
+measurement of the current code.
+
+| Traffic | Observer off | Observer on | Increase |
+|---|---:|---:|---:|
+| Plain TCP download | 903 | 1067 | 18% |
+| Plain TCP upload | 1374 | 1829 | 33% |
+| Plain UDP, 64 B, 256 flows | 326 | 572 | 75% |
+| NAT TCP download | 832 | 1029 | 24% |
+| NAT TCP upload | 1481 | 1912 | 29% |
+| NAT UDP, 64 B, 256 flows | 352 | 590 | 68% |
+
+At that revision, measured BPF memlock was 9.4 MiB with the observer off and
+24.4 MiB with it on; the current observer's memlock has not been measured.
+These figures are specific to that host and workload, not a performance
+guarantee. To measure on another system, set `sysctl kernel.bpf_stats_enabled=1` and read
 `run_cnt` and `run_time_ns` for the `dae_direct_stats_*` programs from
 `bpftool prog show`; `bpftool map show` reports the map memory.
 

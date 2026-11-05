@@ -119,8 +119,10 @@ type controlPlaneCore struct {
 	preparedTCHooks     *preparedTCHookHandoff
 	// directStats is the opt-in direct-traffic observer object. It is loaded
 	// lazily on the first WAN/LAN bind while api.direct_stats is on.
-	directStatsMu sync.Mutex
-	directStats   *directStatsObserver
+	directStatsMu       sync.Mutex
+	directStats         *directStatsObserver
+	directStatsBridgeMu sync.RWMutex
+	directStatsBridges  map[int]directStatsBridgeRole
 	// nodeParseReport is how many links each subscription supplied and how
 	// many of them became dialers. It is written once during construction and
 	// read by the reload caller to decide whether a fetched payload may
@@ -592,9 +594,9 @@ func (c *controlPlaneCore) PeekBpf() *bpfObjects {
 	return c.bpf.Load()
 }
 
-// startIfindexWatcher subscribes to netlink RTM_NEWLINK events and hot-updates
-// the dae_ifindex_map when dae0 is recreated with a new ifindex by the kernel.
-// This avoids silent packet loss that would otherwise require a full BPF reload.
+// startIfindexWatcher follows link changes that can be handled without a BPF
+// reload: it updates dae_ifindex_map for a recreated dae0 and attaches the
+// direct-stats observer to ports added to a bound bridge.
 func (c *controlPlaneCore) startIfindexWatcher() {
 	ch := make(chan netlink.LinkUpdate)
 	done := make(chan struct{})
@@ -632,6 +634,7 @@ func (c *controlPlaneCore) startIfindexWatcher() {
 				if !ok {
 					return
 				}
+				c.attachDirectStatsBridgePort(upd.Link)
 				if upd.Link.Attrs().Name != HostVethName {
 					continue
 				}

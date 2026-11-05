@@ -10,9 +10,25 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/subscription"
+	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/sirupsen/logrus"
 )
+
+func TestFindNodeByNameAndProvider(t *testing.T) {
+	subProvider := "p_sub"
+	nodes := []nativeapi.Node{
+		{ID: "sub-id", Name: "edge", ProviderID: &subProvider},
+		{ID: "inline-id", Name: "edge"},
+	}
+	node := findNodeByNameAndProvider(nodes, "edge", inlineProviderID)
+	if node == nil || node.ID != "inline-id" {
+		t.Fatalf("inline node = %+v, want the inline duplicate", node)
+	}
+	if node = findNodeByNameAndProvider(nodes, "edge", subProvider); node == nil || node.ID != "sub-id" {
+		t.Fatalf("subscription node = %+v, want the subscription duplicate", node)
+	}
+}
 
 // An untagged subscription must report its own provider. Before the fix its
 // nodes carried the inline identity, so DELETE /nodes edited node.dae and

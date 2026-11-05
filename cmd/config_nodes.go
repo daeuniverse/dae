@@ -26,7 +26,7 @@ import (
 const nodeSourceName = "node.dae"
 
 // nodeBlockPattern matches the opening of the node section.
-var nodeBlockPattern = regexp.MustCompile(`(?m)^node[ \t]*\{[ \t]*$`)
+var nodeBlockPattern = sectionBlockPattern("node")
 
 // nodeNamePattern is the name shape the configuration can quote and the
 // frontend accepts: word characters, dots and dashes.

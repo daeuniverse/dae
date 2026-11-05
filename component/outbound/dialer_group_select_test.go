@@ -6,6 +6,7 @@
 package outbound
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,47 @@ func newSelectGroup(t *testing.T, policy DialerSelectionPolicy, dialers int) (*D
 	group := NewDialerGroup(option, "select-group", fixtures, newEmptyAnnotations(len(fixtures)), policy, func(bool, *dialer.NetworkType, bool) {})
 	t.Cleanup(func() { _ = group.Close() })
 	return group, fixtures
+}
+
+func TestDialerGroupBothSelectionWritesAndSnapshotsAreSerialized(t *testing.T) {
+	group, dialers := newSelectGroup(t, DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Select}, 2)
+	var writers sync.WaitGroup
+	for range 8 {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for i := range 1000 {
+				if _, err := group.SetSelectionBoth(i % len(dialers)); err != nil {
+					t.Errorf("SetSelectionBoth: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		writers.Wait()
+		close(done)
+	}()
+	badTCP, badUDP := -1, -1
+	for {
+		select {
+		case <-done:
+			if badTCP >= 0 {
+				t.Fatalf("snapshot observed split selection: tcp=%d udp=%d", badTCP, badUDP)
+			}
+			return
+		default:
+			if badTCP < 0 {
+				snapshot := group.SnapshotForEstablishedFlow(dialers[0])
+				tcp, _ := snapshot.Selection(SelectionNetworkTCP)
+				udp, _ := snapshot.Selection(SelectionNetworkUDP)
+				if tcp != udp {
+					badTCP, badUDP = tcp, udp
+				}
+			}
+		}
+	}
 }
 
 func TestDialerGroupSelectDefaultMember(t *testing.T) {

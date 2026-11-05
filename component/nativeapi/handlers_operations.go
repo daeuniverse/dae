@@ -8,7 +8,6 @@ package nativeapi
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,6 +35,10 @@ func (s *Server) handleStartOperation(w http.ResponseWriter, r *http.Request) {
 	if err := validateEmptyJSONBody(r, s.cfg.MaxJSONBodyBytes); err != nil {
 		if errors.Is(err, errUnsupportedMediaType) {
 			writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, err.Error())
+			return
+		}
+		if errors.Is(err, errLimitedJSONBodyTooLarge) {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
 			return
 		}
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, err.Error())
@@ -94,9 +97,11 @@ func validateEmptyJSONBody(r *http.Request, limit int) error {
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		return errUnsupportedMediaType
 	}
-	decoder := json.NewDecoder(io.LimitReader(r.Body, int64(limit)+1))
 	var body map[string]json.RawMessage
-	if err := decodeSingleJSON(decoder, &body); err != nil {
+	if err := decodeLimitedJSON(r, limit, &body); err != nil {
+		if errors.Is(err, errLimitedJSONBodyTooLarge) {
+			return err
+		}
 		return errInvalidJSONBody
 	}
 	if len(body) != 0 {
