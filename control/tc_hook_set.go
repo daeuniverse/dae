@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -441,6 +442,56 @@ func (s *tcHookSet) upsert(spec tcHookSpec) error {
 	before := s.currentSpecsLocked()
 	desired := cloneTCHookSpecs(before)
 	desired[spec.key()] = spec
+	if err := s.applyDesiredLocked(desired); err != nil {
+		return stderrors.Join(err, s.applyDesiredLocked(before))
+	}
+	s.pruneEmptyGroupsLocked()
+	return nil
+}
+
+// countHooksWithPrefix counts committed entries whose program name starts with
+// prefix. It is used to distinguish "observation is on" from "a hook actually
+// reached the datapath" without adding another piece of mutable state.
+func (s *tcHookSet) countHooksWithPrefix(prefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, group := range s.groups {
+		for _, entry := range group.entries {
+			if entry != nil && strings.HasPrefix(entry.spec.Name, prefix) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// removeHooksWithPrefix removes only the entries matching prefix on one
+// device. Unlike removeInterface it leaves every other hook (notably tproxy)
+// on that ifindex alone, so bridge-port lifecycle handling cannot unbalance the
+// forwarding path.
+func (s *tcHookSet) removeHooksWithPrefix(scope tcHookScope, ifindex int, prefix string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	if s.txn != nil {
+		return fmt.Errorf("TC HookSet transaction is active")
+	}
+	before := s.currentSpecsLocked()
+	desired := cloneTCHookSpecs(before)
+	removed := false
+	for key, spec := range desired {
+		if key.group.scope == scope && key.group.ifindex == ifindex &&
+			strings.HasPrefix(spec.Name, prefix) {
+			delete(desired, key)
+			removed = true
+		}
+	}
+	if !removed {
+		return nil
+	}
 	if err := s.applyDesiredLocked(desired); err != nil {
 		return stderrors.Join(err, s.applyDesiredLocked(before))
 	}

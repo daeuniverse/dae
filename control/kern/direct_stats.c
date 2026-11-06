@@ -14,9 +14,22 @@
  * Upload is observed at LAN ingress (a forwarded client packet) and at WAN
  * egress, where the ingress_ifindex guard leaves only locally generated
  * sockets: forwarded packets were counted at LAN ingress and must not be
- * counted twice. Download is observed at WAN ingress, the only hook every reply
- * crosses. On a masquerading gateway, SNAT rewrites the reply destination, so
- * the reversed tuple cannot reach conn_state_map; those reply bytes are omitted.
+ * counted twice.
+ *
+ * Download is observed at two places:
+ *   - WAN ingress, but only for packets delivered to a local socket. A reply
+ *     that is forwarded to a LAN client is counted on the LAN egress hook
+ *     instead, after DNAT. That is what makes a masquerading gateway countable:
+ *     the reply reaches the LAN egress hook with the client's address, so the
+ *     reversed tuple matches conn_state_map even though the WAN-ingress packet
+ *     carried the pre-DNAT destination.
+ *   - LAN egress, for forwarded replies only (ingress_ifindex != 0). The
+ *     reverse tuple of the post-DNAT packet is the LAN upload key.
+ *
+ * A dual-role interface runs the combined WAN-ingress program, which keeps the
+ * single-hook WAN-ingress download accounting; a separate LAN egress hook is
+ * not attached for it, so that case cannot distinguish the two directions on
+ * egress and retains the pre-DNAT limitation.
  *
  * conn_state_map is shared with tproxy.c and is reached through
  * CollectionOptions.MapReplacements, so the key and value layouts below must
@@ -42,13 +55,30 @@
 #define TASK_COMM_LEN 16
 #define MAX_CONN_STATE_NUM (65536 * 4)
 
-// Keys of direct_stats_map. Userspace sums the copies across CPUs.
+// Enough for a normal IPv6 chain and a couple of encapsulations. The bound also
+// keeps the variable l4_off bounded for the verifier.
+#define DIRECT_STATS_MAX_IPV6_EXT 8
+#define DIRECT_STATS_MAX_HEADER_LEN 2048
+#define DIRECT_STATS_HEADER_PULL 128
+#define DIRECT_STATS_MAX_VLAN_TAGS 4
+
+// Socket mark dae puts on its own sockets. Userspace writes the value from
+// so_mark_from_dae before loading the object. Zero means "no mark known", which
+// disables the local-socket exclusion rather than excluding every socket.
+const volatile __u32 DIRECT_STATS_DAE_SOCKET_MARK = 0;
+
+// Keys of direct_stats_map. Userspace sums the copies across CPUs. Each key
+// carries both bytes and packets so a direct packet performs one map lookup
+// instead of one lookup per counter.
 enum direct_stats_key {
-	DIRECT_STATS_UPLOAD_BYTES = 0,
-	DIRECT_STATS_UPLOAD_PACKETS = 1,
-	DIRECT_STATS_DOWNLOAD_BYTES = 2,
-	DIRECT_STATS_DOWNLOAD_PACKETS = 3,
-	DIRECT_STATS_KEY_NUM = 4,
+	DIRECT_STATS_UPLOAD = 0,
+	DIRECT_STATS_DOWNLOAD = 1,
+	DIRECT_STATS_KEY_NUM = 2,
+};
+
+struct direct_stats_value {
+	__u64 bytes;
+	__u64 packets;
 };
 
 union ip6 {
@@ -107,21 +137,82 @@ struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, DIRECT_STATS_KEY_NUM);
 	__type(key, __u32);
-	__type(value, __u64);
+	__type(value, struct direct_stats_value);
 } direct_stats_map SEC(".maps");
 
+static __always_inline bool
+direct_stats_is_ipv6_extension(__u8 nexthdr)
+{
+	switch (nexthdr) {
+	case IPPROTO_HOPOPTS:
+	case IPPROTO_ROUTING:
+	case IPPROTO_FRAGMENT:
+	case IPPROTO_DSTOPTS:
+	case IPPROTO_AH:
+	case IPPROTO_MH:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static __always_inline __u32
+direct_stats_ipv6_extension_len(__u8 nexthdr, __u8 len_field)
+{
+	/* AH encodes its length in 4-octet units excluding the first 8 octets. */
+	if (nexthdr == IPPROTO_AH)
+		return ((__u32)len_field + 2) * 4;
+	return ((__u32)len_field + 1) * 8;
+}
+
 // Builds the tuple of the packet at l3_off in the same representation as
-// tproxy's get_tuples. Non-first IP fragments and L4 protocols other than
-// TCP/UDP are rejected, as they have no state entry to match.
+// tproxy's get_tuples. IPv6 extension headers are walked; non-first fragments
+// and L4 protocols other than TCP/UDP are rejected, as they have no state entry
+// to match. The pull makes non-linear headers readable, matching tproxy's
+// parser; it does not change packet contents or the forwarding decision.
 static __always_inline int
 direct_stats_parse_tuple(struct __sk_buff *skb, __u32 l3_off,
 			 struct tuples_key *key)
 {
-	void *data = (void *)(long)skb->data;
-	void *data_end = (void *)(long)skb->data_end;
-	__u8 *p = data + l3_off;
+	void *data;
+	void *data_end;
+	__u8 *p;
 	__u8 l4proto;
 	__u32 l4_off;
+
+	if (bpf_skb_pull_data(skb, DIRECT_STATS_HEADER_PULL))
+		return -1;
+
+	data = (void *)(long)skb->data;
+	data_end = (void *)(long)skb->data_end;
+
+	// The kernel strips an 802.1Q/802.1ad tag before TC ingress, but TC egress
+	// can still see a tag that vlan_dev_hard_start_xmit has not pushed yet, and
+	// a second (QinQ) tag can survive on ingress. Walk the tags that are still
+	// in the packet so both paths use the same l3 offset. l3_off == 0 means the
+	// hook is on an L3 device and there is no Ethernet header to inspect.
+	if (l3_off == 14) {
+		struct ethhdr *eth = data;
+		__be16 proto;
+
+		if ((void *)(eth + 1) > data_end)
+			return -1;
+		proto = eth->h_proto;
+#pragma unroll
+		for (int i = 0; i < DIRECT_STATS_MAX_VLAN_TAGS; i++) {
+			struct vlan_hdr *vhdr;
+
+			if (proto != bpf_htons(ETH_P_8021Q) &&
+			    proto != bpf_htons(ETH_P_8021AD))
+				break;
+			vhdr = data + l3_off;
+			if ((void *)(vhdr + 1) > data_end)
+				return -1;
+			proto = vhdr->h_vlan_encapsulated_proto;
+			l3_off += 4;
+		}
+	}
+	p = data + l3_off;
 
 	if ((void *)(p + 1) > data_end)
 		return -1;
@@ -147,15 +238,48 @@ direct_stats_parse_tuple(struct __sk_buff *skb, __u32 l3_off,
 		key->dip.u6_addr32[3] = iph->daddr;
 	} else if ((p[0] >> 4) == 6) {
 		struct ipv6hdr *ip6h = (void *)p;
+		__u32 off;
+		__u8 nexthdr;
 
 		if ((void *)(ip6h + 1) > data_end)
 			return -1;
-		// Extension headers are not walked: such flows are skipped.
-		l4proto = ip6h->nexthdr;
-		l4_off = l3_off + sizeof(struct ipv6hdr);
+		nexthdr = ip6h->nexthdr;
+		off = l3_off + sizeof(struct ipv6hdr);
 
-		__builtin_memcpy(&key->sip, &ip6h->saddr, IPV6_BYTE_LENGTH);
-		__builtin_memcpy(&key->dip, &ip6h->daddr, IPV6_BYTE_LENGTH);
+#pragma unroll
+		for (int i = 0; i < DIRECT_STATS_MAX_IPV6_EXT; i++) {
+			if (nexthdr == IPPROTO_NONE)
+				return -1;
+			if (!direct_stats_is_ipv6_extension(nexthdr))
+				break;
+			if (nexthdr == IPPROTO_FRAGMENT) {
+				struct frag_hdr *fragh = data + off;
+
+				if ((void *)(fragh + 1) > data_end)
+					return -1;
+				if (fragh->frag_off & bpf_htons(0xfff8))
+					return -1;
+				nexthdr = fragh->nexthdr;
+				off += sizeof(struct frag_hdr);
+				continue;
+			}
+
+			__u8 *ext = data + off;
+
+			if ((void *)(ext + 2) > data_end)
+				return -1;
+			__u8 cur_hdr = nexthdr;
+			__u8 ext_len = ext[1];
+
+			nexthdr = ext[0];
+			off += direct_stats_ipv6_extension_len(cur_hdr, ext_len);
+			if (off > DIRECT_STATS_MAX_HEADER_LEN)
+				return -1;
+		}
+		if (direct_stats_is_ipv6_extension(nexthdr))
+			return -1;
+		l4proto = nexthdr;
+		l4_off = off;
 	} else {
 		return -1;
 	}
@@ -206,16 +330,103 @@ direct_stats_reverse(const struct tuples_key *in, struct tuples_key *out)
 }
 
 static __always_inline void
-direct_stats_add(__u32 bytes_key, __u32 packets_key, __u64 len)
+direct_stats_add(__u32 key, __u64 len)
 {
-	__u64 *v;
+	struct direct_stats_value *v;
 
-	v = bpf_map_lookup_elem(&direct_stats_map, &bytes_key);
-	if (v)
-		*v += len;
-	v = bpf_map_lookup_elem(&direct_stats_map, &packets_key);
-	if (v)
-		*v += 1;
+	v = bpf_map_lookup_elem(&direct_stats_map, &key);
+	if (!v)
+		return;
+	v->bytes += len;
+	v->packets += 1;
+}
+
+// IPv4 keys use the ::ffff:0:0/96 sentinel in the first two words, exactly like
+// tproxy's get_tuples.
+static __always_inline bool
+direct_stats_is_ipv4(const struct tuples_key *key)
+{
+	return key->sip.u6_addr32[2] == bpf_htonl(0x0000ffff) &&
+	       key->dip.u6_addr32[2] == bpf_htonl(0x0000ffff);
+}
+
+static __always_inline bool
+direct_stats_sock_is_dae(struct bpf_sock *sk)
+{
+	struct bpf_sock *fullsock;
+
+	if (!sk || !DIRECT_STATS_DAE_SOCKET_MARK)
+		return false;
+	fullsock = bpf_sk_fullsock(sk);
+	return fullsock && fullsock->mark == DIRECT_STATS_DAE_SOCKET_MARK;
+}
+
+// Whether the matched socket is bound to the packet's exact destination
+// address. A wildcard-bound socket answers for every destination and therefore
+// says nothing about local delivery; only an exact match proves this is a
+// host-terminated flow rather than a forwarded one.
+static __always_inline bool
+direct_stats_sock_bound_to_daddr(struct bpf_sock *sk,
+				 const struct tuples_key *key, bool ipv4)
+{
+	if (ipv4) {
+		__u32 bound = sk->src_ip4;
+
+		return bound != 0 && bound == key->dip.u6_addr32[3];
+	}
+
+	const __u32 *bound = sk->src_ip6;
+	bool wildcard = !(bound[0] | bound[1] | bound[2] | bound[3]);
+
+	return !wildcard &&
+	       bound[0] == key->dip.u6_addr32[0] &&
+	       bound[1] == key->dip.u6_addr32[1] &&
+	       bound[2] == key->dip.u6_addr32[2] &&
+	       bound[3] == key->dip.u6_addr32[3];
+}
+
+// Distinguishes a reply delivered to a local socket from one forwarded to a LAN
+// client. Forwarded replies are accounted on the LAN egress hook after DNAT;
+// counting them here as well would double count non-NAT clients.
+static __always_inline bool
+direct_stats_has_local_socket(struct __sk_buff *skb,
+			      const struct tuples_key *key)
+{
+	struct bpf_sock_tuple tuple = {};
+	struct bpf_sock *sk;
+	__u32 tuple_size;
+	bool ipv4 = direct_stats_is_ipv4(key);
+	bool local;
+
+	if (ipv4) {
+		tuple.ipv4.saddr = key->sip.u6_addr32[3];
+		tuple.ipv4.daddr = key->dip.u6_addr32[3];
+		tuple.ipv4.sport = key->sport;
+		tuple.ipv4.dport = key->dport;
+		tuple_size = sizeof(tuple.ipv4);
+	} else {
+		__builtin_memcpy(tuple.ipv6.saddr, &key->sip, IPV6_BYTE_LENGTH);
+		__builtin_memcpy(tuple.ipv6.daddr, &key->dip, IPV6_BYTE_LENGTH);
+		tuple.ipv6.sport = key->sport;
+		tuple.ipv6.dport = key->dport;
+		tuple_size = sizeof(tuple.ipv6);
+	}
+
+	if (key->l4proto == IPPROTO_TCP)
+		sk = bpf_sk_lookup_tcp(skb, &tuple, tuple_size,
+				       (__u64)(s32)-1, 0);
+	else if (key->l4proto == IPPROTO_UDP)
+		sk = bpf_sk_lookup_udp(skb, &tuple, tuple_size,
+				       (__u64)(s32)-1, 0);
+	else
+		return false;
+
+	if (!sk)
+		return false;
+	local = !direct_stats_sock_is_dae(sk) &&
+		direct_stats_sock_bound_to_daddr(sk, key, ipv4);
+	bpf_sk_release(sk);
+	return local;
 }
 
 enum direct_stats_role {
@@ -253,13 +464,11 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 		st = bpf_map_lookup_elem(&conn_state_map, &rkey);
 		if (st) {
 			if (direct_stats_is_direct(st)) {
-				direct_stats_add(DIRECT_STATS_DOWNLOAD_BYTES,
-						 DIRECT_STATS_DOWNLOAD_PACKETS, len);
-				// No index write here. The index is keyed by the upload
-				// tuple and only the reply path reads it, so writing the
-				// reversed key inserted an entry no lookup can ever hit,
-				// at one LRU update per reply packet plus eviction
-				// pressure on the entries that are actually read.
+				// A dual-role interface has no separate LAN egress
+				// hook: keep the single-hook accounting there.
+				if (role == DIRECT_STATS_ROLE_BOTH ||
+				    direct_stats_has_local_socket(skb, &key))
+					direct_stats_add(DIRECT_STATS_DOWNLOAD, len);
 				return DIRECT_STATS_CONTINUE;
 			}
 			// An entry that carries a routing decision belongs to a proxied
@@ -273,10 +482,8 @@ direct_stats_ingress(struct __sk_buff *skb, __u32 l3_off, __u32 role)
 		// Upload: the packet is the original direction.
 		st = bpf_map_lookup_elem(&conn_state_map, &key);
 		if (st) {
-			if (direct_stats_is_direct(st)) {
-				direct_stats_add(DIRECT_STATS_UPLOAD_BYTES,
-						 DIRECT_STATS_UPLOAD_PACKETS, len);
-			}
+			if (direct_stats_is_direct(st))
+				direct_stats_add(DIRECT_STATS_UPLOAD, len);
 			return DIRECT_STATS_CONTINUE;
 		}
 	}
@@ -300,10 +507,33 @@ direct_stats_egress(struct __sk_buff *skb, __u32 l3_off)
 		return DIRECT_STATS_CONTINUE;
 
 	st = bpf_map_lookup_elem(&conn_state_map, &key);
-	if (direct_stats_is_direct(st)) {
-		direct_stats_add(DIRECT_STATS_UPLOAD_BYTES,
-				 DIRECT_STATS_UPLOAD_PACKETS, len);
-	}
+	if (direct_stats_is_direct(st))
+		direct_stats_add(DIRECT_STATS_UPLOAD, len);
+	return DIRECT_STATS_CONTINUE;
+}
+
+// LAN-egress observer for forwarded replies. NAT rewrites the WAN-ingress
+// destination, but the reply leaving the LAN interface has already been
+// DNATed, so its reverse tuple is the LAN upload key even on a masquerading
+// gateway. Locally generated packets (ingress_ifindex == 0) are excluded:
+// host-to-LAN traffic is not a WAN download.
+static __always_inline int
+direct_stats_lan_egress(struct __sk_buff *skb, __u32 l3_off)
+{
+	struct tuples_key key, rkey;
+	struct conn_state *st;
+	__u64 len = skb->len;
+
+	if (skb->ingress_ifindex == 0)
+		return DIRECT_STATS_CONTINUE;
+	if (direct_stats_parse_tuple(skb, l3_off, &key))
+		return DIRECT_STATS_CONTINUE;
+
+	__builtin_memset(&rkey, 0, sizeof(rkey));
+	direct_stats_reverse(&key, &rkey);
+	st = bpf_map_lookup_elem(&conn_state_map, &rkey);
+	if (direct_stats_is_direct(st))
+		direct_stats_add(DIRECT_STATS_DOWNLOAD, len);
 	return DIRECT_STATS_CONTINUE;
 }
 
@@ -353,6 +583,18 @@ SEC("tc/direct_stats_egress_l3")
 int direct_stats_egress_l3(struct __sk_buff *skb)
 {
 	return direct_stats_egress(skb, 0);
+}
+
+SEC("tc/direct_stats_lan_egress_l2")
+int direct_stats_lan_egress_l2(struct __sk_buff *skb)
+{
+	return direct_stats_lan_egress(skb, 14);
+}
+
+SEC("tc/direct_stats_lan_egress_l3")
+int direct_stats_lan_egress_l3(struct __sk_buff *skb)
+{
+	return direct_stats_lan_egress(skb, 0);
 }
 
 SEC("license") const char __license[] = "Dual BSD/GPL";

@@ -123,6 +123,15 @@ type controlPlaneCore struct {
 	directStats         *directStatsObserver
 	directStatsBridgeMu sync.RWMutex
 	directStatsBridges  map[int]directStatsBridgeRole
+	// directStatsPorts maps an observed bridge port ifindex to the bridge
+	// ifindex and role it was observed under. It lets a port that leaves the
+	// bridge (or whose bridge disappears) lose its observer instead of counting
+	// traffic on an interface dae no longer owns, and it lets a role change drop
+	// an obsolete LAN egress hook.
+	directStatsPorts map[int]directStatsPortRole
+	// directStatsStatusMu guards the most recent observer load/attach error.
+	directStatsStatusMu  sync.Mutex
+	directStatsStatusErr string
 	// nodeParseReport is how many links each subscription supplied and how
 	// many of them became dialers. It is written once during construction and
 	// read by the reload caller to decide whether a fetched payload may
@@ -634,7 +643,7 @@ func (c *controlPlaneCore) startIfindexWatcher() {
 				if !ok {
 					return
 				}
-				c.attachDirectStatsBridgePort(upd.Link)
+				c.handleDirectStatsLinkUpdate(upd)
 				if upd.Link.Attrs().Name != HostVethName {
 					continue
 				}

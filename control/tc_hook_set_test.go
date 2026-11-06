@@ -554,3 +554,46 @@ func TestDualRoleTCHookProgramsUseOneCompositePerDirection(t *testing.T) {
 		t.Fatal("layer-3 dual-role hooks did not select composite programs")
 	}
 }
+
+func namedTCHookSpec(priority uint16, name string, program *ebpf.Program) tcHookSpec {
+	spec := testTCHookSpec(priority, program)
+	spec.Name = name
+	return spec
+}
+
+func TestTCHookSetRemoveHooksWithPrefixLeavesOtherHooks(t *testing.T) {
+	backend := &fakeTCHookBackend{}
+	set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+	direct := new(ebpf.Program)
+	tproxy := new(ebpf.Program)
+
+	if err := set.beginReplace(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(namedTCHookSpec(1, "dae_direct_stats_lan_ingress_l3", direct)); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(namedTCHookSpec(2, "dae_lan_ingress_l3", tproxy)); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.commit(); err != nil {
+		t.Fatal(err)
+	}
+	set.finalize()
+
+	if got := set.countHooksWithPrefix("dae_direct_stats_"); got != 1 {
+		t.Fatalf("direct hooks before removal = %d, want 1", got)
+	}
+	if err := set.removeHooksWithPrefix(tcHookScopeHost, 7, "dae_direct_stats_"); err != nil {
+		t.Fatal(err)
+	}
+	if got := set.countHooksWithPrefix("dae_direct_stats_"); got != 0 {
+		t.Fatalf("direct hooks after removal = %d, want 0", got)
+	}
+	if got := set.countHooksWithPrefix("dae_lan_"); got != 1 {
+		t.Fatalf("tproxy hooks after removal = %d, want 1", got)
+	}
+	if backend.closed == 0 {
+		t.Fatal("removing a direct-stats hook did not close its attachment")
+	}
+}

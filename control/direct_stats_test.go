@@ -13,9 +13,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/vishvananda/netlink"
 )
 
 func readDirectStatsSource(t *testing.T) string {
@@ -73,10 +75,8 @@ func TestDirectStatsKeysParityWithKernelSource(t *testing.T) {
 		cName string
 		goKey uint32
 	}{
-		{"DIRECT_STATS_UPLOAD_BYTES", directStatsKeyUpBytes},
-		{"DIRECT_STATS_UPLOAD_PACKETS", directStatsKeyUpPackets},
-		{"DIRECT_STATS_DOWNLOAD_BYTES", directStatsKeyDownBytes},
-		{"DIRECT_STATS_DOWNLOAD_PACKETS", directStatsKeyDownPackets},
+		{"DIRECT_STATS_UPLOAD", directStatsKeyUp},
+		{"DIRECT_STATS_DOWNLOAD", directStatsKeyDown},
 	}
 	for _, entry := range contract {
 		value, ok := cKeys[entry.cName]
@@ -103,7 +103,7 @@ func TestDirectStatsPriorityRunsBeforeTproxy(t *testing.T) {
 	if directStatsPriority != 1 {
 		t.Fatalf("directStatsPriority = %d; the observer must own the lowest priority", directStatsPriority)
 	}
-	for _, want := range []string{"dualPriority = 2", "ingressPriority = 2"} {
+	for _, want := range []string{"dualPriority = 2", "ingressPriority = 2", "egressPriority = 2"} {
 		if !strings.Contains(mustReadBindSource(t), want) {
 			t.Errorf("bind source does not set %q; tproxy must yield to the observer when it is on", want)
 		}
@@ -124,8 +124,8 @@ func TestDirectStatsProgramNamesFollowRole(t *testing.T) {
 		layer2, wan, dual bool
 		ingress, egress   string
 	}{
-		{false, false, false, "direct_stats_lan_ingress_l3", "direct_stats_egress_l3"},
-		{true, false, false, "direct_stats_lan_ingress_l2", "direct_stats_egress_l2"},
+		{false, false, false, "direct_stats_lan_ingress_l3", "direct_stats_lan_egress_l3"},
+		{true, false, false, "direct_stats_lan_ingress_l2", "direct_stats_lan_egress_l2"},
 		{false, true, false, "direct_stats_wan_ingress_l3", "direct_stats_egress_l3"},
 		{true, true, false, "direct_stats_wan_ingress_l2", "direct_stats_egress_l2"},
 		{false, false, true, "direct_stats_ingress_l3", "direct_stats_egress_l3"},
@@ -154,6 +154,9 @@ func TestDirectStatsRoleVariantsSkipUnusedLookups(t *testing.T) {
 		"direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_LAN)",
 		"direct_stats_ingress(skb, 0, DIRECT_STATS_ROLE_WAN)",
 		"direct_stats_ingress(skb, 14, DIRECT_STATS_ROLE_BOTH)",
+		"direct_stats_lan_egress(skb, 0)",
+		"direct_stats_lan_egress(skb, 14)",
+		"direct_stats_has_local_socket(skb, &key)",
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("observer source lacks %q", want)
@@ -183,17 +186,17 @@ func TestRetiredDirectStatsAccumulatesAcrossGenerations(t *testing.T) {
 	}
 }
 
-func TestResolveDirectStatsRefusesKernelWithoutTCX(t *testing.T) {
+func TestResolveDirectStatsFallsBackToClassicWithoutTCX(t *testing.T) {
 	previous := directStatsKernelVersion
 	t.Cleanup(func() { directStatsKernelVersion = previous })
 
 	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{6, 5, 0}, nil }
-	if ResolveDirectStats(nil, true) {
-		t.Fatal("observer enabled on a kernel without TCX")
+	if !ResolveDirectStats(nil, true) {
+		t.Fatal("observer refused on a kernel that only lacks TCX")
 	}
 	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{}, errors.New("unknown") }
-	if ResolveDirectStats(nil, true) {
-		t.Fatal("observer enabled when the kernel version is unknown")
+	if !ResolveDirectStats(nil, true) {
+		t.Fatal("observer refused when the kernel version is unknown")
 	}
 	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{6, 6, 0}, nil }
 	if !ResolveDirectStats(nil, true) {
@@ -204,14 +207,14 @@ func TestResolveDirectStatsRefusesKernelWithoutTCX(t *testing.T) {
 	}
 }
 
-func TestResolveDirectStatsWarnsWhenRefused(t *testing.T) {
+func TestResolveDirectStatsWarnsOnClassicFallback(t *testing.T) {
 	previous := directStatsKernelVersion
 	t.Cleanup(func() { directStatsKernelVersion = previous })
 	directStatsKernelVersion = func() (internal.Version, error) { return internal.Version{5, 15, 0}, nil }
 
 	logger, hook := logrustest.NewNullLogger()
-	if ResolveDirectStats(logger, true) {
-		t.Fatal("observer enabled on 5.15")
+	if !ResolveDirectStats(logger, true) {
+		t.Fatal("observer refused on 5.15; classic TC is still available")
 	}
 	if len(hook.AllEntries()) != 1 || hook.LastEntry().Level != logrus.WarnLevel {
 		t.Fatalf("want one warning, got %v", hook.AllEntries())
@@ -219,7 +222,8 @@ func TestResolveDirectStatsWarnsWhenRefused(t *testing.T) {
 }
 
 // A reply without a conn_state match cannot safely be attributed to a LAN host
-// on a SNAT gateway, so it must not use a remote/local-port fallback key.
+// through a remote/local-port fallback key. NAT downloads are counted on the
+// LAN egress hook after DNAT instead.
 func TestDirectStatsOmitsUnattributableNATReplies(t *testing.T) {
 	source := readDirectStatsSource(t)
 	for _, absent := range []string{"direct_reverse_map", "direct_stats_known", "direct_stats_remember"} {
@@ -230,12 +234,11 @@ func TestDirectStatsOmitsUnattributableNATReplies(t *testing.T) {
 	if !strings.Contains(source, "if (st->meta.data.has_routing)") {
 		t.Fatal("a conn_state entry with routing metadata must not be counted as direct")
 	}
-	spec, err := loadDirectstats()
-	if err != nil {
-		t.Fatalf("load observer spec: %v", err)
+	if !strings.Contains(source, "direct_stats_lan_egress") {
+		t.Fatal("NAT downloads must be accounted on the LAN egress hook")
 	}
-	if spec.Maps["direct_reverse_map"] != nil {
-		t.Fatal("generated observer still allocates the unsafe NAT reverse map")
+	if !strings.Contains(source, "direct_stats_has_local_socket") {
+		t.Fatal("WAN ingress must distinguish local delivery from forwarded replies")
 	}
 }
 
@@ -254,5 +257,60 @@ func TestRetireDirectStatsObserverIsIdempotent(t *testing.T) {
 	retireDirectStatsObserver(&directStatsObserver{})
 	if got := retiredDirectStats().UpBytes; got != 7 {
 		t.Fatalf("retired = %d, want 7", got)
+	}
+}
+
+func TestDirectStatsStatusReportsRecordedError(t *testing.T) {
+	core := &controlPlaneCore{}
+	core.recordDirectStatsError(errors.New("observer load failed"))
+	plane := &ControlPlane{core: core}
+
+	status := plane.DirectStatsStatus()
+	if status.Attached || status.Hooks != 0 {
+		t.Fatalf("status = %+v, want no attached hooks", status)
+	}
+	if status.LastError != "observer load failed" {
+		t.Fatalf("last error = %q", status.LastError)
+	}
+}
+
+func TestDirectStatsSnapshotSkipsUnreadableObserver(t *testing.T) {
+	directStatsTotals.mu.Lock()
+	directStatsTotals.retired = DirectStatsCounters{UpBytes: 5}
+	directStatsTotals.live = map[*directStatsObserver]struct{}{}
+	directStatsTotals.mu.Unlock()
+	t.Cleanup(func() {
+		directStatsTotals.mu.Lock()
+		directStatsTotals.retired = DirectStatsCounters{}
+		directStatsTotals.live = nil
+		directStatsTotals.mu.Unlock()
+	})
+
+	// A collection without direct_stats_map models a generation whose map
+	// disappeared while it was still being drained.
+	observer := &directStatsObserver{coll: &ebpf.Collection{}}
+	registerDirectStatsObserver(observer)
+	plane := &ControlPlane{core: &controlPlaneCore{}}
+	got, err := plane.DirectStatsSnapshot()
+	if err == nil {
+		t.Fatal("snapshot did not report the unreadable observer")
+	}
+	if got.UpBytes != 5 {
+		t.Fatalf("snapshot discarded readable retired counters: %+v", got)
+	}
+}
+
+func TestStageDirectStatsFailureIsBestEffort(t *testing.T) {
+	core := &controlPlaneCore{log: logrus.New()}
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{
+		Index: 7, Name: "eth0", EncapType: "ether",
+	}}
+	// No bpf object is available, so the collection load fails. An optional
+	// observer must not turn that into a bind error.
+	if err := core.stageDirectStatsHookForLink(link, false, false, false, true, true); err != nil {
+		t.Fatalf("stageDirectStatsHookForLink returned %v", err)
+	}
+	if core.directStatsLastError() == "" {
+		t.Fatal("load failure was not recorded in the status")
 	}
 }

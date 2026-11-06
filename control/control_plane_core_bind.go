@@ -259,12 +259,16 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	egressProgram := bpf.TproxyLanEgressL3
 	egressName := consts.AppName + "_lan_egress_l3"
 	egressPriority := uint16(1)
-	// When the direct-stats observer is on it owns priority 1, so the shared
-	// dual-role hooks move to 2. With the observer off the historical order is
-	// untouched.
+	// When the direct-stats observer is on it owns priority 1. The LAN egress
+	// observer watches forwarded replies, so tproxy's LAN egress hook must move
+	// to 2 as well; otherwise both programs would share the same hook key and
+	// the observer would replace tproxy instead of running beside it. The
+	// dual-role hooks already share one priority and move together. With the
+	// observer off the historical order is untouched.
 	dualPriority := uint16(1)
 	if directStatsEnabled.Load() {
 		dualPriority = 2
+		egressPriority = 2
 	}
 	if c.isDualRoleTCInterface(ifname) {
 		programs := selectDualRoleTCHookPrograms(bpf, linkHdrLen > 0)
