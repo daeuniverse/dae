@@ -21,8 +21,9 @@ Directory structure:
 
 `include` paths follow these rules:
 
-- Relative paths, such as `config.d/*.dae`, resolve relative to the entry configuration file's directory, not the current working directory. The entry file is the file passed to `dae -c ...`.
+- Relative paths, such as `config.d/*.dae`, resolve relative to the entry configuration file's directory, not the current working directory. The entry file is the file passed to `dae run -c ...`.
 - Absolute paths, such as `/etc/dae/config.d/*.dae`, are used as-is.
+- Do not list the same files in both forms. dae loads them twice and fails with `circular include is not allowed`.
 - For security, dae only allows included files under the entry configuration directory.
 
 ```jsonc
@@ -30,11 +31,7 @@ Directory structure:
 
 # load all dae files placed in ./config.d/
 include {
-    # Relative path example:
     config.d/*.dae
-
-    # Absolute path example:
-    /etc/dae/config.d/*.dae
 }
 global {
     tproxy_port: 12345

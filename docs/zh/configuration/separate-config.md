@@ -19,12 +19,14 @@
 └── config.dae
 ```
 
-入口配置文件是传递给 `dae -c ...` 的文件。`include` 路径按以下规则处理：
+入口配置文件是传递给 `dae run -c ...` 的文件。`include` 路径按以下规则处理：
 
 | 路径类型 | 示例 | 处理方式 |
 | --- | --- | --- |
 | 相对路径 | `config.d/*.dae` | 相对于入口配置文件所在目录解析，而非当前工作目录 |
 | 绝对路径 | `/etc/dae/config.d/*.dae` | 按原样使用 |
+
+不要以两种写法重复列出同一批文件，否则 dae 会重复加载，并报错 `circular include is not allowed`。
 
 出于安全原因，dae 仅允许包含入口配置目录下的文件。
 
@@ -35,11 +37,7 @@
 
 # load all dae files placed in ./config.d/
 include {
-    # Relative path example:
     config.d/*.dae
-
-    # Absolute path example:
-    /etc/dae/config.d/*.dae
 }
 global {
     tproxy_port: 12345
