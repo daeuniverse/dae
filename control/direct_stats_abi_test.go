@@ -10,6 +10,8 @@ package control
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/cilium/ebpf/btf"
 )
 
 // TestDirectStatsConnStateABIParity pins the shared-map contract: the observer
@@ -27,6 +29,12 @@ func TestDirectStatsConnStateABIParity(t *testing.T) {
 	}
 	for _, off := range []offset{
 		{"LastSeenNs", unsafe.Offsetof(directstatsConnState{}.LastSeenNs), unsafe.Offsetof(bpfConnState{}.LastSeenNs)},
+		{"Meta", unsafe.Offsetof(directstatsConnState{}.Meta), unsafe.Offsetof(bpfConnState{}.Meta)},
+		{"Meta.Data.Mark", unsafe.Offsetof(directstatsConnState{}.Meta.Data.Mark), unsafe.Offsetof(bpfConnState{}.Meta.Data.Mark)},
+		{"Meta.Data.Outbound", unsafe.Offsetof(directstatsConnState{}.Meta.Data.Outbound), unsafe.Offsetof(bpfConnState{}.Meta.Data.Outbound)},
+		{"Meta.Data.Must", unsafe.Offsetof(directstatsConnState{}.Meta.Data.Must), unsafe.Offsetof(bpfConnState{}.Meta.Data.Must)},
+		{"Meta.Data.Dscp", unsafe.Offsetof(directstatsConnState{}.Meta.Data.Dscp), unsafe.Offsetof(bpfConnState{}.Meta.Data.Dscp)},
+		{"Meta.Data.HasRouting", unsafe.Offsetof(directstatsConnState{}.Meta.Data.HasRouting), unsafe.Offsetof(bpfConnState{}.Meta.Data.HasRouting)},
 		{"Mac", unsafe.Offsetof(directstatsConnState{}.Mac), unsafe.Offsetof(bpfConnState{}.Mac)},
 		{"Pname", unsafe.Offsetof(directstatsConnState{}.Pname), unsafe.Offsetof(bpfConnState{}.Pname)},
 		{"Pid", unsafe.Offsetof(directstatsConnState{}.Pid), unsafe.Offsetof(bpfConnState{}.Pid)},
@@ -57,5 +65,39 @@ func TestDirectStatsTuplesKeyABIParity(t *testing.T) {
 		if off.got != off.want {
 			t.Errorf("tuples_key field %s is at offset %d in the observer but %d in tproxy", off.name, off.got, off.want)
 		}
+	}
+}
+
+// TestDirectStatsObjectHasNoNATReverseMap pins the generated object: the
+// observer's only map besides tproxy's conn_state_map is the counter array.
+// The source-level check lives in direct_stats_test.go; this one needs the
+// real object and therefore lives in the !dae_stub_ebpf file.
+func TestDirectStatsObjectHasNoNATReverseMap(t *testing.T) {
+	spec, err := loadDirectstats()
+	if err != nil {
+		t.Fatalf("load observer spec: %v", err)
+	}
+	if spec.Maps["direct_reverse_map"] != nil {
+		t.Fatal("generated observer still allocates the unsafe NAT reverse map")
+	}
+}
+
+// TestDirectStatsCounterValueLayout pins the counter-map value the Go reader
+// decodes. The map has one entry per direction; each entry is {bytes, packets}.
+func TestDirectStatsCounterValueLayout(t *testing.T) {
+	spec, err := loadDirectstats()
+	if err != nil {
+		t.Fatalf("load observer spec: %v", err)
+	}
+	value := spec.Maps["direct_stats_map"]
+	if value == nil || value.Value == nil {
+		t.Fatal("direct_stats_map has no value type")
+	}
+	size, err := btf.Sizeof(value.Value)
+	if err != nil {
+		t.Fatalf("size of direct_stats_map value: %v", err)
+	}
+	if got, want := uint32(size), uint32(unsafe.Sizeof(directStatsValue{})); got != want {
+		t.Fatalf("direct_stats_map value size = %d, want %d", got, want)
 	}
 }
