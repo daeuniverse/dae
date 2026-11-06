@@ -552,16 +552,23 @@ type OutboundCounters struct {
 }
 
 // RuntimeDirectStats is the cumulative direct-traffic observation. Enabled
-// reflects api.direct_stats; when it is false the counters stay at zero.
-// Counter values are decimal strings because they are UInt64 in the contract.
-// Up is LAN or host to WAN; down is WAN to LAN or host.
+// reflects the effective api.direct_stats switch (configuration plus the
+// kernel capability gate); Attached says whether at least one observer hook
+// actually reached the datapath. Counter values are decimal strings because
+// they are UInt64 in the contract. Up is LAN or host to WAN; down is WAN to
+// LAN or host. Packets are skb counts, so GSO/GRO can make them lower than the
+// on-wire packet count. The figures are aggregate only: they carry no per-host,
+// per-interface or per-outbound split.
 type RuntimeDirectStats struct {
-	ObservedAt  string `json:"observed_at"`
-	Enabled     bool   `json:"enabled"`
-	UpBytes     string `json:"up_bytes"`
-	UpPackets   string `json:"up_packets"`
-	DownBytes   string `json:"down_bytes"`
-	DownPackets string `json:"down_packets"`
+	ObservedAt   string  `json:"observed_at"`
+	Enabled      bool    `json:"enabled"`
+	Attached     bool    `json:"attached"`
+	CounterSince string  `json:"counter_since"`
+	UpBytes      string  `json:"up_bytes"`
+	UpPackets    string  `json:"up_packets"`
+	DownBytes    string  `json:"down_bytes"`
+	DownPackets  string  `json:"down_packets"`
+	LastError    *string `json:"last_error"`
 }
 
 // RuntimeMemory is the process, cgroup and kernel memory snapshot.

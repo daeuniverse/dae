@@ -129,10 +129,13 @@ func attributeDirectStats(plane *control.ControlPlane, outbounds []nativeapi.Out
 	if plane == nil || !control.DirectStatsEnabled() {
 		return
 	}
-	counters, err := plane.DirectStatsSnapshot()
-	if err != nil {
-		return
-	}
+	// A partial read still carries the counters of every live generation that
+	// could be read; do not discard them because one retired map failed.
+	counters, _ := plane.DirectStatsSnapshot()
+	mergeDirectStatsCounters(outbounds, counters)
+}
+
+func mergeDirectStatsCounters(outbounds []nativeapi.OutboundCounters, counters control.DirectStatsCounters) {
 	for i := range outbounds {
 		if outbounds[i].Kind != "builtin" || outbounds[i].Name != "direct" {
 			continue
@@ -159,21 +162,47 @@ func (p *nativeAPIProvider) SnapshotDirectStats(ctx context.Context) (nativeapi.
 	if err := ctx.Err(); err != nil {
 		return nativeapi.RuntimeDirectStats{}, err
 	}
+	if !control.DirectStatsEnabled() {
+		// A disabled observer is a supported zero state, not a missing
+		// generation. The endpoint must keep answering 200 while the daemon is
+		// between generations (for example during suspend).
+		return nativeapi.RuntimeDirectStats{
+			ObservedAt:   time.Now().UTC().Format(time.RFC3339),
+			Enabled:      false,
+			UpBytes:      "0",
+			UpPackets:    "0",
+			DownBytes:    "0",
+			DownPackets:  "0",
+			CounterSince: "",
+		}, nil
+	}
 	plane, err := p.activeControlPlane()
 	if err != nil {
 		return nativeapi.RuntimeDirectStats{}, err
 	}
-	counters, err := plane.DirectStatsSnapshot()
-	if err != nil {
-		return nativeapi.RuntimeDirectStats{}, err
+	counters, snapshotErr := plane.DirectStatsSnapshot()
+	status := plane.DirectStatsStatus()
+	lastError := status.LastError
+	if snapshotErr != nil {
+		if lastError != "" {
+			lastError += "; "
+		}
+		lastError += snapshotErr.Error()
+	}
+	counterSince := ""
+	if since := control.DirectStatsCounterSince(); !since.IsZero() {
+		counterSince = since.UTC().Format(time.RFC3339)
 	}
 	return nativeapi.RuntimeDirectStats{
-		ObservedAt:  time.Now().UTC().Format(time.RFC3339),
-		Enabled:     control.DirectStatsEnabled(),
-		UpBytes:     strconv.FormatUint(counters.UpBytes, 10),
-		UpPackets:   strconv.FormatUint(counters.UpPackets, 10),
-		DownBytes:   strconv.FormatUint(counters.DownBytes, 10),
-		DownPackets: strconv.FormatUint(counters.DownPackets, 10),
+		ObservedAt:   time.Now().UTC().Format(time.RFC3339),
+		Enabled:      control.DirectStatsEnabled(),
+		Attached:     status.Attached,
+		CounterSince: counterSince,
+		UpBytes:      strconv.FormatUint(counters.UpBytes, 10),
+		UpPackets:    strconv.FormatUint(counters.UpPackets, 10),
+		DownBytes:    strconv.FormatUint(counters.DownBytes, 10),
+		DownPackets:  strconv.FormatUint(counters.DownPackets, 10),
+		LastError:    nonEmptyString(lastError),
 	}, nil
 }
 

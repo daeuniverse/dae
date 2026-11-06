@@ -89,12 +89,14 @@ func withRuntimeProviders(server *Server) *fakeMemoryProvider {
 	}})
 	server.SetMemoryProvider(memory)
 	server.SetDirectStatsProvider(fakeDirectStatsProvider{stats: RuntimeDirectStats{
-		ObservedAt:  "2026-01-01T00:00:00Z",
-		Enabled:     true,
-		UpBytes:     "10",
-		UpPackets:   "2",
-		DownBytes:   "20",
-		DownPackets: "3",
+		ObservedAt:   "2026-01-01T00:00:00Z",
+		Enabled:      true,
+		Attached:     true,
+		CounterSince: "2026-01-01T00:00:00Z",
+		UpBytes:      "10",
+		UpPackets:    "2",
+		DownBytes:    "20",
+		DownPackets:  "3",
 	}})
 	server.SetDatapathProvider(&fakeDatapathProvider{datapath: Datapath{
 		ObservedAt: "2026-01-01T00:00:00Z",
@@ -248,8 +250,11 @@ func TestRuntimeDirectStats(t *testing.T) {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
 	body := decodeJSON(t, response)
-	if body["enabled"] != true {
-		t.Fatalf("enabled = %#v", body["enabled"])
+	if body["enabled"] != true || body["attached"] != true {
+		t.Fatalf("enabled/attached = %#v/%#v", body["enabled"], body["attached"])
+	}
+	if body["counter_since"] != "2026-01-01T00:00:00Z" {
+		t.Fatalf("counter_since = %#v", body["counter_since"])
 	}
 	if body["up_bytes"] != "10" || body["down_bytes"] != "20" {
 		t.Fatalf("counters = %#v", body)

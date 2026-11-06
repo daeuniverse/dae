@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -155,6 +156,22 @@ func TestAttributeDirectStatsDisabledIsNoop(t *testing.T) {
 	}
 }
 
+func TestMergeDirectStatsCountersAddsToDirectRow(t *testing.T) {
+	outbounds := []nativeapi.OutboundCounters{
+		{Name: "direct", Kind: "builtin", UploadBytes: "7", DownloadBytes: "9"},
+		{Name: "proxy", Kind: "group", UploadBytes: "1", DownloadBytes: "2"},
+	}
+	mergeDirectStatsCounters(outbounds, control.DirectStatsCounters{
+		UpBytes: 100, DownBytes: 200, UpPackets: 3, DownPackets: 4,
+	})
+	if outbounds[0].UploadBytes != "107" || outbounds[0].DownloadBytes != "209" {
+		t.Fatalf("direct row = %#v", outbounds[0])
+	}
+	if outbounds[1].UploadBytes != "1" || outbounds[1].DownloadBytes != "2" {
+		t.Fatalf("proxy row changed: %#v", outbounds[1])
+	}
+}
+
 func TestProjectOutboundCountersOmitsBlock(t *testing.T) {
 	previous := control.DirectStatsEnabled()
 	control.ConfigureDirectStats(false)
@@ -178,5 +195,23 @@ func TestProjectOutboundCountersOmitsBlock(t *testing.T) {
 	}
 	if rows[0].Name != "direct" || rows[0].UploadBytes != "11" || rows[1].Name != "proxy" || rows[1].DownloadBytes != "44" {
 		t.Fatalf("rows = %#v", rows)
+	}
+}
+
+func TestSnapshotDirectStatsDisabledIsAZeroState(t *testing.T) {
+	previous := control.DirectStatsEnabled()
+	control.ConfigureDirectStats(false)
+	t.Cleanup(func() { control.ConfigureDirectStats(previous) })
+
+	provider := &nativeAPIProvider{}
+	stats, err := provider.SnapshotDirectStats(context.Background())
+	if err != nil {
+		t.Fatalf("disabled snapshot returned error: %v", err)
+	}
+	if stats.Enabled || stats.Attached {
+		t.Fatalf("disabled snapshot = %+v", stats)
+	}
+	if stats.UpBytes != "0" || stats.DownBytes != "0" || stats.CounterSince != "" {
+		t.Fatalf("disabled counters = %+v", stats)
 	}
 }
