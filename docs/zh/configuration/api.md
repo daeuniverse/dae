@@ -115,7 +115,9 @@ api {
 
 dae 直连转发的流量不经过 userspace relay，连接计数器看不到它。设置
 `direct_stats: true` 后，dae 会在**自己已经绑定的** WAN/LAN 接口上、紧挨 tproxy 的位置
-挂一个纯观测 TC 程序：不改 mark、不改转发判决，也不会碰 dae 没有接管的接口。
+挂一个纯观测 TC 程序。绑定的是桥时会展开到成员口，netlink 监听器在成员加入/离开时增删
+观测器；程序不改 mark、不改转发判决。优先使用 TCX，内核不支持时回退 classic TC filter，
+后者需要 clsact qdisc，且可能受接口已有 filter 优先级影响。
 
 ```dae
 api {
@@ -127,9 +129,14 @@ api {
 ```
 
 之后 `GET /api/v1/runtime/direct-stats` 会返回累计的 `up_bytes`、`up_packets`、
-`down_bytes` 与 `down_packets`，`enabled` 对应开关状态。数字是链路字节而不是 payload
+`down_bytes` 与 `down_packets`，以及 `enabled`、`attached`、`counter_since`、
+`last_error`。`enabled` 是生效开关，`attached` 表示钩子是否真正挂上；`up_packets` /
+`down_packets` 是 **skb 计数**，GSO/GRO 下会低于线缆包数。数字是链路字节而不是 payload
 字节，且只是下界：观测钩子在 tproxy 之前运行，所以每条流的第一个包（以及重启前就存在的
-流）不会被统计，非 TCP/UDP 流量也不计。钩子先于 tproxy 运行，这些接口上的每个包（包括代理流量）都要付一两次 map 查找的成本；关闭开关即移除钩子，不再付出观测成本。
+流）不会被统计，非 TCP/UDP 流量也不计，缺失 conn_state 的直通流也无法统计。转发回包在
+LAN egress（DNAT 之后）计数，因此 MASQUERADE 网关也能统计 LAN 客户端下载；双角色接口仍
+保留该限制。钩子先于 tproxy 运行，这些接口上的每个包（包括代理流量）都要付一两次 map
+查找的成本；`api.direct_stats` 与 `api` 其余字段一样是 restart-required。
 
 观测计数同时会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读该资源的
 既有面板（例如 doona 的活动页）无需认识本端点即可看到直连流量。该行此时是混合口径：

@@ -407,20 +407,51 @@ datapath and never reaches a counter, so the row could only ever report zeros.
 
 ### Direct traffic
 
-`GET /api/v1/runtime/direct-stats` reports `enabled`, `up_bytes`, `up_packets`,
-`down_bytes` and `down_packets` (decimal strings). It is meaningful only when
-`api.direct_stats` is on: the opt-in observer in `control/kern/direct_stats.c`
-runs beside tproxy on the WAN/LAN interfaces dae binds, reads
-`conn_state_map` without writing it, and counts flows already flagged as direct
-pass-through. When the switch is off the hooks are absent and every counter is
-zero.
+`GET /api/v1/runtime/direct-stats` reports `enabled`, `attached`,
+`counter_since`, `up_bytes`, `up_packets`, `down_bytes`, `down_packets` and
+`last_error`. Counter values are decimal strings. `enabled` is the effective
+`api.direct_stats` switch (configuration plus the kernel/TC capability gate);
+`attached` says whether at least one observer hook actually reached the
+datapath. `last_error` keeps the most recent load/attach or partial-read
+failure, so `enabled: true` plus zeros is distinguishable from a healthy
+zero-traffic deployment. `counter_since` is the process-level start of the
+counters and survives a reload.
 
-The figure is link bytes and a lower bound: the observer runs before tproxy, so
-the first packet of each flow and flows that predate a restart are missed,
-ICMP/fragments are skipped, and replies whose post-SNAT tuple cannot match
-`conn_state_map` are not counted on a NAT gateway because the packet does not
-identify its LAN host. It is not summed into `runtime.traffic`, whose total stays userspace-only.
-The counters are folded into the builtin `direct` row of
+The opt-in observer in `control/kern/direct_stats.c` runs beside tproxy on the
+WAN/LAN interfaces dae binds, reads `conn_state_map` without writing it, and
+counts flows already flagged as direct pass-through. A bridge is observed on its
+member ports; the link watcher adds and removes those hooks when members join or
+leave. The hook uses TCX when available and falls back to classic TC filters on
+kernels without TCX; the fallback is logged because its ordering depends on the
+interface's existing filters and on the clsact qdisc being installable.
+
+The direction split is:
+
+- upload: LAN ingress for forwarded client packets, and WAN egress for locally
+  generated direct packets (`ingress_ifindex == 0`);
+- download: LAN egress for forwarded replies, after DNAT, and WAN ingress only
+  for replies delivered to a local socket. The LAN egress hook is what makes a
+  masquerading gateway countable: the reply leaving the LAN interface carries
+  the client's address, so its reversed tuple matches the upload state. A
+  dual-role interface keeps the single combined WAN-ingress accounting and
+  therefore still omits NAT-rewritten forwarded replies.
+
+The figure is aggregate link bytes and a lower bound; there is no per-host,
+per-interface or per-outbound split. The observer runs before tproxy, so
+the first packet of each flow (and flows that predate a restart) is missed;
+non-TCP/UDP traffic is skipped; non-initial fragments are skipped; a flow whose
+`conn_state_map` entry is missing (map full or stateless pass-through) cannot be
+counted; a local reply whose socket is wildcard-bound is not attributed to the
+host; and single VLAN tags still present on an egress frame are skipped by the
+parser, while stacked VLAN flows are counted only when tproxy established state
+on an interface where the inner tag is exposed. With `api.direct_stats` off the
+hooks are absent and every counter is zero.
+
+`up_packets` and `down_packets` are **skb counts**, not on-wire packet counts.
+GSO/TSO/GRO can make one skb represent several wire packets, so packet rate and
+average packet size derived from these fields are biased; use them with that
+caveat. The counters are not summed into `runtime.traffic`, whose total stays
+userspace-only. They are folded into the builtin `direct` row of
 `GET /api/v1/runtime/outbounds`, so a panel that only reads the existing
 resources shows direct traffic without knowing this endpoint. The row then mixes
 units: kernel-direct link bytes plus the `must_direct` payload bytes the relay
@@ -432,31 +463,31 @@ Direct traffic never reaches userspace, so a high direct throughput does not add
 userspace CPU or heap. The cost is bounded and lives in the kernel:
 
 - Memory is fixed and independent of traffic. `direct_stats_map` is a per-CPU
-  array of four `u64` counters. `conn_state_map` is tproxy's own map, reused via
-  a map replacement, and is not allocated again.
+  array of two `{bytes, packets}` records. `conn_state_map` is tproxy's own map,
+  reused via a map replacement, and is not allocated again.
 - CPU scales with packet rate, not byte rate. The ingress program is chosen by
   interface role: a LAN-only hook looks up only the upload tuple, a WAN-only
   hook only the reply tuple, and an interface bound with both roles runs the
-  combined program. An ingress packet costs one `conn_state_map` lookup per
-  direction the hook can see, until an entry answers (one for a role-specific
-  hook, at most two for the combined one), and a per-CPU counter update (no atomics, no cross-CPU cacheline sharing)
-  when the flow is direct. A flow tproxy has marked as proxied stops at that
-  entry, so proxied traffic pays the lookups but no counter update. The WAN
-  role runs one extra egress program, which exits early for forwarded packets
-  and otherwise does one lookup. Expect the cost to become visible only at
-  very high packet rates with small packets; large-packet bulk transfers are
-  dominated by the NIC and the stack.
-- Failure is isolated: if the object cannot load, dae logs a warning, skips the
-  hooks and keeps forwarding; the API reports zeros.
+  combined program. A direct packet performs one counter-map lookup. A WAN
+  ingress direct reply also performs a local-socket lookup to separate local
+  delivery from forwarded traffic; forwarded replies are accounted on LAN
+  egress instead. A flow tproxy has marked as proxied stops at the conn-state
+  entry, so proxied traffic pays the lookups but no counter update. Expect the
+  cost to become visible only at very high packet rates with small packets;
+  large-packet bulk transfers are dominated by the NIC and the stack.
+- Failure is isolated: a load or attach failure is logged, recorded in
+  `last_error`, and skipped; it cannot fail the bind or the daemon startup. The
+  API returns the counters of the generations that could be read and reports a
+  partial `last_error` instead of zeroing every counter.
 - With `api.direct_stats` off the object is never loaded and nothing is attached.
 
-Before NAT reply fallback was removed, a live benchmark on Linux 6.18 measured
-the median nanoseconds per packet at the busiest hook, summing all programs,
-with three runs per cell on a host at load average 1–4. It compares the
-observer off with it on; the observer was opt-in and not part of the main
-baseline. The current observer no longer allocates or updates the NAT reverse
-map, so these numbers are a reference for that earlier revision, not a
-measurement of the current code.
+The table below predates the removal of the NAT reverse index and the current
+LAN-egress accounting. It is a reference for the earlier revision, not a
+measurement of the current code. The current observer's memlock has not been
+measured. To measure on another system, set
+`sysctl kernel.bpf_stats_enabled=1` and read `run_cnt` and `run_time_ns` for the
+`dae_direct_stats_*` programs from `bpftool prog show`; `bpftool map show`
+reports the map memory.
 
 | Traffic | Observer off | Observer on | Increase |
 |---|---:|---:|---:|
@@ -466,13 +497,6 @@ measurement of the current code.
 | NAT TCP download | 832 | 1029 | 24% |
 | NAT TCP upload | 1481 | 1912 | 29% |
 | NAT UDP, 64 B, 256 flows | 352 | 590 | 68% |
-
-At that revision, measured BPF memlock was 9.4 MiB with the observer off and
-24.4 MiB with it on; the current observer's memlock has not been measured.
-These figures are specific to that host and workload, not a performance
-guarantee. To measure on another system, set `sysctl kernel.bpf_stats_enabled=1` and read
-`run_cnt` and `run_time_ns` for the `dae_direct_stats_*` programs from
-`bpftool prog show`; `bpftool map show` reports the map memory.
 
 ### Memory
 

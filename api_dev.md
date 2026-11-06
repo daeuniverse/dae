@@ -83,7 +83,7 @@ api {
 | `ui` | string | 空 | 已构建前端的绝对目录；在 `/ui/` 无凭证托管，非 `/api` 路径 302 到此。目录不可用（缺失/无 `index.html`）只 warning，不阻断启动 |
 | `config_write` | bool | `false` | 允许 API 替换可写配置源、补丁组配置、增删 inline 节点；置 true 时 `secret` 必须非空，且配置目录必须符合受管布局（P4-1） |
 | `disable_connection_bytes` | bool | `false` | 为 true 时 `/connections` 不再输出 `upload_bytes` / `download_bytes`（恒 `null`），其余字段不变 |
-| `direct_stats` | bool | `false` | 只读 eBPF 直连观测开关；**需要 TCX（Linux ≥ 6.6），内核不支持时记警告并自动关闭**；开启后 `GET /runtime/direct-stats` 有数，并把内核直连链路字节并入 `runtime/outbounds` 的 builtin `direct` 行 |
+| `direct_stats` | bool | `false` | 只读 eBPF 直连观测开关；优先 TCX，内核不支持时回退 classic TC filter 并记 warning；开启后 `GET /runtime/direct-stats` 有数，并把内核直连链路字节并入 `runtime/outbounds` 的 builtin `direct` 行 |
 
 设计约束：
 
@@ -313,7 +313,7 @@ group {
   - [x] `resources.operations = { available: true, retention_seconds: 3600, max_replay_keys: 1024 }`；
     `resources.reload` / `suspend` / `resume` available。
   - [x] `resources.config` / `config_validate`：`configEditor` 始终注入，故恒 `available: true`；`writable` / `create` / `max_bytes` / `max_sources` / `x-dae` 按闸门输出（见 P4-1）。
-  - [x] `resources.runtime_direct_stats.available` 恒 true（直连观测关闭时端点仍响应，`enabled: false` + 全 0）。
+  - [x] `resources.runtime_direct_stats.available` 恒 true（直连观测关闭时端点仍响应，`enabled: false` + 全 0）；新增 `attached` / `counter_since` / `last_error` 区分“关闭”“未挂上”和“部分失败”。
   - [x] 未实现资源用 `{ available: false }` 或省略。
 
 ### P0-5 runtime 资源
@@ -1024,7 +1024,7 @@ P4 源级端点已落地，详见 3 节 P4 章节。`api.config_write` 关闭或
 18. **full 校验失败的 `PUT` 返回 `422` + `error.details.diagnostics[]`**，不得返回 400/500，也不得先写盘再报错。
 19. **`GET /config` 的源集合契约要求「complete, never truncate」**；dae 隐藏 `api.dae` 是有意偏离，必须在 `x-dae.hidden_sources` 与文档中留痕（见 P4-4）。
 20. **`runtime/outbounds` 不输出 builtin `block` 行**，`flows.coverage.kernel_block` 已移除；消费方按 `kind` 枚举时必须容忍缺项，不要假定 `direct` + `block` 恒存在。
-21. **`api.direct_stats` 关闭时 `/runtime/direct-stats` 仍返回 200**（`enabled: false` + 全 0），不要据此判断资源不可用；`runtime.traffic` 无论开关都只含 userspace 可见流量。
+21. **`api.direct_stats` 关闭时 `/runtime/direct-stats` 仍返回 200**（`enabled: false` + 全 0），不要据此判断资源不可用；`attached` 为 false，`last_error` 可能说明加载/挂载失败。`runtime.traffic` 无论开关都只含 userspace 可见流量。
 22. **`providers.can_refresh` 与写入闸门无关**（运行期恒 true），`providers.can_manage` 恒 false；刷新非订阅 provider 返回 `404 capability_not_supported`。
 23. **`PATCH /groups/{id}/config` 的 `If-Match` 比的是 config revision**（组配置 `ETag`），与 `PUT /config/sources/{id}` 比 `content_sha256` 不同；两者混用会得到 `412 stale_revision`。
 
@@ -1061,7 +1061,7 @@ P4 源级端点已落地，详见 3 节 P4 章节。`api.config_write` 关闭或
   - [x] `config_groups_test.go`：白名单路径、整数量纲、`If-Match`、无变更不写盘。
 - [x] 直连观测测试
   - [x] `control/direct_stats_test.go`（角色专用程序选择、计数器、关闭时零成本）、`cmd/nativeapi_runtime_test.go`（`/runtime/direct-stats` 与 `direct` 行合并）。
-  - [x] BPF ABI 对齐：`TestDirectStatsConnStateABIParity` / `TestDirectStatsTuplesKeyABIParity` 已加入 `.github/workflows/bpf-test.yml` 白名单（该工作流要求非 stub 的 `Test*` 必须登记才会真正执行）。
+  - [x] BPF ABI 对齐：`TestDirectStatsConnStateABIParity` / `TestDirectStatsTuplesKeyABIParity` / `TestDirectStatsObjectHasNoNATReverseMap` / `TestDirectStatsCounterValueLayout` 已加入 `.github/workflows/bpf-test.yml` 白名单；另有 `TestDirectStatsProgramsLoad` 通过 verifier 加载观察器对象。
 - [x] 订阅与缓存
   - [x] `common/subscription/subscription_cache_test.go`：缓存键（tag 或内容哈希）、fetch 失败回退缓存、坏 payload 不覆盖好缓存。
 - [ ] 契约测试
@@ -1428,12 +1428,14 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 ### 11.1 直连观测（`api.direct_stats`）
 
-- **2026-11-04 修订（第三轮审查）**：内核不支持 TCX 时 `api.direct_stats` 被警告并关闭（`control.ResolveDirectStats`）；bridge 上入口只挂成员端口（master 仅保留 WAN 出口钩子），避免路由流量在端口与 master 各计一次；WAN 方向的无路由决策 `conn_state` 不再遮住后续回包的 NAT 索引匹配；NAT 索引的 value 记录 LAN 源地址，另一台主机复用同一端点/端口时标记为歧义并停止计数直到过期（300s）。
-- **载体**：`control/kern/direct_stats.c`（TC，观察专用）+ `control/direct_stats.go`。只读 `conn_state_map`，不写 mark，不改变转发；优先级 1，早于 tproxy 优先级 2 运行，因此能看到「判直连之后被 OK 掉」的包。
-- **挂载点**：只在 dae 已经绑定的 WAN/LAN 接口上挂（`_bindLan` / `_bindWan`）；加载失败只 warning，绝不影响转发。
-- **角色专用程序**（2026-11-03 优化）：LAN-only 接口只看客户端上传，WAN-only 只看回包，双角色接口用合并程序，避免对看不到的方向做无用的 tuple / NAT 索引查询。
-- **口径**：消费方向 `up` = LAN ingress 或（WAN egress 且 `ingress_ifindex == 0`，即本机生成）；`down` = WAN ingress。数值是**链路字节**，且是**下限**：每条流的首包、重启前已存在的流、ICMP/非首片、NAT 网关上「一问一答」UDP 的回包、被 LRU 淘汰后空闲流的回包都不计。
-- **API**：`GET /runtime/direct-stats` 返回 `enabled` + 四个十进制字符串计数器；关闭时 200 + 全 0。`attributeDirectStats` 仅在开启时把内核直连字节并入 outbounds 的 `direct` 行（该行因此混用链路字节与 `must_direct` payload 字节），`runtime.traffic` 与历史始终只含 userspace 可见流量。
+- **2026-11-06 最新状态**：NAT 反向索引已删除（`a045b74`）；NAT 回包改由 **LAN egress** 观测（DNAT 之后），WAN ingress 只统计确认送达本机 socket 的回包，避免与非 NAT 场景双计。非 dual 的 LAN 接口现在能统计 MASQUERADE 客户端的下载；dual 接口仍保留 WAN ingress 单钩子的旧限制。
+- **载体**：`control/kern/direct_stats.c`（TC，观察专用）+ `control/direct_stats.go`。只读 `conn_state_map`，不写 mark，不改变转发；优先级 1，早于 tproxy 优先级 2 运行。
+- **挂载点**：dae 已绑定的 WAN/LAN 接口；桥会展开到成员口，netlink 监听器在成员加入/离开时增删观测器。加载/挂载失败只记录并跳过，不会阻断 bind 或启动。
+- **传输层**：优先 TCX；内核不支持时回退 classic TC filter 并告警。
+- **口径**：`up` = LAN ingress 或（WAN egress 且 `ingress_ifindex == 0`）；`down` = LAN egress 的转发回包 + WAN ingress 的本机 socket 回包。数值是**链路字节**且是**下限**：首包、重启前已存在的流、ICMP/非首片、缺失 `conn_state`、wildcard 本机 socket、部分 VLAN/QinQ egress 都不计；`packets` 是 skb 计数，GSO/GRO 下低于线缆包数。
+- **API**：`GET /runtime/direct-stats` 返回 `enabled`、`attached`、`counter_since`、四个十进制字符串计数器与 `last_error`；部分读取失败返回可读计数 + `last_error` 而不是清零。`attributeDirectStats` 仅在开启时把内核直连字节并入 outbounds 的 `direct` 行。
+- **注意**：本节下方 14.x 中关于 `direct_reverse_map` 的测量与边界是历史记录；该 map 已不存在。
+
 
 ### 11.2 写路径加固（`bd46ccf`）
 
@@ -1557,7 +1559,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 ### 12.8a 第三轮审查（PR #1156 review 5768199026）修复摘要
 
 - 订阅：解析结果写入缓存；全部不可解析时保留旧服务器列表；无 tag 订阅沿用展示 tag；失败日志对 URL 脱敏。
-- 直连观测：不支持 TCX（内核 < 6.6）时无条件关闭并告警；bridge 仅在成员口挂 ingress；NAT 回包不再被跳过；同一键出现多个内网主机时标记歧义不计数；reload 期间总量不回落。
+- 直连观测（历史记录，2026-11-06 前的状态）：当时不支持 TCX 会无条件关闭；现在改为回退 classic TC，并由 LAN egress 处理 NAT 回包。
 - reload：所有 reload（信号/CLI/API）在清除 reloading 状态前先执行收尾。
 - API：`POST /probes` 幂等键在受理后提交；请求体拒绝尾随 JSON；`api.enabled=false` 时 DNS 日志不记录；DNS 日志游标绑定 store epoch，环形缓冲下一条被淘汰时返回 410；`network: both` 单次原子写、值未变不增加 revision；订阅健康仅在新代被接受后发布。
 - 未覆盖：eBPF 改动未在 root/netns 下实际加载验证。
@@ -1594,7 +1596,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 | P1 | DNS 视图/日志四处投影缺陷（13.10） | 诊断信息缺失或类型错 |
 | P1 | pin 快照缺 revision、flow 发布竞态（13.11） | 新 UDP 端点继承过期 pin；流字段读到空 |
 | P2 | 分页环滚动、SSE 生命周期（13.12） | 静默漏记录；shutdown 后仍收订阅 |
-| P2 | `direct_stats` 反向索引仍缺本地身份（13.13） | 已留痕的刻意偏离，仅剩记录 |
+| P2 | `direct_stats` 反向索引仍缺本地身份（13.13） | 已由 `a045b74` 删除反向索引解决 |
 | P3 | `api_dev.md` 落位、拆 PR（12.7） | 合并阻塞 |
 
 ### 13.2 P0：冷启动 DNS 查询 panic
@@ -1665,7 +1667,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 ### 13.13 P2：直连观测的刻意偏离
 
-- [~] `direct_reverse_map` 键仍缺本地地址（**保留不改**）：NAT 回包的本地地址是 SNAT 地址，record 时不可知，加上会永不匹配；误计由 300s 时效 + LRU 控制。
+- [x] 已关闭：`direct_reverse_map` 已在 `a045b74` 删除；NAT 下载改由 LAN egress 计数，不再存在“反向索引缺本地身份”的问题。
 
 ### 13.14 P3：Revision 语义
 
@@ -1714,7 +1716,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 真机验证：
 
-- 内核 6.12.112 验证器接受新对象，8 个 `direct_stats_*` 程序全部挂载，`direct_reverse_map`/`direct_stats_map` 存在。
+- 历史记录（反向索引已删除）：当时 8 个 `direct_stats_*` 程序全部挂载；当前对象为 10 个程序、2 个 counter key。
 - 计数正确：从 LAN 下载 41,943,040 字节，`down_bytes` 增 42,933,668（+2.4% 链路开销），`down_packets` 6,501（GSO 聚合后约 6.6 KB/skb）；250 MiB 下载时 `down_bytes` 266,396,159。
 - `bpftool map dump id <direct_reverse_map>` 可直接读取索引条目（注意内核把 map 名截断成 15 字节，`bpftool map dump name …` 会静默失败，必须用 id）。
 
@@ -1758,7 +1760,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 - 新增 `control/bridge_members.go`：`selectBridgePorts`（纯函数，可测）+ `bridgePorts`（netlink 适配，`Type()=="bridge"` 才枚举，按 `MasterIndex` 选成员，按名字排序去重）。
 - `stageDirectStatsHooks` 拆成「按设备挂载」+「bridge 则对成员口用同一角色再挂一遍」（`stageDirectStatsHookForLink`）。角色（`wan`/`dual`）沿用 master 的判定；成员口一律按自己的 `EncapType` 决定 L2/L3（桥成员必为 ethernet）。
-- 成员口枚举在**绑定时**做一次，`HostVethName`（`dae0`）跳过；`netlink.LinkList` 失败只 Warn 不中断绑定（观测是可选项，不能影响转发）。
+- 成员口在绑定时枚举，并由 netlink link 监听器在运行期增删；`HostVethName`（`dae0`）跳过；`netlink.LinkList` 失败只 Warn 不中断绑定（观测是可选项，不能影响转发）。
 - 单位测试 `control/bridge_members_test.go`：只选 `MasterIndex` 等于桥 index 的设备、排除桥自指、选择稳定可重复。
 
 #### 14.4.3 真机验证（内核 6.12.112）
@@ -1786,9 +1788,9 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 #### 14.4.5 已知边界
 
-- 成员口在**绑定时**枚举一次：运行期 `br_add_if`/`br_del_if` 不触发 netlink link 事件，新加入的桥成员在下次 reload 前不会有观察器。
+- 成员口在绑定时枚举；运行期 `br_add_if`/`br_del_if` 现在由 netlink 监听器增删观察器（2026-11-06 修正）。
 - 桥套桥（bridge 的成员又是 bridge）不递归展开。
-- `direct_reverse_map`（12 MiB）仍然必要：回包方向在 WAN ingress 上看到的是 SNAT 后的元组，无法用 `conn_state_map` 反查。
+- 历史边界：`direct_reverse_map` 已删除；当前 NAT 下载改由 LAN egress 解决。
 
 ### 14.5 设备现场状态（已还原）
 

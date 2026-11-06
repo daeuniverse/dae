@@ -309,35 +309,52 @@ builtin `block` 行不再暴露：被封锁的流量在数据面被直接丢弃�
 
 ### 直连流量
 
-`GET /api/v1/runtime/direct-stats` 返回 `enabled`、`up_bytes`、`up_packets`、
-`down_bytes` 与 `down_packets`（十进制字符串）。只有开启 `api.direct_stats` 时才有意义：
-`control/kern/direct_stats.c` 里的观测程序在 dae 已绑定的 WAN/LAN 接口上紧挨 tproxy 运行，
-只读 `conn_state_map`、不写入，统计已经被标记为直连 passthrough 的流。开关关闭时钩子不存在，
-计数器恒为 0。
+`GET /api/v1/runtime/direct-stats` 返回 `enabled`、`attached`、`counter_since`、
+`up_bytes`、`up_packets`、`down_bytes`、`down_packets` 与 `last_error`，计数器为十进制
+字符串。`enabled` 是生效开关（配置 + 内核/TC 能力门控）；`attached` 表示是否至少有一个
+观测钩子真正挂上数据面；`last_error` 保留最近一次加载/挂载或部分读取失败，因此
+`enabled: true` + 全 0 不再与“健康但无流量”混淆；`counter_since` 是进程级计数起点，
+reload 不重置。
 
-数字是链路字节且只是下界：观测程序在 tproxy 之前运行，每条流的第一个包和重启前已存在的流
-都会漏计，ICMP/分片被跳过；NAT 网关上，SNAT 后的回包 tuple 无法匹配 `conn_state_map`，
-且回包无法识别所属 LAN 主机，因此不计入回包流量。该数字不会并入 `runtime.traffic`，
-后者仍然只统计 userspace 可见流量。
-观测计数会并入 `GET /api/v1/runtime/outbounds` 的内置 `direct` 行，因此只读既有
-资源的控制台无需认识本端点也能看到直连流量。该行此时是混合口径：内核直连的链路字节
-加上 relay 统计到的 `must_direct` payload 字节。
+`control/kern/direct_stats.c` 里的观测程序在 dae 已绑定的 WAN/LAN 接口上紧挨 tproxy 运行，
+只读 `conn_state_map`、不写入，统计已经被标记为直连 passthrough 的流。桥会展开到成员口，
+netlink 监听器在成员加入/离开时增删观测器。钩子优先使用 TCX；内核不支持时回退 classic TC
+filter，并打印 warning，因为 classic 顺序依赖接口既有 filter 与 clsact qdisc 是否可建。
+
+方向口径：
+
+- 上行：LAN ingress 的转发客户端包，以及 WAN egress 的本机生成直连包
+  （`ingress_ifindex == 0`）；
+- 下行：LAN egress 的转发回包（DNAT 之后），以及 WAN ingress 且确定送达本机 socket 的
+  回包。LAN egress 让 MASQUERADE 网关也能统计客户端下载：回包离开 LAN 接口时目的地址已是
+  客户端地址，反向 tuple 能命中上传 state。双角色接口仍使用合并的 WAN ingress 计数，
+  因此其 NAT 回包仍受原限制。
+
+数字是聚合后的链路字节且只是下界，不提供按主机/接口/出站的拆分：观测程序在 tproxy 之前运行，每条流的第一个包和重启前已存在的流
+都会漏计；非 TCP/UDP、非首片会被跳过；`conn_state_map` 缺失（表满或 stateless 直通）无法
+统计；本机回包若 socket 为 wildcard 绑定，也无法可靠归因给主机；TCP egress 上仍留在包里
+的单层 VLAN tag 会被解析器跳过，堆叠 VLAN 只有在 tproxy 已在内层 tag 可见/被剥离的接口
+建立 state 时才计数。开关关闭时钩子不存在，计数器恒为 0。
+
+`up_packets` / `down_packets` 是 **skb 计数**，不是线缆包数；GSO/TSO/GRO 会让一个 skb
+代表多个线缆包，因此 pps 和平均包长会偏低。该数字不会并入 `runtime.traffic`，后者仍然
+只统计 userspace 可见流量。观测计数会并入 `GET /api/v1/runtime/outbounds` 的内置
+`direct` 行；该行是混合口径：内核直连的链路字节加上 relay 统计到的 `must_direct`
+payload 字节。
 
 #### 开销
 
 直连流量不会进入用户态，所以直连吞吐再高也不会增加用户态 CPU 或堆内存。开销有上界，
 且都在内核里：
 
-- 内存固定且与流量无关。`direct_stats_map` 是 4 个 `u64` 的 per-CPU 数组；
-  `conn_state_map` 是 tproxy 自己的表，通过 map replacement 复用，不会再分配一份。
-- CPU 与包速率成正比，而不是字节速率。入向程序按接口角色选择：仅 LAN 的钩子只查上行 tuple，
-  仅 WAN 的钩子只查回包 tuple，同时承担两种角色的接口运行合并版本。入向包对钩子能看到的每个
-  方向各查一次 `conn_state_map`，直到某个方向命中即止（角色专用钩子一次，合并版本最多两次）；仅当流是直连时才做一次 per-CPU 计数更新（无原子操作，不共享 cacheline）。
-  被 tproxy 标记为代理的流在命中条目后直接结束，因此代理流量只付查找开销、没有计数器更新。
-  WAN 角色多运行一个 egress 程序，对转发包提前退出，其余情况做一次查找。只有在极高包速率
-  的小包场景下开销才可能变得可见；
-  大包的批量传输主要受网卡与协议栈支配。
-- 失败被隔离：对象加载失败时 dae 只打印告警、跳过钩子并继续转发，API 返回 0。
+- 内存固定且与流量无关。`direct_stats_map` 是 2 个 `{bytes, packets}` 记录的 per-CPU
+  数组；`conn_state_map` 是 tproxy 自己的表，通过 map replacement 复用，不会再分配一份。
+- CPU 与包速率成正比，而不是字节速率。入向程序按接口角色选择；直连包只做一次 counter
+  map 查找。WAN ingress 的直连回包还会做一次 local-socket 查找，以区分本机投递与转发；
+  转发回包改由 LAN egress 计数。被 tproxy 标记为代理的流在命中条目后直接结束，只付查找
+  开销、没有计数器更新。只有在极高包速率的小包场景下开销才可能可见。
+- 失败被隔离：加载/挂载失败只记录并跳过，不会让 bind 或 daemon 启动失败；API 返回可读
+  generation 的计数，并在 `last_error` 中报告部分失败，而不是把所有计数清零。
 - `api.direct_stats` 关闭时不会加载对象，也不挂任何钩子。
 
 关闭 NAT 回包 fallback 之前，一次 Linux 6.18 实测统计了最忙钩子的每包中位纳秒数

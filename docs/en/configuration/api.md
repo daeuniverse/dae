@@ -35,7 +35,7 @@ api {
 | `ui` | empty | Absolute directory holding a built frontend. Served at `/ui/` without credentials; other non-`/api` paths redirect there. Empty disables UI hosting. |
 | `config_write` | `false` | Allow API callers to replace configuration sources. Requires a non-empty `secret` and the directory layout below. |
 | `disable_connection_bytes` | `false` | Stop reporting cumulative bytes per connection (`upload_bytes` / `download_bytes`). See the traffic accounting note below. |
-| `direct_stats` | `false` | Attach a read-only eBPF observer to the WAN/LAN interfaces dae binds and count traffic routed directly. Ignored unless `enabled` is true; see the traffic accounting note below. |
+| `direct_stats` | `false` | Attach a read-only eBPF observer to the WAN/LAN interfaces dae binds and count traffic routed directly. Ignored unless `enabled` is true. Uses TCX when available and classic TC filters otherwise; see the traffic accounting note below. |
 
 ## Editing configuration through the API
 
@@ -127,8 +127,11 @@ destination, domain, outbound, chain) is unaffected.
 Traffic dae routes directly never reaches the userspace relay, so none of the
 connection counters see it. Set `direct_stats: true` to attach an
 observation-only TC program beside tproxy on the same WAN/LAN interfaces dae
-already binds; no other interface is touched, and it never changes a mark or a
-forwarding verdict.
+already binds. A bound bridge is expanded to its member ports; the link watcher
+adds and removes those observers as members join or leave. The observer never
+changes a mark or a forwarding verdict. TCX is preferred; kernels without it
+fall back to classic TC filters, which requires a clsact qdisc and can be
+sensitive to existing filter priorities.
 
 ```dae
 api {
@@ -140,12 +143,19 @@ api {
 ```
 
 `GET /api/v1/runtime/direct-stats` then reports cumulative `up_bytes`,
-`up_packets`, `down_bytes` and `down_packets`, with `enabled` mirroring the
-switch. The figures are link bytes, not payload bytes, and are a lower bound:
-the observer runs before tproxy, so the first packet of every flow (and flows
-that predate a restart) is not counted, and non-TCP/UDP traffic is skipped. The hooks run before tproxy, so every packet on those interfaces, proxied traffic
-included, pays for a map lookup or two; turn the switch off to remove the hooks and
-stop paying for the observation.
+`up_packets`, `down_bytes` and `down_packets`, plus `enabled`, `attached`,
+`counter_since` and `last_error`. `enabled` is the effective switch; `attached`
+says whether a hook actually reached the datapath. `up_packets` and
+`down_packets` are **skb counts**, so GSO/GRO can make them lower than the
+on-wire packet count. The figures are link bytes, not payload bytes, and are a
+lower bound: the observer runs before tproxy, so the first packet of every flow
+(and flows that predate a restart) is not counted, non-TCP/UDP traffic is
+skipped, and a missing conn-state entry cannot be counted. Forwarded replies are
+counted on LAN egress after DNAT, so a masquerading gateway no longer loses the
+download side for LAN clients; a dual-role interface retains that limitation.
+The hooks run before tproxy, so every packet on those interfaces, proxied
+traffic included, pays for a map lookup or two. Changing `api.direct_stats` is
+restart-required along with the rest of the `api` section.
 
 The counters are also folded into the builtin `direct` row of
 `GET /api/v1/runtime/outbounds`, so an existing panel that reads only that
