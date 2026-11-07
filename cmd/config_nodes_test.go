@@ -808,3 +808,17 @@ func TestInsertNodeEntrySurvivesAParseRoundTrip(t *testing.T) {
 		t.Fatalf("%q: unexpected refusal: %v", link, err)
 	}
 }
+
+func TestValidateNodeLinkRejectsOutOfRangePort(t *testing.T) {
+	for _, link := range []string{
+		"socks5://u:p@127.0.0.1:0",
+		"socks5://u:p@127.0.0.1:65536",
+	} {
+		if _, err := validateNodeLink(context.Background(), logrus.New(), link); err == nil {
+			t.Fatalf("validateNodeLink(%q) accepted a port outside 1..65535", link)
+		}
+	}
+	if _, err := validateNodeLink(context.Background(), logrus.New(), "socks5://u:p@127.0.0.1:65535"); err != nil {
+		t.Fatalf("validateNodeLink rejected port 65535: %v", err)
+	}
+}

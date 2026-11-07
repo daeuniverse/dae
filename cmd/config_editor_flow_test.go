@@ -43,6 +43,28 @@ type fakeConfigOperations struct {
 	// resolver records the body the last queued operation would report, so a
 	// test can assert it was installed with the operation rather than after it.
 	resolver func() (any, error)
+	replays  map[string]fakeConfigReplay
+}
+
+type fakeConfigReplay struct {
+	kind     string
+	scope    string
+	accepted nativeapi.OperationAccepted
+}
+
+func (f *fakeConfigOperations) ReplayOperation(kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, bool, error) {
+	if idempotencyKey == "" {
+		return nativeapi.OperationAccepted{}, false, nil
+	}
+	previous, ok := f.replays[idempotencyKey]
+	if !ok {
+		return nativeapi.OperationAccepted{}, false, nil
+	}
+	if previous.kind != kind || previous.scope != scope {
+		return nativeapi.OperationAccepted{}, false, nativeapi.NewAPIError(409, "idempotency_conflict",
+			"idempotency key was used with a different request")
+	}
+	return previous.accepted, true, nil
 }
 
 func (f *fakeConfigOperations) StartOperationWithResult(ctx context.Context, kind, scope, idempotencyKey string, resolve func() (any, error)) (nativeapi.OperationAccepted, error) {
@@ -51,12 +73,19 @@ func (f *fakeConfigOperations) StartOperationWithResult(ctx context.Context, kin
 	if f.err != nil {
 		return nativeapi.OperationAccepted{}, f.err
 	}
-	return nativeapi.OperationAccepted{
+	accepted := nativeapi.OperationAccepted{
 		OperationID: fmt.Sprintf("op-%d", f.calls),
 		Kind:        kind,
 		Status:      "queued",
 		Href:        fmt.Sprintf("/api/v1/operations/op-%d", f.calls),
-	}, nil
+	}
+	if idempotencyKey != "" {
+		if f.replays == nil {
+			f.replays = map[string]fakeConfigReplay{}
+		}
+		f.replays[idempotencyKey] = fakeConfigReplay{kind: kind, scope: scope, accepted: accepted}
+	}
+	return accepted, nil
 }
 
 // newFlowEditor mirrors production startup: the api block is read from api.dae
@@ -541,5 +570,27 @@ func TestConfigGetConfigMasksListenerSecret(t *testing.T) {
 		if s.Writable || s.ReadOnlyReason != "layout_unmanaged" {
 			t.Fatalf("an unmanaged tree must be read-only with layout_unmanaged: %+v", s)
 		}
+	}
+}
+
+func TestConfigReplaceRejectsCandidateLayoutLockout(t *testing.T) {
+	main, _ := newManagedTree(t)
+	e := newFlowEditor(t, main, true, &fakeConfigOperations{})
+	target := flowSource(t, e, flowGlobalRel)
+
+	// dns.dae already declares the dns section. Adding a second one here is
+	// semantically valid (the merger concatenates items) but would make the
+	// origin check report layout_unmanaged and lock every later write out.
+	content := "global {\n  log_level: info\n}\ndns {}\n"
+	_, err := e.ReplaceConfigSource(context.Background(), nativeapi.ReplaceConfigSourceRequest{
+		SourceID: target.id,
+		IfMatch:  rawSHA256(target.raw),
+		Content:  content,
+	})
+	if apiErr := flowAPIError(t, err); apiErr.Status != 422 || apiErr.Code != "unsupported_value" {
+		t.Fatalf("got %d %s, want 422 unsupported_value", apiErr.Status, apiErr.Code)
+	}
+	if got, _ := os.ReadFile(target.abs); string(got) != string(target.raw) {
+		t.Fatalf("rejected layout changed the source: %q", got)
 	}
 }

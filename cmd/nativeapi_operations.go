@@ -68,6 +68,16 @@ func newNativeAPIOperations(manager *reloadManager, supervisor *runtimeSuperviso
 	}
 }
 
+// ReplayOperation reports a stored answer for an Idempotency-Key without
+// creating an operation. Write paths call it before touching disk so a replayed
+// request cannot write bytes whose reload will never be queued.
+func (o *nativeAPIOperations) ReplayOperation(kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, bool, error) {
+	if o == nil || o.store == nil {
+		return nativeapi.OperationAccepted{}, false, nil
+	}
+	return o.store.Replay(kind, scope, idempotencyKey)
+}
+
 // StartOperation queues a reload for the contract's operation resources, which
 // report the reload's generation ids rather than a written resource.
 func (o *nativeAPIOperations) StartOperation(ctx context.Context, kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, error) {

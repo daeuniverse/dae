@@ -52,17 +52,6 @@ func (e *configEditor) PatchGroupConfig(
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if request.IdempotencyKey != "" {
-		if previous, ok := e.idem[request.IdempotencyKey]; ok {
-			if previous.fingerprint != fingerprint {
-				return nativeapi.GroupConfigDocument{}, "", nil, &nativeapi.APIError{
-					Status: 409, Code: "idempotency_conflict",
-					Message: "idempotency key was used with a different request",
-				}
-			}
-			return nativeapi.GroupConfigDocument{}, "", &previous.accepted, nil
-		}
-	}
 
 	all, err := e.loadSources()
 	if err != nil {
@@ -71,6 +60,14 @@ func (e *configEditor) PatchGroupConfig(
 	if ok, _ := e.layoutOK(all); !ok {
 		return nativeapi.GroupConfigDocument{}, "", nil, nativeapi.NewAPIError(404, "capability_not_supported", "group configuration patch is not supported by this engine")
 	}
+	target, err := e.groupSource(all, groupName)
+	if err != nil || !e.sourceWritable(target) {
+		return nativeapi.GroupConfigDocument{}, "", nil, nativeapi.NewAPIError(404, "capability_not_supported", "managed group configuration source is unavailable")
+	}
+	if accepted, replayed, err := e.replaySourceUpdate(nativeapi.OperationKindGroupUpdate, sourceUpdateScope(target.abs, fingerprint), request.IdempotencyKey); err != nil || replayed {
+		return nativeapi.GroupConfigDocument{}, "", &accepted, err
+	}
+
 	revision, err := parseGroupIfMatch(request.IfMatch)
 	if err != nil {
 		return nativeapi.GroupConfigDocument{}, "", nil, err
@@ -81,11 +78,6 @@ func (e *configEditor) PatchGroupConfig(
 			Status: 412, Code: "stale_revision",
 			Message: "the resource changed; fetch it again before retrying",
 		}
-	}
-
-	target, err := e.groupSource(all, groupName)
-	if err != nil || !e.sourceWritable(target) {
-		return nativeapi.GroupConfigDocument{}, "", nil, nativeapi.NewAPIError(404, "capability_not_supported", "managed group configuration source is unavailable")
 	}
 	updated, changed, err := applyGroupConfigPatch(current, request.Operations)
 	if err != nil {
@@ -430,6 +422,9 @@ func findGroupBlock(text, groupName string) (open, close int, childIndent string
 	offset := outerOpen + 1
 	for _, line := range strings.SplitAfter(text[outerOpen+1:outerClose], "\n") {
 		trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"))
+		if comment := inlineComment(trimmed); comment != "" {
+			trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, comment))
+		}
 		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && strings.HasSuffix(trimmed, "{") {
 			name := strings.TrimSpace(strings.TrimSuffix(trimmed, "{"))
 			if len(name) >= 2 && ((name[0] == '\'' && name[len(name)-1] == '\'') || (name[0] == '"' && name[len(name)-1] == '"')) {

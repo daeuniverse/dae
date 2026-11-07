@@ -36,11 +36,9 @@ const (
 	// configMaxBytes bounds one source, matching the contract default (max_bytes 61440).
 	configMaxBytes = 61440
 	// configMaxSources bounds the number of sources in one request (contract default 16).
-	configMaxSources = 16
-	// configIdempotencyLimit bounds the editor-side replay memory.
-	configIdempotencyLimit = 256
-	configRedacted         = "<redacted>"
-	hiddenSourceLabel      = "<hidden source>"
+	configMaxSources  = 16
+	configRedacted    = "<redacted>"
+	hiddenSourceLabel = "<hidden source>"
 )
 
 // apiSecretPattern matches the listener secret inside an api { } block.
@@ -59,11 +57,9 @@ type operationQueue interface {
 	// an operation that completed in the meantime, and the operation would then
 	// report the reload's generation ids instead of the written resource.
 	StartOperationWithResult(ctx context.Context, kind, scope, idempotencyKey string, resolve func() (any, error)) (nativeapi.OperationAccepted, error)
-}
-
-type configEditorIdem struct {
-	fingerprint string
-	accepted    nativeapi.OperationAccepted
+	// ReplayOperation reports a keyed request that already has an accepted
+	// operation, before the write path performs any filesystem side effect.
+	ReplayOperation(kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, bool, error)
 }
 
 // configEditor implements nativeapi.ConfigProvider over the on-disk config
@@ -79,8 +75,6 @@ type configEditor struct {
 	reload     *reloadManager
 	busy       func() bool
 	generation func() string
-	idem       map[string]configEditorIdem
-	idemOrder  []string
 }
 
 // configSourceFile is one loaded source with its raw bytes.
@@ -110,7 +104,6 @@ func newConfigEditor(cfgFile string, api config.Api, operations operationQueue,
 		enabled:    api.ConfigWrite && operations != nil,
 		operations: operations,
 		reload:     reload,
-		idem:       map[string]configEditorIdem{},
 	}
 	e.busy = func() bool {
 		return reload != nil && (reload.reloadActive.Load() || reload.reloadPending.Load())
@@ -636,16 +629,22 @@ func fingerprintReplace(req nativeapi.ReplaceConfigSourceRequest) string {
 	return rawSHA256([]byte(req.SourceID + "\x00" + req.IfMatch + "\x00" + req.Content))
 }
 
-func (e *configEditor) rememberIdem(key string, entry configEditorIdem) {
-	if _, exists := e.idem[key]; !exists {
-		e.idemOrder = append(e.idemOrder, key)
+// sourceUpdateScope is the request identity shared by the preflight replay
+// check and the operation store. The fingerprint already covers the target,
+// the expected revision and the requested content.
+func sourceUpdateScope(targetAbs, fingerprint string) string {
+	return targetAbs + "\x00" + fingerprint
+}
+
+// replaySourceUpdate checks the operation store before a write path performs
+// any filesystem side effect. The store is the single replay authority: keeping
+// a second, smaller editor-side cache let a key evicted there write disk and
+// then replay an operation that never queued a reload.
+func (e *configEditor) replaySourceUpdate(kind, scope, idempotencyKey string) (nativeapi.OperationAccepted, bool, error) {
+	if idempotencyKey == "" || e.operations == nil {
+		return nativeapi.OperationAccepted{}, false, nil
 	}
-	e.idem[key] = entry
-	for len(e.idemOrder) > configIdempotencyLimit {
-		oldest := e.idemOrder[0]
-		e.idemOrder = e.idemOrder[1:]
-		delete(e.idem, oldest)
-	}
+	return e.operations.ReplayOperation(kind, scope, idempotencyKey)
 }
 
 func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.ReplaceConfigSourceRequest) (nativeapi.OperationAccepted, error) {
@@ -656,17 +655,6 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	defer e.mu.Unlock()
 
 	fingerprint := fingerprintReplace(req)
-	if req.IdempotencyKey != "" {
-		if prev, ok := e.idem[req.IdempotencyKey]; ok {
-			if prev.fingerprint != fingerprint {
-				return nativeapi.OperationAccepted{}, &nativeapi.APIError{
-					Status: 409, Code: "idempotency_conflict",
-					Message: "idempotency key was used with a different request",
-				}
-			}
-			return prev.accepted, nil
-		}
-	}
 	all, err := e.loadSources()
 	if err != nil {
 		return nativeapi.OperationAccepted{}, err
@@ -686,6 +674,10 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	}
 	if !e.sourceWritable(target) {
 		return nativeapi.OperationAccepted{}, permissionDenied("this source is read-only", "entry_source")
+	}
+	scope := sourceUpdateScope(target.abs, fingerprint)
+	if accepted, replayed, err := e.replaySourceUpdate(nativeapi.OperationKindReload, scope, req.IdempotencyKey); err != nil || replayed {
+		return accepted, err
 	}
 	if e.apiAtStart.Secret != "" && strings.Contains(req.Content, e.apiAtStart.Secret) {
 		return nativeapi.OperationAccepted{}, permissionDenied("source must not contain the listener secret", "listener_secret_in_content")
@@ -728,7 +720,7 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	// The scope carries the candidate bytes, not just the path: reusing a key for
 	// different content describes different work, and replaying the first answer
 	// would report a write that never happened for the second caller.
-	accepted, err := e.operations.StartOperationWithResult(ctx, nativeapi.OperationKindReload, target.abs+"\x00"+rawSHA256([]byte(req.Content)), req.IdempotencyKey, nil)
+	accepted, err := e.operations.StartOperationWithResult(ctx, nativeapi.OperationKindReload, scope, req.IdempotencyKey, nil)
 	if err != nil {
 		// The reload never started, so the on-disk file must return to its
 		// previous state; otherwise the next reload would apply a rejected edit.
@@ -737,10 +729,33 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 		}
 		return nativeapi.OperationAccepted{}, err
 	}
-	if req.IdempotencyKey != "" {
-		e.rememberIdem(req.IdempotencyKey, configEditorIdem{fingerprint: fingerprint, accepted: accepted})
-	}
 	return accepted, nil
+}
+
+// candidateLayoutReason checks the candidate bytes, not just the tree on disk.
+// The managed layout requires one section name per file: a write that declares
+// a second dns/group/node section from another file passed semantic validation,
+// then made detectManagedLayout reject every later write, including the one
+// that would repair it.
+func (e *configEditor) candidateLayoutReason(targetAbs string, content []byte) string {
+	if includeKeywordPattern.Match(content) {
+		return "a managed source must not contain an include block"
+	}
+	_, origins, err := config.NewMergerWithOverrides(e.mainPath, map[string][]byte{targetAbs: content}).MergeWithOrigins()
+	if err != nil {
+		// Parse and merge failures are reported by the validation that follows.
+		return ""
+	}
+	for _, occurrences := range origins {
+		files := map[string]struct{}{}
+		for _, origin := range occurrences {
+			files[origin.File] = struct{}{}
+		}
+		if len(files) > 1 {
+			return "a section is declared by more than one file"
+		}
+	}
+	return ""
 }
 
 // guardConfigWrite applies the checks every configuration write must pass before
@@ -757,6 +772,12 @@ func (e *configEditor) guardConfigWrite(target configSourceFile, content []byte)
 	// and refuses every later write, including the one that would repair it.
 	if !e.isApiSource(target.abs) && declaresApiSection(string(content)) {
 		return permissionDenied("the api section may only be declared in the listener source", "listener_secret_in_content")
+	}
+	if reason := e.candidateLayoutReason(target.abs, content); reason != "" {
+		return &nativeapi.APIError{
+			Status: 422, Code: "unsupported_value",
+			Message: "the write would make the managed configuration layout unmanaged: " + reason,
+		}
 	}
 	if e.busy() {
 		return &nativeapi.APIError{

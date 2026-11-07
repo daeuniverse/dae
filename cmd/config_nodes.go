@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -94,6 +95,10 @@ func validateNodeLink(ctx context.Context, log *logrus.Logger, link string) (str
 	host, port, err := net.SplitHostPort(property.Address)
 	if err != nil || host == "" || port == "" {
 		return scheme, fmt.Errorf("the share link has no host and port")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return scheme, fmt.Errorf("the share link has a port outside 1..65535")
 	}
 	return nodeIDOf(property), nil
 }
@@ -441,6 +446,10 @@ func inlineNodeLinks(text string) map[string]string {
 // current bytes and queues kind. A failed start restores the previous bytes,
 // because no operation will ever read the rejected edit.
 func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSourceFile, content []byte, kind, idempotencyKey, fingerprint string, resolve func() (any, error)) (nativeapi.OperationAccepted, error) {
+	scope := sourceUpdateScope(target.abs, fingerprint)
+	if accepted, replayed, err := e.replaySourceUpdate(kind, scope, idempotencyKey); err != nil || replayed {
+		return accepted, err
+	}
 	if err := e.guardConfigWrite(target, content); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
@@ -469,38 +478,14 @@ func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSour
 	if err := writeFileAtomic(target.abs, content, mode); err != nil {
 		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
 	}
-	accepted, err := e.operations.StartOperationWithResult(ctx, kind, target.abs+"\x00"+fingerprint, idempotencyKey, resolve)
+	accepted, err := e.operations.StartOperationWithResult(ctx, kind, scope, idempotencyKey, resolve)
 	if err != nil {
 		if restoreErr := writeFileAtomic(target.abs, target.raw, mode); restoreErr != nil {
 			e.log.WithError(restoreErr).Error("failed to restore config source after rejected operation")
 		}
 		return nativeapi.OperationAccepted{}, err
 	}
-	if idempotencyKey != "" {
-		e.rememberIdem(idempotencyKey, configEditorIdem{fingerprint: fingerprint, accepted: accepted})
-	}
 	return accepted, nil
-}
-
-// replayNode reports a stored answer for an Idempotency-Key, or a conflict when
-// the key was used for a different request.
-func (e *configEditor) replayNode(key, fingerprint string) (nativeapi.OperationAccepted, bool, error) {
-	if key == "" {
-		return nativeapi.OperationAccepted{}, false, nil
-	}
-	e.mu.Lock()
-	prev, ok := e.idem[key]
-	e.mu.Unlock()
-	if !ok {
-		return nativeapi.OperationAccepted{}, false, nil
-	}
-	if prev.fingerprint != fingerprint {
-		return nativeapi.OperationAccepted{}, false, &nativeapi.APIError{
-			Status: 409, Code: "idempotency_conflict",
-			Message: "idempotency key was used with a different request",
-		}
-	}
-	return prev.accepted, true, nil
 }
 
 // CreateNode writes one inline node into the managed node source. resolve turns
@@ -511,9 +496,6 @@ func (e *configEditor) CreateNode(ctx context.Context, req nativeapi.NodeCreateR
 		return nativeapi.OperationAccepted{}, err
 	}
 	fingerprint := rawSHA256([]byte("node_create\x00" + req.Name + "\x00" + req.Link))
-	if accepted, ok, err := e.replayNode(req.IdempotencyKey, fingerprint); err != nil || ok {
-		return accepted, err
-	}
 	if err := validateNodeName(req.Name); err != nil {
 		return nativeapi.OperationAccepted{}, &nativeapi.APIError{
 			Status: 422, Code: "unsupported_value", Message: err.Error(),
@@ -541,6 +523,9 @@ func (e *configEditor) CreateNode(ctx context.Context, req nativeapi.NodeCreateR
 	target, err := e.nodeSource(all)
 	if err != nil {
 		return nativeapi.OperationAccepted{}, err
+	}
+	if accepted, replayed, err := e.replaySourceUpdate(nativeapi.OperationKindNodeCreate, sourceUpdateScope(target.abs, fingerprint), req.IdempotencyKey); err != nil || replayed {
+		return accepted, err
 	}
 	if err := e.rejectDuplicateNodeName(index, target, req.Name); err != nil {
 		return nativeapi.OperationAccepted{}, err
@@ -602,13 +587,6 @@ func (e *configEditor) UpdateNode(ctx context.Context, req nativeapi.NodeUpdateR
 		return nativeapi.NodeUpdateOutcome{}, err
 	}
 	fingerprint := nodeUpdateFingerprint(req)
-	accepted, ok, err := e.replayNode(req.IdempotencyKey, fingerprint)
-	if err != nil {
-		return nativeapi.NodeUpdateOutcome{}, err
-	}
-	if ok {
-		return nativeapi.NodeUpdateOutcome{Accepted: accepted, Updated: 1}, nil
-	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -714,7 +692,7 @@ func (e *configEditor) UpdateNode(ctx context.Context, req nativeapi.NodeUpdateR
 			Status: 409, Code: "state_conflict", Message: "the node is not defined in the managed node source; reload to reconcile",
 		}
 	}
-	accepted, err = e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeUpdate, req.IdempotencyKey, fingerprint, func() (any, error) {
+	accepted, err := e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeUpdate, req.IdempotencyKey, fingerprint, func() (any, error) {
 		return resolve(nodeID)
 	})
 	if err != nil {
@@ -730,13 +708,6 @@ func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteR
 		return nativeapi.NodeDeleteOutcome{}, err
 	}
 	fingerprint := rawSHA256([]byte("node_delete\x00" + req.NodeID))
-	accepted, ok, err := e.replayNode(req.IdempotencyKey, fingerprint)
-	if err != nil {
-		return nativeapi.NodeDeleteOutcome{}, err
-	}
-	if ok {
-		return nativeapi.NodeDeleteOutcome{Accepted: accepted, Deleted: 1}, nil
-	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -752,6 +723,9 @@ func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteR
 	target, err := e.nodeSource(all)
 	if err != nil {
 		return nativeapi.NodeDeleteOutcome{}, err
+	}
+	if accepted, replayed, err := e.replaySourceUpdate(nativeapi.OperationKindNodeDelete, sourceUpdateScope(target.abs, fingerprint), req.IdempotencyKey); err != nil || replayed {
+		return nativeapi.NodeDeleteOutcome{Accepted: accepted, Deleted: 1}, err
 	}
 	ref, found, err := e.lookupNode(index, req.NodeID)
 	if err != nil {
@@ -777,7 +751,7 @@ func (e *configEditor) DeleteNode(ctx context.Context, req nativeapi.NodeDeleteR
 		// node the file no longer defines (an edit that has not reloaded yet).
 		return nativeapi.NodeDeleteOutcome{}, nil
 	}
-	accepted, err = e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeDelete, req.IdempotencyKey, fingerprint, resolve)
+	accepted, err := e.commitSourceUpdate(ctx, target, []byte(updated), nativeapi.OperationKindNodeDelete, req.IdempotencyKey, fingerprint, resolve)
 	if err != nil {
 		return nativeapi.NodeDeleteOutcome{}, err
 	}

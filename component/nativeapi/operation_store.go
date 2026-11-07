@@ -22,6 +22,12 @@ const (
 	OperationStatusFailed    = "failed"
 )
 
+// MaxOperationRecords bounds retained operation records independently of the
+// replay-key budget. A rejected transition still leaves a readable operation
+// behind (the contract names it in the 409), but a client that retries while a
+// reload is busy must not grow the store without limit.
+const MaxOperationRecords = 4096
+
 // Operation kinds this engine starts.
 const (
 	OperationKindReload          = "reload"
@@ -139,6 +145,31 @@ func (s *OperationStore) Accept(kind, scope, idempotencyKey string) (OperationAc
 		s.reserved[idempotencyKey] = storedReplay{kind: kind, scope: scope, accepted: accepted}
 	}
 	return accepted, false, nil
+}
+
+// Replay reports whether an Idempotency-Key already describes this request
+// without creating an operation. Write paths call it before touching the
+// filesystem, so a replayed key cannot cause a side effect that the replayed
+// operation will not reload. It returns the same conflicts Accept would.
+func (s *OperationStore) Replay(kind, scope, idempotencyKey string) (OperationAccepted, bool, error) {
+	if s == nil || idempotencyKey == "" {
+		return OperationAccepted{}, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked()
+	if previous, ok := s.replay[idempotencyKey]; ok {
+		if previous.kind != kind || previous.scope != scope {
+			return OperationAccepted{}, false, NewAPIError(http.StatusConflict, codeIdempotencyConflict,
+				"the Idempotency-Key was already used for a different request")
+		}
+		return previous.accepted, true, nil
+	}
+	if _, busy := s.reserved[idempotencyKey]; busy {
+		return OperationAccepted{}, false, NewAPIError(http.StatusConflict, codeIdempotencyConflict,
+			"the Idempotency-Key is being admitted by another request")
+	}
+	return OperationAccepted{}, false, nil
 }
 
 // CommitReplayKey publishes a reserved key, so a retry replays the accepted
@@ -308,6 +339,37 @@ func (s *OperationStore) pruneLocked() {
 		replayKept = append(replayKept, key)
 	}
 	s.replayOrder = replayKept
+
+	// Bound retained records even when every request is a finished failure.
+	// Unfinished operations are never evicted; once the cap is exceeded, drop
+	// the oldest finished records (and any replay keys that pointed at them).
+	for len(s.operations) > MaxOperationRecords && len(s.order) > 0 {
+		dropped := false
+		for index, operationID := range s.order {
+			operation, ok := s.operations[operationID]
+			if ok && operation.finishedAt != nil {
+				delete(s.operations, operationID)
+				s.order = append(s.order[:index], s.order[index+1:]...)
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			break
+		}
+	}
+	for key, record := range s.replay {
+		if _, retained := s.operations[record.accepted.OperationID]; !retained {
+			delete(s.replay, key)
+		}
+	}
+	keptReplay := s.replayOrder[:0]
+	for _, key := range s.replayOrder {
+		if _, ok := s.replay[key]; ok {
+			keptReplay = append(keptReplay, key)
+		}
+	}
+	s.replayOrder = keptReplay
 }
 
 func (s *OperationStore) evictReplayKeysLocked() {
