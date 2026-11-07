@@ -463,6 +463,20 @@ func (e *configEditor) commitSourceUpdate(ctx context.Context, target configSour
 	if err := e.guardApiUnchanged(candidate); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
+	return e.commitValidatedSource(ctx, target, content, kind, scope, idempotencyKey, resolve)
+}
+
+// commitValidatedSource writes an already validated candidate, queues its
+// operation and restores the previous bytes if the operation cannot start. The
+// config PUT and node write paths share it so their guard/backup/rollback
+// sequence cannot drift apart.
+func (e *configEditor) commitValidatedSource(
+	ctx context.Context,
+	target configSourceFile,
+	content []byte,
+	kind, scope, idempotencyKey string,
+	resolve func() (any, error),
+) (nativeapi.OperationAccepted, error) {
 	mode := os.FileMode(0o600)
 	if fi, statErr := os.Stat(target.abs); statErr == nil {
 		mode = fi.Mode().Perm()
@@ -602,6 +616,12 @@ func (e *configEditor) UpdateNode(ctx context.Context, req nativeapi.NodeUpdateR
 	target, err := e.nodeSource(all)
 	if err != nil {
 		return nativeapi.NodeUpdateOutcome{}, err
+	}
+	// A retry must replay before the node lookup: a link change moves the node
+	// id, and a completed update must answer the original operation instead of
+	// 404/409/200-updated-0 depending on how far the reload has got.
+	if accepted, replayed, err := e.replaySourceUpdate(nativeapi.OperationKindNodeUpdate, sourceUpdateScope(target.abs, fingerprint), req.IdempotencyKey); err != nil || replayed {
+		return nativeapi.NodeUpdateOutcome{Accepted: accepted, Updated: 1}, err
 	}
 	refs, err := e.nodeRefs(index)
 	if err != nil {

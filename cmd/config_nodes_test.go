@@ -615,6 +615,51 @@ func TestConfigUpdateNodeNoOpWritesNothing(t *testing.T) {
 	}
 }
 
+// A completed PATCH must replay for its Idempotency-Key even after the link
+// change moved the node id, or after the reload already applied the write. The
+// replay check used to sit in commitSourceUpdate, behind the node lookup and the
+// no-op check, so a retry answered 404/409/200-updated-0 instead of 202.
+func TestConfigUpdateNodeReplaysAfterTheNodeIDChanges(t *testing.T) {
+	main, _ := newManagedTree(t)
+	ops := &fakeConfigOperations{}
+	e := newFlowEditor(t, main, true, ops)
+	if _, err := e.CreateNode(context.Background(), nativeapi.NodeCreateRequest{Name: "mock-01", Link: mockLink}, emptyNodeIndex, nil); err != nil {
+		t.Fatal(err)
+	}
+	index := nodeIndexWith(map[string]nodeRef{"n_old": {Name: "mock-01", ProviderID: inlineProviderID}})
+	newLink := "socks5://user:pass@192.0.2.11:1080"
+	first, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID:         "n_old",
+		Link:           nodeStringPtr(newLink),
+		IdempotencyKey: "patch-key",
+	}, index, func(nodeID string) (any, error) { return nodeID, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Updated != 1 || first.Accepted.OperationID == "" {
+		t.Fatalf("first patch = %+v, want one queued update", first)
+	}
+	queued := ops.calls
+
+	// The write changed the link, so the old id no longer names the node: the
+	// generation now publishes a different id for the same inline entry.
+	replayedIndex := nodeIndexWith(map[string]nodeRef{"n_new": {Name: "mock-01", ProviderID: inlineProviderID}})
+	second, err := e.UpdateNode(context.Background(), nativeapi.NodeUpdateRequest{
+		NodeID:         "n_old",
+		Link:           nodeStringPtr(newLink),
+		IdempotencyKey: "patch-key",
+	}, replayedIndex, func(nodeID string) (any, error) { return nodeID, nil })
+	if err != nil {
+		t.Fatalf("retry must replay, got %v", err)
+	}
+	if second.Accepted.OperationID != first.Accepted.OperationID || second.Updated != 1 {
+		t.Fatalf("retry = %+v, want the original operation %q", second, first.Accepted.OperationID)
+	}
+	if ops.calls != queued {
+		t.Fatalf("retry queued another operation: calls %d -> %d", queued, ops.calls)
+	}
+}
+
 func TestConfigUpdateNodeRequiresWritesEnabled(t *testing.T) {
 	main, _ := newManagedTree(t)
 	e := newFlowEditor(t, main, false, &fakeConfigOperations{})

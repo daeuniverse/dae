@@ -703,33 +703,7 @@ func (e *configEditor) ReplaceConfigSource(ctx context.Context, req nativeapi.Re
 	if err := e.guardApiUnchanged(candidate); err != nil {
 		return nativeapi.OperationAccepted{}, err
 	}
-	mode := os.FileMode(0o600)
-	if fi, statErr := os.Stat(target.abs); statErr == nil {
-		mode = fi.Mode().Perm()
-	}
-	// Hold the read lock across write, queue and rollback (see lockConfigRead).
-	unlockRead := e.lockConfigRead()
-	defer unlockRead()
-	if err := writeFileAtomic(target.abs+".bak", target.raw, 0o600); err != nil {
-		return nativeapi.OperationAccepted{}, fmt.Errorf("write config backup: %w", err)
-	}
-	if err := writeFileAtomic(target.abs, []byte(req.Content), mode); err != nil {
-		return nativeapi.OperationAccepted{}, fmt.Errorf("write config source: %w", err)
-	}
-
-	// The scope carries the candidate bytes, not just the path: reusing a key for
-	// different content describes different work, and replaying the first answer
-	// would report a write that never happened for the second caller.
-	accepted, err := e.operations.StartOperationWithResult(ctx, nativeapi.OperationKindReload, scope, req.IdempotencyKey, nil)
-	if err != nil {
-		// The reload never started, so the on-disk file must return to its
-		// previous state; otherwise the next reload would apply a rejected edit.
-		if restoreErr := writeFileAtomic(target.abs, target.raw, mode); restoreErr != nil {
-			e.log.WithError(restoreErr).Error("failed to restore config source after rejected reload")
-		}
-		return nativeapi.OperationAccepted{}, err
-	}
-	return accepted, nil
+	return e.commitValidatedSource(ctx, target, []byte(req.Content), nativeapi.OperationKindReload, scope, req.IdempotencyKey, nil)
 }
 
 // candidateLayoutReason checks the candidate bytes, not just the tree on disk.
