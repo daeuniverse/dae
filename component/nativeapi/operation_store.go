@@ -341,21 +341,41 @@ func (s *OperationStore) pruneLocked() {
 	s.replayOrder = replayKept
 
 	// Bound retained records even when every request is a finished failure.
-	// Unfinished operations are never evicted; once the cap is exceeded, drop
-	// the oldest finished records (and any replay keys that pointed at them).
-	for len(s.operations) > MaxOperationRecords && len(s.order) > 0 {
-		dropped := false
-		for index, operationID := range s.order {
-			operation, ok := s.operations[operationID]
-			if ok && operation.finishedAt != nil {
-				delete(s.operations, operationID)
-				s.order = append(s.order[:index], s.order[index+1:]...)
-				dropped = true
+	// Unfinished operations are never evicted, and a finished operation that
+	// still holds an Idempotency-Key is evicted only when no keyless record is
+	// left: dropping it would turn an idempotent retry into a second write or a
+	// second reload. Only once the cap cannot be met that way does the oldest
+	// finished record (and the keys that pointed at it) go.
+	if len(s.operations) > MaxOperationRecords && len(s.order) > 0 {
+		protected := make(map[string]struct{}, len(s.replay))
+		for _, record := range s.replay {
+			protected[record.accepted.OperationID] = struct{}{}
+		}
+		for len(s.operations) > MaxOperationRecords && len(s.order) > 0 {
+			victim := -1
+			fallback := -1
+			for index, operationID := range s.order {
+				operation, ok := s.operations[operationID]
+				if !ok || operation.finishedAt == nil {
+					continue
+				}
+				if fallback < 0 {
+					fallback = index
+				}
+				if _, keep := protected[operationID]; !keep {
+					victim = index
+					break
+				}
+			}
+			if victim < 0 {
+				victim = fallback
+			}
+			if victim < 0 {
 				break
 			}
-		}
-		if !dropped {
-			break
+			operationID := s.order[victim]
+			delete(s.operations, operationID)
+			s.order = append(s.order[:victim], s.order[victim+1:]...)
 		}
 	}
 	for key, record := range s.replay {

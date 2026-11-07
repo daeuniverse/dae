@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -374,5 +375,34 @@ func TestReservedKeyIsNotReplayableUntilQueued(t *testing.T) {
 	}
 	if retried.OperationID == aborted.OperationID {
 		t.Fatal("released key replayed the rejected operation")
+	}
+}
+
+// A flood of finished rejections must not evict the replay key of an older
+// successful write. Eviction used to drop the oldest finished record (and its
+// key), so a retried write ran a second time instead of replaying.
+func TestOperationStoreEvictionKeepsLiveReplayKeys(t *testing.T) {
+	store := NewOperationStore(time.Hour, 32)
+	accepted, replayed, err := store.Accept(OperationKindReload, "write-scope", "keep-me")
+	if err != nil || replayed {
+		t.Fatalf("Accept = %v, %v", replayed, err)
+	}
+	store.Succeed(accepted.OperationID, nil)
+	store.CommitReplayKey("keep-me")
+
+	for i := 0; i < MaxOperationRecords+64; i++ {
+		rejected, _, err := store.Accept(OperationKindReload, "flood-"+strconv.Itoa(i), "")
+		if err != nil {
+			t.Fatalf("flood Accept %d: %v", i, err)
+		}
+		store.Fail(rejected.OperationID, &SafeError{Code: "state_conflict", Message: "busy"})
+	}
+
+	replay, ok, err := store.Replay(OperationKindReload, "write-scope", "keep-me")
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if !ok || replay.OperationID != accepted.OperationID {
+		t.Fatalf("replay key was evicted by rejected records: ok=%v id=%q want %q", ok, replay.OperationID, accepted.OperationID)
 	}
 }
