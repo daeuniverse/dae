@@ -7,11 +7,13 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	componentdns "github.com/daeuniverse/dae/component/dns"
@@ -211,4 +213,35 @@ func serveDNSQueryThroughListener(t *testing.T, ctrl *DnsController, transport, 
 	}
 	(&dnsHandler{listener: listener, log: logger}).ServeDNS(writer, query)
 	return writer
+}
+
+// The API query path advertises a budget that covers the upstream exchange. A
+// forwarder blocked in a read must not outlive the caller's deadline by the full
+// DefaultDialTimeout, and a late answer must not be reported as success.
+func TestCallerDeadlineBoundsForwardFallback(t *testing.T) {
+	installCorpusDnsForwarderFactory(t, func(*componentdns.Upstream, dialArgument, *logrus.Logger) (DnsForwarder, error) {
+		return &stubDnsForwarder{forward: func(ctx context.Context, _ []byte) (*dnsmessage.Msg, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}, nil
+	})
+	ctrl := newCorpusDnsController(t, truncatedTestConfig())
+
+	upstream := &componentdns.Upstream{
+		Scheme:   componentdns.UpstreamScheme_TCP_UDP,
+		Hostname: "198.51.100.53",
+		Port:     53,
+	}
+	primary := &dialArgument{l4proto: consts.L4ProtoStr_UDP, ipversion: consts.IpVersionStr_4, bestTarget: netip.MustParseAddrPort("198.51.100.53:53")}
+	queryWire, err := corpusDnsQuery(0x5a12, "caller-deadline.test.", dnsmessage.TypeA).Pack()
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(dnsWithCallerDeadline(context.Background()), 80*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, _, err = ctrl.forwardWithFallback(ctx, defaultUdpRequest(), upstream, primary, queryWire, false)
+	elapsed := time.Since(started)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, context.DeadlineExceeded), "error = %v, want deadline exceeded", err)
+	require.Less(t, elapsed, 2*time.Second, "the attempt outlived the caller deadline by %v", elapsed)
 }

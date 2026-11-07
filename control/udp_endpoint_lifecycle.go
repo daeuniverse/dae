@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/errors"
+	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/sirupsen/logrus"
@@ -248,7 +248,8 @@ func isTransientLocalUdpDialCreateError(err error) bool {
 func udpEndpointIgnoresDialerHealth(ue *UdpEndpoint) bool {
 	return ue != nil &&
 		ue.Outbound != nil &&
-		ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed
+		(ue.Outbound.GetSelectionPolicy().IgnoresDialerHealth() ||
+			ue.Outbound.PinsSelection(ob.SelectionNetworkUDP))
 }
 
 func (ue *UdpEndpoint) logEndpointExit(err error, msg string) {

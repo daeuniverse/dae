@@ -25,8 +25,12 @@ import (
 var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 
 type Dns struct {
-	log            *logrus.Logger
-	upstream       []*UpstreamResolver
+	log      *logrus.Logger
+	upstream []*UpstreamResolver
+	// upstreamTags holds the configured name of each upstream, parallel to
+	// upstream. Upstream.String() renders the resolved URL, so comparing a
+	// configured name against it never matched.
+	upstreamTags   []string
 	upstream2Index sync.Map
 	reqMatcher     *RequestMatcher
 	respMatcher    *ResponseMatcher
@@ -84,6 +88,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		}
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
+		s.upstreamTags = append(s.upstreamTags, tag)
 	}
 	requestProgram, err := NewNormalizedRequestRoutingProgram(dns.Routing.Request.Rules, dns.Routing.Request.Fallback,
 		&routing.DatReaderOptimizer{Logger: opt.Logger, LocationFinder: opt.LocationFinder},
@@ -235,4 +240,51 @@ func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstr
 		upstream = nil
 	}
 	return upstreamIndex, upstream, nil
+}
+
+// UpstreamIndexFor returns the request-routing index of an already resolved
+// upstream.
+func (s *Dns) UpstreamIndexFor(upstream *Upstream) (consts.DnsRequestOutboundIndex, bool) {
+	if upstream == nil {
+		return 0, false
+	}
+	index, ok := s.upstream2Index.Load(upstream)
+	if !ok {
+		return 0, false
+	}
+	value, ok := index.(int)
+	if !ok {
+		return 0, false
+	}
+	return consts.DnsRequestOutboundIndex(value), true
+}
+
+// UpstreamByName resolves a configured upstream by its display name, for the
+// native API's forced-upstream DNS query. It returns ok=false when no
+// configured upstream matches.
+func (s *Dns) UpstreamByName(ctx context.Context, name string) (upstream *Upstream, ok bool, err error) {
+	for i, resolver := range s.upstream {
+		if i >= len(s.upstreamTags) || s.upstreamTags[i] != name {
+			continue
+		}
+		candidate, getErr := resolver.GetUpstream(ctx)
+		if getErr != nil {
+			return nil, false, getErr
+		}
+		if candidate != nil {
+			return candidate, true, nil
+		}
+	}
+	// A caller may also name the upstream by its resolved URL. Keep that form
+	// working, since the DNS log reports upstreams that way.
+	for _, resolver := range s.upstream {
+		candidate, getErr := resolver.GetUpstream(ctx)
+		if getErr != nil {
+			continue
+		}
+		if candidate != nil && candidate.String() == name {
+			return candidate, true, nil
+		}
+	}
+	return nil, false, nil
 }

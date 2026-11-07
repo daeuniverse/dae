@@ -63,18 +63,7 @@ func loadProductionProgramsForTest(t *testing.T, useRedirectPeer, hasBpfGetCurre
 			p.Flags |= unix.BPF_F_STRICT_ALIGNMENT
 		}
 	}
-	param := struct {
-		tproxyPort           uint32
-		controlPlanePid      uint32
-		dae0Ifindex          uint32
-		daeNetnsId           uint32
-		dae0peerMac          [6]byte
-		paddingAfterMac      [2]uint8
-		useRedirectPeer      uint8
-		hasBpfGetCurrentTask uint8
-		datapathGeneration   uint16
-		daeSocketMark        uint32
-	}{
+	param := daeParam{
 		useRedirectPeer:      useRedirectPeer,
 		hasBpfGetCurrentTask: hasBpfGetCurrentTask,
 	}
@@ -97,6 +86,52 @@ func loadProductionProgramsForTest(t *testing.T, useRedirectPeer, hasBpfGetCurre
 			t.Fatalf("load programs: %+v", verr)
 		}
 		t.Fatalf("load programs: %v", err)
+	}
+	defer coll.Close()
+
+	names := make([]string, 0, len(coll.Programs))
+	for name := range coll.Programs {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		t.Logf("%s: %s", name, verifierProcessedInsns.FindString(coll.Programs[name].VerifierLog))
+	}
+}
+
+// TestDirectStatsProgramsLoad loads the observer object independently of the
+// main datapath object. It uses the object's own conn_state_map; the production
+// load replaces that map with tproxy's, which the ABI tests pin separately.
+// This is the only test that exercises the verifier for the direct_stats
+// programs; without it a parser change could ship without ever being loaded.
+func TestDirectStatsProgramsLoad(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("loading BPF programs requires root")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("remove memlock limit: %v", err)
+	}
+	spec, err := loadDirectstats()
+	if err != nil {
+		t.Fatalf("load direct stats spec: %v", err)
+	}
+	for _, m := range spec.Maps {
+		m.Pinning = ebpf.PinNone
+	}
+	if mark := spec.Variables["DIRECT_STATS_DAE_SOCKET_MARK"]; mark != nil {
+		if err := mark.Set(uint32(0x100)); err != nil {
+			t.Fatalf("set direct stats socket mark: %v", err)
+		}
+	}
+	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{
+		Programs: ebpf.ProgramOptions{LogLevel: ebpf.LogLevelStats},
+	})
+	if err != nil {
+		var verr *ebpf.VerifierError
+		if errors.As(err, &verr) {
+			t.Fatalf("load direct stats programs: %+v", verr)
+		}
+		t.Fatalf("load direct stats programs: %v", err)
 	}
 	defer coll.Close()
 

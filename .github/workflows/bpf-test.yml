@@ -60,14 +60,14 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.ref }}
 
       - name: Set up Go 1.27
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27
 
@@ -115,6 +115,22 @@ jobs:
               # sync.OnceValues singleton; reads /proc/mounts, no BPF map needed).
               TestDetectCgroupPathCaching
               TestProductionProgramsLoad
+              # daeParam field offsets must match struct dae_param in
+              # kern/tproxy.c; a drift moves a kernel parameter instead of
+              # failing the load. Needs no BPF map.
+              TestDaeParamLayout
+              # The direct-stats observer declares its own copies of
+              # tuples_key and conn_state; a drift from tproxy.c makes it read
+              # another field's bytes. Pure layout checks, no BPF map needed.
+              TestDirectStatsConnStateABIParity
+              TestDirectStatsTuplesKeyABIParity
+              # The observer object must not reintroduce the removed NAT reverse map.
+              TestDirectStatsObjectHasNoNATReverseMap
+              # The counter-map value layout must match the Go decoder.
+              TestDirectStatsCounterValueLayout
+              # Load the observer object's programs through the verifier; the ABI
+              # tests only compare Go layouts.
+              TestDirectStatsProgramsLoad
             )
             printf '%s\n' "${whitelist[@]}" | sort -u > /tmp/datapath-whitelist.txt
 
@@ -189,13 +205,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.ref }}
 
       - name: Set up Go 1.27
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27
 

@@ -42,6 +42,8 @@ type RoutingMatcherBuilder struct {
 	rules              []bpfMatchSet
 	compiledRules      []compiledRoutingMatch
 	predicateGroups    []routingMatcherPredicateGroupSpan
+	ruleSpans          []routingMatcherRuleSpan
+	currentFunction    *config_parser.Function
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
 	// packetMetadataSensitiveRouting is true when routing rules depend on
@@ -159,6 +161,7 @@ func NewRoutingMatcherBuilderFromProgram(log *logrus.Logger, program *routing.No
 		rules:               make([]bpfMatchSet, 0, ruleCap),
 		compiledRules:       make([]compiledRoutingMatch, 0, ruleCap),
 		predicateGroups:     make([]routingMatcherPredicateGroupSpan, 0, ruleCap),
+		ruleSpans:           make([]routingMatcherRuleSpan, 0, ruleCap),
 		lpmDedup:            make(map[uint64]lpmDedupEntry),
 		referencedOutbounds: make(map[string]struct{}),
 	}
@@ -297,6 +300,13 @@ func (b *RoutingMatcherBuilder) registerProgramParsers(rulesBuilder *routing.Rul
 	registerRoutingProgramParsers(rulesBuilder, b)
 }
 
+func (b *RoutingMatcherBuilder) traceStepCount() int {
+	if b == nil {
+		return 0
+	}
+	return len(b.ruleSpans) + len(b.predicateGroups) + 1
+}
+
 func (b *RoutingMatcherBuilder) registerParser(rulesBuilder *routing.RulesBuilder, name string, parser routing.FunctionParser) {
 	rulesBuilder.RegisterFunctionParser(name, func(
 		log *logrus.Logger,
@@ -306,16 +316,42 @@ func (b *RoutingMatcherBuilder) registerParser(rulesBuilder *routing.RulesBuilde
 		overrideOutbound *routing.Outbound,
 	) error {
 		start := len(b.compiledRules)
+		if b.currentFunction == nil || b.currentFunction != function {
+			b.predicateGroups = append(b.predicateGroups, routingMatcherPredicateGroupSpan{
+				name:       function.Name,
+				expression: function.String(false, false, true),
+				not:        function.Not,
+				start:      start,
+				ruleIndex:  len(b.ruleSpans),
+			})
+		}
 		if err := parser(log, function, key, values, overrideOutbound); err != nil {
 			return err
 		}
-		b.predicateGroups = append(b.predicateGroups, routingMatcherPredicateGroupSpan{
-			name:  function.Name,
-			key:   key,
-			not:   function.Not,
-			start: start,
-			end:   len(b.compiledRules),
-		})
+		group := &b.predicateGroups[len(b.predicateGroups)-1]
+		group.end = len(b.compiledRules)
+		b.currentFunction = function
+
+		isRuleTail := overrideOutbound.Name != consts.OutboundLogicalOr.String() &&
+			overrideOutbound.Name != consts.OutboundLogicalAnd.String()
+		if isRuleTail {
+			ruleEnd := len(b.compiledRules)
+			if len(b.ruleSpans) == 0 || b.ruleSpans[len(b.ruleSpans)-1].end != 0 {
+				b.ruleSpans = append(b.ruleSpans, routingMatcherRuleSpan{
+					start:         start,
+					conditionFrom: len(b.predicateGroups) - 1,
+				})
+			}
+			span := &b.ruleSpans[len(b.ruleSpans)-1]
+			span.end = ruleEnd
+			span.conditionTo = len(b.predicateGroups)
+			b.currentFunction = nil
+		} else if len(b.ruleSpans) == 0 || b.ruleSpans[len(b.ruleSpans)-1].end != 0 {
+			b.ruleSpans = append(b.ruleSpans, routingMatcherRuleSpan{
+				start:         start,
+				conditionFrom: len(b.predicateGroups) - 1,
+			})
+		}
 		return nil
 	})
 }
@@ -1170,6 +1206,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		compiledMatches: compiledMatches,
 		needs:           computeRoutingMatcherNeeds(compiledMatches),
 		predicateGroups: append([]routingMatcherPredicateGroupSpan(nil), b.predicateGroups...),
+		ruleSpans:       append([]routingMatcherRuleSpan(nil), b.ruleSpans...),
 	}
 
 	// Memory optimization: Release large temporary data structures
@@ -1179,6 +1216,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	b.rules = nil
 	b.compiledRules = nil
 	b.predicateGroups = nil
+	b.ruleSpans = nil
 	b.lpmDedup = nil
 
 	return matcher, nil

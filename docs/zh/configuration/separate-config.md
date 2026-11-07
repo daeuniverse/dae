@@ -106,8 +106,18 @@ group {
         filter: name(node1, node2)
         policy: fixed(0)
     }
+
+    manual_group {
+        filter: subtag(my_sub)
+        policy: select
+    }
 }
 ```
+
+`select` 保留一个可在运行时切换的成员，TCP 与 UDP 分别保存选择。`select(n)`
+表示初始选择第 n 个成员。运行时选择只存在内存中：不会写回配置文件，reload
+或重启后回到配置的索引。可通过原生 API 的
+`PUT /api/v1/groups/{group_id}/selection` 切换（见[原生 API](./api.md)）。
 
 ```jsonc
 # route.dae
@@ -134,3 +144,70 @@ routing {
 ```sh
 dae run -c /etc/dae/config.dae
 ```
+
+如果要通过[原生 API](api.md#通过-api-编辑配置) 编辑节点或其它配置，拆分还必须符合更
+严格的规范结构（固定文件名、每个 section 只能来自一个文件、入口只能是 `config.dae`
+等）；普通拆分不满足这些条件时，API 写入会被禁用。
+
+## 配合原生 API
+
+API 接受的结构：
+
+```sh
+# tree /etc/dae
+/etc/dae
+├── config.dae
+├── api.dae
+└── config.d
+   ├── global.dae
+   ├── subscription.dae
+   ├── node.dae
+   ├── group.dae
+   ├── routing.dae
+   └── dns.dae
+```
+
+入口文件只放 include 块，不放其它内容：
+
+```jsonc
+# config.dae
+include {
+    config.d/*.dae
+    api.dae
+}
+```
+
+listener 放在 `api.dae`。`config_write` 需要配 secret，两者都设好之后面板才能增删节点：
+
+```jsonc
+# api.dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-at-least-16-random-bytes'
+    config_write: true
+}
+```
+
+组文件里放面板用来切节点的 `select` 组：
+
+```jsonc
+# group.dae
+group {
+    my_group {
+        filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
+        policy: min_moving_avg
+    }
+
+    manual_group {
+        filter: subtag(my_sub)
+        policy: select
+    }
+}
+```
+
+复制这套结构后，启动前先收紧权限：dae 会拒绝同组可写或对其他用户开放的文件（应为
+`0640` 或 `0600`），并且 `config.d/` 必须保持可写，API 才能落盘替换内容。
+
+仓库里的 `example-separated/` 就是这套结构，已去掉注释，可直接复制到 `/etc/dae`。
+

@@ -27,6 +27,7 @@ var configSectionSpecs = []configSectionSpec{
 	{name: "group", decode: decodeGroupSection},
 	{name: "routing", required: true, decode: decodeRoutingSection},
 	{name: "dns", decode: decodeDnsSection},
+	{name: "api", decode: decodeApiSection},
 }
 
 func lookupConfigSectionSpec(sectionName string) *configSectionSpec {
@@ -78,4 +79,8 @@ func decodeRoutingSection(conf *Config, section *config_parser.Section) error {
 
 func decodeDnsSection(conf *Config, section *config_parser.Section) error {
 	return SectionParser(reflect.ValueOf(&conf.Dns), section)
+}
+
+func decodeApiSection(conf *Config, section *config_parser.Section) error {
+	return SectionParser(reflect.ValueOf(&conf.Api), section)
 }

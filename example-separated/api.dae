@@ -1,0 +1,7 @@
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'replace-with-at-least-16-random-bytes'
+    config_write: true
+    direct_stats: false
+}

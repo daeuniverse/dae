@@ -19,7 +19,7 @@ jobs:
       sha: ${{ steps.tag.outputs.sha }}
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: refs/tags/${{ inputs.tag }}
@@ -112,7 +112,9 @@ jobs:
           # END Linux RISCV64 rva20u64 rva22u64 rva23u64
       fail-fast: false
 
-    runs-on: ubuntu-22.04
+    # Ubuntu 26.04 dropped clang-15 from the archive; the release build still
+    # uses it for the eBPF objects, so pin the image that ships it.
+    runs-on: ubuntu-24.04
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
@@ -123,7 +125,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.preflight.outputs.sha }}
@@ -156,7 +158,7 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go 1.27
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 1.27
           cache: false

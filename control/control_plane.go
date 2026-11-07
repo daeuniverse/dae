@@ -46,10 +46,16 @@ import (
 )
 
 type ControlPlane struct {
-	log          *logrus.Logger
-	directDialer netproxy.Dialer
+	// onPublished runs once when this generation becomes the active one. It
+	// carries state that must only be shown for a generation that was accepted.
+	onPublished     func()
+	onPublishedOnce sync.Once
+	log             *logrus.Logger
+	directDialer    netproxy.Dialer
 
 	runtimeStats *runtimeStats
+	memoryStats  *memoryStats
+	processCPU   *processCPUStats
 
 	core       *controlPlaneCore
 	deferFuncs []func() error
@@ -64,6 +70,12 @@ type ControlPlane struct {
 	sessionManagerBinding atomic.Pointer[controlPlaneSessionManagerBinding]
 	egressRuntime         *egressRuntime
 	drainTracker          *controlPlaneDrainTracker
+
+	// outboundCounters is the process-level registry this generation's groups
+	// report into; outboundCountersByIndex resolves it once per flow.
+	outboundCountersMu      sync.RWMutex
+	outboundCounters        *outbound.CounterRegistry
+	outboundCountersByIndex map[uint8]*outbound.Counters
 
 	controlPlaneRoutingEpochRuntime
 	controlPlaneDNSRuntime
@@ -171,6 +183,17 @@ type ControlPlaneBuildOptions struct {
 	DirectDialer          netproxy.Dialer
 	FullconeDirectDialer  netproxy.Dialer
 	SystemDNSResolver     *netutils.SystemDNSResolver
+	// NodeDisplayTags maps a provider identity to the tag subtag() filters and
+	// DNS rules see. Providers missing from the map use their identity as the
+	// display tag. An untagged subscription is the empty string so those rules
+	// keep treating it as tagless while the API still reports its own provider.
+	NodeDisplayTags map[string]string
+	// RoutingTraceEnabled builds the second userspace matcher the trace endpoint
+	// needs. It is an extra domain/IP matcher with the same memory cost as the
+	// real one, so deployments without the API must not pay for it. The API
+	// listener settings cannot change on reload, so deciding this at build time
+	// is safe.
+	RoutingTraceEnabled bool
 }
 
 var (
@@ -650,7 +673,8 @@ func NewControlPlaneWithContextOptions(
 	if err := checkCtx("resolve subscription links"); err != nil {
 		return nil, err
 	}
-	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList)
+	dialerSet := outbound.NewDialerSetFromLinksContext(context.Background(), option, tagToNodeList, buildOpts.NodeDisplayTags)
+	core.nodeParseReport = dialerSet.ParseReport(tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	deferFuncs = append(deferFuncs, func() error {
 		dialer.CleanupTransportCacheNamespace(option.TransportCacheNamespace)
@@ -690,6 +714,15 @@ func NewControlPlaneWithContextOptions(
 			dialers = newDialers
 			finalOption = groupOption
 		}
+		// A selector's configured index is its initial member, so an explicit
+		// index outside the filtered member list can never work. Reject it here
+		// instead of failing every selection at runtime. An empty group stays
+		// tolerated, exactly like every other policy: its filter may match
+		// nodes again after the next subscription update.
+		if policy.Policy == consts.DialerSelectionPolicy_Select && len(dialers) > 0 &&
+			(policy.FixedIndex < 0 || policy.FixedIndex >= len(dialers)) {
+			return nil, fmt.Errorf(`group "%v": policy select(%d) is out of range: the group has %d members`, group.Name, policy.FixedIndex, len(dialers))
+		}
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
@@ -725,15 +758,33 @@ func NewControlPlaneWithContextOptions(
 	if err := checkCtx("optimize routing rules"); err != nil {
 		return nil, err
 	}
+	datReader := &routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder}
+	var routingTraceProgram *routing.NormalizedProgram
+	if buildOpts.RoutingTraceEnabled && len(routingA.Rules) <= MaxRoutingTraceRuleSteps {
+		traceProgram, traceErr := routing.NewNormalizedProgram(routingA.Rules, routingA.Fallback,
+			&routing.AliasOptimizer{},
+			datReader,
+			&routing.DeduplicateParamsOptimizer{},
+		)
+		if traceErr != nil {
+			log.Warnf("Routing trace is unavailable: failed to prepare trace rules: %v", traceErr)
+		} else {
+			routingTraceProgram = traceProgram
+		}
+	}
 	routingProgram, err := routing.NewNormalizedProgram(routingA.Rules, routingA.Fallback,
 		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{Logger: log, LocationFinder: locationFinder},
+		datReader,
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
+	// Snapshot the rules as configured, before the optimizers' expansion is all
+	// that is left of them. The API reports what the operator wrote; the
+	// optimized tree is the evaluation order and stays internal.
+	routingRules, routingFallback := snapshotConfiguredRules(routingA.Rules, routingA.Fallback)
 	routingA.Rules = nil // Release.
 	// Device-scoped whitelists (selector && domain -> group followed by a
 	// selector-only -> direct/block line) cannot match in kernel space when
@@ -792,6 +843,21 @@ func NewControlPlaneWithContextOptions(
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
+	var routingTraceMatcher *RoutingMatcher
+	if routingTraceProgram != nil {
+		traceBuilder, traceErr := NewRoutingMatcherBuilderFromProgram(log, routingTraceProgram, outboundName2Id, core.bpf.Load())
+		if traceErr == nil && len(traceBuilder.ruleSpans) != len(routingRules) {
+			traceErr = fmt.Errorf("trace matcher has %d rules, configured snapshot has %d", len(traceBuilder.ruleSpans), len(routingRules))
+		}
+		if traceErr == nil && traceBuilder.traceStepCount() <= MaxRoutingTraceRuleSteps {
+			routingTraceMatcher, traceErr = traceBuilder.BuildUserspace()
+		}
+		if traceErr != nil {
+			log.Warnf("Routing trace is unavailable: failed to build trace matcher: %v", traceErr)
+		} else if traceBuilder.traceStepCount() > MaxRoutingTraceRuleSteps {
+			log.Warnf("Routing trace is unavailable: trace exceeds the %d rule-step limit", MaxRoutingTraceRuleSteps)
+		}
+	}
 
 	// Get referenced outbounds to limit health checks.
 	referencedOutbounds := builder.GetReferencedOutbounds()
@@ -818,6 +884,11 @@ func NewControlPlaneWithContextOptions(
 	log.Infof("Memory usage after routing build: Alloc=%vMiB, Sys=%vMiB, HeapObjects=%v",
 		m.Alloc/1024/1024, m.Sys/1024/1024, m.HeapObjects)
 
+	// Rotate the traffic buckets on a fixed cadence so the forwarding path never
+	// reads the clock to record a byte. Safe to call per generation: it starts
+	// one goroutine per process over the process-lifetime store.
+	startRuntimeStatsSampler(processRuntimeStatsStore())
+
 	// Transfer every dialer, group health registration and the shared transport
 	// cache namespace into structured runtime ownership. The constructor's
 	// defer stack remains responsible until this point.
@@ -841,19 +912,27 @@ func NewControlPlaneWithContextOptions(
 	// New control plane.
 	cctx, cancel := context.WithCancel(context.Background())
 	plane = &ControlPlane{
-		log:           log,
-		directDialer:  directDialer,
-		runtimeStats:  newRuntimeStats(),
+		log:          log,
+		directDialer: directDialer,
+		runtimeStats: processRuntimeStatsStore(),
+
+		memoryStats:   newMemoryStats(),
+		processCPU:    newProcessCPUStats(),
 		core:          core,
 		deferFuncs:    planeDeferFuncs,
 		listenIp:      "0.0.0.0",
 		egressRuntime: egressRuntime,
 		controlPlaneGenerationState: controlPlaneGenerationState{
 			outbounds:           outbounds,
+			dnsRules:            dnsRulesFromConfig(&dnsConfig.Routing, routingGenerationID(policyIdentity.Epoch())),
+			routingRules:        routingRules,
+			routingFallback:     routingFallback,
+			routingGeneration:   routingGenerationID(policyIdentity.Epoch()),
 			referencedOutbounds: referencedOutbounds,
 			dialMode:            dialMode,
 			policyIdentity:      policyIdentity,
 			routingMatcher:      routingMatcher,
+			routingTraceMatcher: routingTraceMatcher,
 			bootstrapResolvers:  bootstrapResolvers,
 		},
 		controlPlaneDNSRuntime: newControlPlaneDNSRuntime(buildOpts.DelayDNSListenerStart),
@@ -889,6 +968,7 @@ func NewControlPlaneWithContextOptions(
 	SetAnyfromSoMark(global.SoMarkFromDae)
 	plane.deferFuncs = append(plane.deferFuncs, plane.closePublishedListenerFiles)
 	plane.startRealDomainNegJanitor()
+	plane.startMemorySampler()
 
 	var upstreamHostResolver func(ctx context.Context, host string, network string) (*netutils.Ip46, error, error)
 	if len(bootstrapResolvers) > 0 {
@@ -2089,12 +2169,19 @@ func (c *ControlPlane) allowDnsFastPathServfailLog(now time.Time) bool {
 }
 
 // readBpfStatsCounter reads a counter from the BPF stats map by key index.
+// readBpfStatsCounter sums the per-CPU copies of one datapath counter. The map
+// is PERCPU so that a per-packet increment never contends for a shared
+// cacheline; a single-value lookup would report only the first CPU.
 func readBpfStatsCounter(m *ebpf.Map, key uint32) (uint64, error) {
-	var value uint64
-	if err := m.Lookup(&key, &value); err != nil {
+	perCPU := make([]uint64, ebpf.MustPossibleCPU())
+	if err := m.Lookup(&key, &perCPU); err != nil {
 		return 0, err
 	}
-	return value, nil
+	var total uint64
+	for _, value := range perCPU {
+		total += value
+	}
+	return total, nil
 }
 
 type Listener struct {

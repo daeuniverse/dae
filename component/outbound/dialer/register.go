@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/component/daedns"
+	obcommon "github.com/daeuniverse/outbound/common"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/dialer/stickyip"
 	"github.com/daeuniverse/outbound/protocol/direct"
@@ -170,11 +171,19 @@ func controlPlaneAddressHost(addr string) string {
 // This keeps dae compatible with subscription links that use option names/forms
 // not recognized by outbound's current ParseSip003Opts implementation.
 func normalizeShadowTLSPluginOptions(link string) string {
-	normalized, ok := normalizeShadowTLSPluginOptionsInURL(link)
-	if ok {
-		return normalized
+	// A configured node is "name:link"; the tag belongs to the config layer,
+	// not to the URI. Normalizing the whole string made url.Parse treat "name"
+	// as the scheme, so the same node received a different normalized link
+	// than the API's bare-link validation and its node id changed after reload.
+	tag, linkPart := obcommon.GetTagFromLinkLikePlaintext(link)
+	normalized, ok := normalizeShadowTLSPluginOptionsInURL(linkPart)
+	if !ok {
+		normalized = normalizeShadowTLSPluginOptionsInBase64Link(linkPart)
 	}
-	return normalizeShadowTLSPluginOptionsInBase64Link(link)
+	if tag != "" {
+		return tag + ":" + normalized
+	}
+	return normalized
 }
 
 func normalizeShadowTLSPluginOptionsInURL(link string) (string, bool) {
