@@ -151,8 +151,9 @@ func (m *RoutingMatcher) TraceRouting(
 			if outcome.Result == "matched" {
 				// must_rules only raises the must flag; the real matcher keeps
 				// evaluating and takes the outbound from the next matching
-				// rule, so the trace must not stop here.
-				if rule.Outbound != consts.OutboundMustRules.String() {
+				// rule, so the trace must not stop here. Use the parsed
+				// outbound name: must_rules(mark:1) is still must_rules.
+				if !rule.MustRules && rule.Outbound != consts.OutboundMustRules.String() {
 					stopped = true
 					if len(uncertain) == 0 {
 						evaluation.Decision = "determinate"

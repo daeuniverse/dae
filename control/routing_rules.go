@@ -19,6 +19,10 @@ type RoutingRuleSnapshot struct {
 	Expression string
 	Outbound   string
 	Must       bool
+	// MustRules records the special outbound that sets the must flag and then
+	// keeps matching. Must alone cannot distinguish it from proxy(must), which
+	// stops at its own rule.
+	MustRules bool
 }
 
 // RoutingRulesSnapshot is the complete rule dictionary of one generation.
@@ -42,13 +46,19 @@ func snapshotConfiguredRules(rules []*config_parser.RoutingRule, fallback config
 			continue
 		}
 		outbound := rule.Outbound.MarshalString(false, true, true)
+		mustRules := rule.Outbound.Name == consts.OutboundMustRules.String()
+		must := mustRules
+		for _, param := range rule.Outbound.Params {
+			if param.Key == "" && param.Val == "must" {
+				must = true
+				break
+			}
+		}
 		snapshots = append(snapshots, RoutingRuleSnapshot{
 			Expression: rule.String(false, false, false),
 			Outbound:   outbound,
-			// must_rules is the only configured outbound that constrains the rest
-			// of the chain: a match sets the must flag and evaluation continues,
-			// so the rule itself is what carries the must semantics.
-			Must: outbound == consts.OutboundMustRules.String(),
+			Must:       must,
+			MustRules:  mustRules,
 		})
 	}
 	parsed, err := config.ParseFunctionOrString(fallback)
