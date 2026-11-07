@@ -180,7 +180,13 @@ direct_stats_parse_tuple(struct __sk_buff *skb, __u32 l3_off,
 	__u8 l4proto;
 	__u32 l4_off;
 
-	if (bpf_skb_pull_data(skb, DIRECT_STATS_HEADER_PULL))
+	// Short frames (a 42-byte UDP packet, a 54-byte TCP ACK) used to fail
+	// the pull because the helper refuses a length longer than the skb. Pull
+	// only what the packet actually has; the header checks below decide
+	// whether enough bytes are present for the tuple.
+	__u32 pull = skb->len < DIRECT_STATS_HEADER_PULL ?
+		skb->len : DIRECT_STATS_HEADER_PULL;
+	if (bpf_skb_pull_data(skb, pull))
 		return -1;
 
 	data = (void *)(long)skb->data;
@@ -243,6 +249,10 @@ direct_stats_parse_tuple(struct __sk_buff *skb, __u32 l3_off,
 
 		if ((void *)(ip6h + 1) > data_end)
 			return -1;
+		// tproxy's get_tuples stores the IPv6 addresses in the same
+		// representation. Leaving them zero made every IPv6 lookup miss.
+		__builtin_memcpy(&key->sip, &ip6h->saddr, IPV6_BYTE_LENGTH);
+		__builtin_memcpy(&key->dip, &ip6h->daddr, IPV6_BYTE_LENGTH);
 		nexthdr = ip6h->nexthdr;
 		off = l3_off + sizeof(struct ipv6hdr);
 
@@ -375,14 +385,20 @@ direct_stats_sock_bound_to_daddr(struct bpf_sock *sk,
 		return bound != 0 && bound == key->dip.u6_addr32[3];
 	}
 
-	const __u32 *bound = sk->src_ip6;
-	bool wildcard = !(bound[0] | bound[1] | bound[2] | bound[3]);
+	// Read the four words with constant offsets. Materializing a pointer
+	// (`const __u32 *bound = sk->src_ip6`) makes clang add a register to
+	// PTR_TO_SOCK, which the verifier rejects as pointer arithmetic on sock.
+	__u32 b0 = sk->src_ip6[0];
+	__u32 b1 = sk->src_ip6[1];
+	__u32 b2 = sk->src_ip6[2];
+	__u32 b3 = sk->src_ip6[3];
+	bool wildcard = !(b0 | b1 | b2 | b3);
 
 	return !wildcard &&
-	       bound[0] == key->dip.u6_addr32[0] &&
-	       bound[1] == key->dip.u6_addr32[1] &&
-	       bound[2] == key->dip.u6_addr32[2] &&
-	       bound[3] == key->dip.u6_addr32[3];
+	       b0 == key->dip.u6_addr32[0] &&
+	       b1 == key->dip.u6_addr32[1] &&
+	       b2 == key->dip.u6_addr32[2] &&
+	       b3 == key->dip.u6_addr32[3];
 }
 
 // Distinguishes a reply delivered to a local socket from one forwarded to a LAN
