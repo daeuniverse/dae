@@ -189,18 +189,20 @@ func (c *ControlPlane) RepublishOutboundConnectivity(group *outbound.DialerGroup
 	if c == nil || c.core == nil || group == nil {
 		return
 	}
-	for outboundID, candidate := range c.outbounds {
-		if candidate != group {
-			continue
-		}
-		c.core.outboundConnectivityMu.Lock()
-		defer c.core.outboundConnectivityMu.Unlock()
-		if c.core.retired.Load() || c.core.outboundConnectivityPaused {
+	group.WithAlivePublishLock(func() {
+		for outboundID, candidate := range c.outbounds {
+			if candidate != group {
+				continue
+			}
+			c.core.outboundConnectivityMu.Lock()
+			defer c.core.outboundConnectivityMu.Unlock()
+			if c.core.retired.Load() || c.core.outboundConnectivityPaused {
+				return
+			}
+			c.publishOutboundConnectivity(outboundID, group, c.core.writeOutboundConnectivityLocked)
 			return
 		}
-		c.publishOutboundConnectivity(outboundID, group, c.core.writeOutboundConnectivityLocked)
-		return
-	}
+	})
 }
 
 func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bool) func(alive bool, networkType *dialer.NetworkType, isInit bool) {

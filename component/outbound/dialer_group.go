@@ -246,48 +246,61 @@ func (g *DialerGroup) Selection(network SelectionNetwork) (index int, ok bool) {
 // transport, or nil when the policy has no stable choice (random), ignores
 // health (fixed/select keep their own accessor), or nothing is alive yet.
 //
-// The alive sets are keyed per health domain, so this walks the domains that
-// transport can dial with, in preference order. That order is what makes the
-// dashboard show one member instead of the six network keys the engine ranks.
+// It follows SelectWithExclusionResult's preference order, not a global
+// best-latency vote: data UDP falls back to DNS UDP and then shared TCP health
+// before the one-member availability floor. The API has one slot per transport,
+// so reporting a different member than the engine will dial is worse than
+// reporting no member.
 func (g *DialerGroup) AutoSelected(network SelectionNetwork) *dialer.Dialer {
 	if g == nil {
 		return nil
 	}
-	var keys []dialer.HealthKey
+	firstAlive := func(keys []dialer.HealthKey) *dialer.Dialer {
+		for _, key := range keys {
+			selected, _, ok := g.MustGetAliveDialerSet(key.NetworkType()).Selected()
+			if ok && selected != nil {
+				return selected
+			}
+		}
+		return nil
+	}
 	switch network {
 	case SelectionNetworkTCP:
-		keys = []dialer.HealthKey{
+		if selected := firstAlive([]dialer.HealthKey{
 			{Domain: dialer.HealthDomainTCP, IpVersion: consts.IpVersionStr_4},
 			{Domain: dialer.HealthDomainTCP, IpVersion: consts.IpVersionStr_6},
+		}); selected != nil {
+			return selected
 		}
 	case SelectionNetworkUDP:
-		keys = []dialer.HealthKey{
+		if selected := firstAlive([]dialer.HealthKey{
 			{Domain: dialer.HealthDomainDataUDP, IpVersion: consts.IpVersionStr_4},
 			{Domain: dialer.HealthDomainDataUDP, IpVersion: consts.IpVersionStr_6},
+		}); selected != nil {
+			return selected
+		}
+		if selected := firstAlive([]dialer.HealthKey{
 			{Domain: dialer.HealthDomainDnsUDP, IpVersion: consts.IpVersionStr_4},
 			{Domain: dialer.HealthDomainDnsUDP, IpVersion: consts.IpVersionStr_6},
+		}); selected != nil {
+			return selected
+		}
+		if selected := firstAlive([]dialer.HealthKey{
+			{Domain: dialer.HealthDomainTCP, IpVersion: consts.IpVersionStr_4},
+			{Domain: dialer.HealthDomainTCP, IpVersion: consts.IpVersionStr_6},
+		}); selected != nil {
+			return selected
 		}
 	default:
 		return nil
 	}
-	// The engine ranks each health domain (and therefore each IP family)
-	// independently, but the API has one slot per transport. Report the winner
-	// with the best sorting latency, so the single slot names the member the
-	// group currently prefers instead of whichever family happens to be first.
-	var (
-		best        *dialer.Dialer
-		bestSorting time.Duration
-	)
-	for _, key := range keys {
-		selected, sorting, ok := g.MustGetAliveDialerSet(key.NetworkType()).Selected()
-		if !ok || selected == nil {
-			continue
-		}
-		if best == nil || sorting < bestSorting {
-			best, bestSorting = selected, sorting
-		}
+	if len(g.Dialers) == 1 {
+		// SelectWithExclusionResult treats a one-member group as an
+		// availability floor even when health says it is down; the API
+		// projection must name the dialer the engine will actually use.
+		return g.Dialers[0]
 	}
-	return best
+	return nil
 }
 
 // SelectionRevision counts runtime selection changes within this generation.
@@ -822,6 +835,21 @@ func (g *DialerGroup) buildSelectionState(policy DialerSelectionPolicy, setAlive
 // and cannot be left at 0 for a group that is alive again - data-UDP domains
 // have no periodic probe that would repair it. Init publications are exempt:
 // a fresh group publishes optimistic aliveness before its health converges.
+// WithAlivePublishLock serializes a connection-admission publication with the
+// group's health notifications. A runtime pin republish and a health callback
+// both write the kernel outbound-connectivity slot; without this lock an old
+// callback that computed "down" before the pin could write it after the pin
+// republished "up".
+func (g *DialerGroup) WithAlivePublishLock(fn func()) {
+	if g == nil {
+		fn()
+		return
+	}
+	g.alivePublishMu.Lock()
+	defer g.alivePublishMu.Unlock()
+	fn()
+}
+
 func (g *DialerGroup) publishAliveChange(alive bool, networkType *dialer.NetworkType, isInit bool) {
 	if g == nil || g.aliveChangeCallback == nil {
 		return

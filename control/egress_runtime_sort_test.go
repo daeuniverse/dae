@@ -30,6 +30,16 @@ func TestDialerSortKeyDistinguishesDuplicateLinks(t *testing.T) {
 	second := newDialer("sub_b")
 	require.NotEqual(t, dialerSortKey(first), dialerSortKey(second))
 
+	// Two providers can carry the same link and subscription tag. ProviderTag
+	// must break the tie or the merged node's representative provider drifts
+	// with map iteration order.
+	sameTag := func(provider string) *dialer.Dialer {
+		return dialer.NewDialerContext(context.Background(), noopAdmissionDialer{}, option,
+			dialer.InstanceOption{DisableCheck: true},
+			&dialer.Property{Property: D.Property{Name: "a", Link: "ss://same"}, SubscriptionTag: "sub", ProviderTag: provider})
+	}
+	require.NotEqual(t, dialerSortKey(sameTag("p_a")), dialerSortKey(sameTag("p_b")))
+
 	// Identical properties still produce the same key, which is harmless:
 	// they are the same node with the same metadata.
 	require.Equal(t, dialerSortKey(first), dialerSortKey(newDialer("sub_a")))

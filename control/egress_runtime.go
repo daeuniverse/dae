@@ -130,7 +130,7 @@ func dialerSortKey(d *dialer.Dialer) string {
 	// Every discriminating field participates, so the order is total for
 	// distinguishable nodes and a merged node always keeps the same
 	// representative metadata.
-	return property.Name + "\x00" + property.Link + "\x00" + property.SubscriptionTag + "\x00" + property.Address + "\x00" + property.Protocol
+	return property.Name + "\x00" + property.Link + "\x00" + property.SubscriptionTag + "\x00" + property.ProviderTag + "\x00" + property.Address + "\x00" + property.Protocol
 }
 
 type egressRuntimeLease struct {
