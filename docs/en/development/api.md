@@ -276,8 +276,11 @@ between matching and deletion.
 
 `GET /api/v1/dns/log` returns the bounded ring of client resolutions, newest
 first, with `name`, `type`, `src`, `limit` (default 200, at most
-`dns_log.max_page_size`) and a cursor. Diagnostic `/dns/query` calls are not
-recorded. A cursor that names a record already evicted from the ring answers
+`dns_log.max_page_size`) and a cursor. `name` is a substring match against the
+record's question name, not an exact name or suffix. Diagnostic `/dns/query`
+calls are not recorded. A cache hit is recorded with `cached: true` and no
+`upstream`, because no upstream was contacted; only an upstream exchange names
+one. A cursor that names a record already evicted from the ring answers
 `410 snapshot_expired`, so a walk restarts without one.
 
 `GET /api/v1/dns/rules` is the read-only DNS rule dictionary (request and
@@ -310,7 +313,10 @@ present; every other connection attribute is unaffected.
 
 `GET /api/v1/flows` reads the closed-flow history instead: a ring of 2048
 entries retained for 900 seconds, newest first, filtered by `network`, `state`
-and `connection_id`, with `limit` (default 100) and an opaque cursor. Like the
+and `connection_id`, with `limit` (default 100) and an opaque cursor.
+`connection_id` is an exact match over both the active snapshot and the closed
+history, so filtering by the ID of a connection that is still open returns that
+flow (with `state: "active"`) instead of an empty list. Like the
 DNS log and cache walks, the cursor names the last record the client received
 rather than an offset, so records arriving at the head of the list while a walk
 is in progress cannot make a later page repeat or skip entries. An anchor that
@@ -351,9 +357,17 @@ through `GET /api/v1/operations/{operation_id}`. `kind` is `tcp_connect`,
 `group` target probes the group's members, optionally narrowed by `members`
 (`direct` and `leaves` select the group itself).
 
-Each result reports `healthy` or `unavailable` with `latency_ms`, the transport
-and IP version that answered, and the destination ID in `member_id`. Each kind
-measures what its name says:
+`warmth` is `cold`; the engine opens a fresh connection per probe and cannot
+honour a reuse constraint, so `warm` answers `422 unsupported_value` instead of
+returning mislabelled results. Each result reports `healthy` or `unavailable`
+with `latency_ms`, the transport and IP version that answered, and the
+destination ID in `member_id`; `warmth` is `unknown` because a new logical
+stream does not prove whether the physical tunnel is cold or warm. Work that
+never started (job deadline) is `state: "unknown"` with an error message and is
+not evidence of an unhealthy node. `ip_version` applies to the check
+destination too: a configured host is resolved through the requested family, and
+a literal address of the other family is rejected. Each kind measures what its
+name says:
 
 - `tcp_connect` opens a TCP connection to the node's own server address, using
   the direct dialer rather than the node, so it reports whether that server
@@ -368,7 +382,9 @@ run at once, 16 wait in the queue (`503 temporarily_unavailable` with
 `Retry-After` when both are full), callers are limited to 120 requests per
 minute (`429 rate_limited`), a job expands at most 256 members into 512 results,
 and a job stops after 30 seconds, so one oversized group cannot hold the queue
-forever. These numbers are what `capabilities.probes.limits` advertises.
+forever. A request whose expanded member × transport × family count exceeds 512
+answers `413 request_too_large` before any probe runs instead of silently
+dropping the remaining dimensions. These numbers are what `capabilities.probes.limits` advertises.
 
 ### Runtime summary and per-outbound counters
 

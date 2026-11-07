@@ -82,9 +82,24 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
     memory-only and resets on reload.
   - `capabilities` now advertises `groups`, `nodes`, `traffic_history`,
     `operations`, `reload`, `suspend` and `resume`.
-  - Known contract resources that remain unimplemented (`/dns/*`,
-    `/runtime/settings`, `/routing/trace`, `/auth/*`) now consistently answer
-    `404 capability_not_supported` instead of a generic `resource_not_found`.
+  - The remaining implemented resources are advertised too: DNS cache, log,
+    rules and active query; connections and flows; the `events` and `logs`
+    server-sent event streams; asynchronous probes; routing trace; direct-stats
+    attachment status; and configuration-source writes (`GET /config`,
+    `GET/PUT /config/sources/{id}`, `POST /config/validate`, `POST /nodes`,
+    `DELETE /nodes/{id}`, `PATCH /nodes/{id}` and
+    `POST /providers/{id}/refresh`). Only `/runtime/settings` and `/auth/*`
+    stay at `404 capability_not_supported`.
+  - Probes honour the contract's warmth rule: `cold` is accepted, `warm`
+    answers `422 unsupported_value` because the engine cannot promise reuse,
+    results report `warmth: "unknown"`, and work cancelled by the job deadline
+    reports `state: "unknown"` rather than `unavailable`. Oversized fan-out is
+    rejected with `413 request_too_large` before dispatch, and configured
+    HTTP/DNS check targets follow the requested IP family.
+  - `GET /flows?connection_id=` matches active and closed flows, so a connection
+    that is still open is no longer missing from the list. DNS log cache hits
+    omit `upstream` (no upstream was contacted) and the `name` filter matches
+    substrings.
 
 #### Bug Fixes
 
@@ -130,6 +145,20 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 - Distinguish an unlimited cgroup (`memory.max == "max"`) from a system that
   does not report cgroup memory at all, so the dashboard can show "no limit"
   instead of "unknown".
+- Keep Idempotency-Key replay working for node PATCH retries after a link
+  change moves the node id, and stop rejected-operation floods from evicting the
+  replay key of a completed write.
+- Do not repopulate a DNS cache entry after `DELETE /dns/cache` or
+  `POST /dns/cache/flush` when an upstream resolution was already in flight:
+  the invalidation epoch now advances on every delete/flush call and every
+  resolution store checks it, including the async store after a response is
+  sent.
+- Bound DNS upstream attempts by the API query's caller deadline and interrupt
+  a blocked UDP read when the caller cancels, instead of returning a late
+  `NOERROR` after the advertised timeout.
+- Remove direct-stats master hooks whose program name carries a LAN/WAN role,
+  so a bridge that gains its first member stops counting the same bytes twice,
+  and drop the phantom hook entry left by a failed optional classic attach.
 - Report `runtime.process.cpu_percent` instead of always `null`. The value is
   the daemon's CPU time over the latest one-second interval as a percentage of
   one CPU, sampled from `/proc/<pid>/stat`, so a dashboard can show CPU usage;

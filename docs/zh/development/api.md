@@ -210,9 +210,11 @@ DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可
 清空缓存；两者都返回 `{matched, deleted}`，因为命中与删除之间条目可能已被替换或已消失。
 
 `GET /api/v1/dns/log` 返回有界环形的客户端解析记录，最新在前，支持 `name`、`type`、
-`src`、`limit`（默认 200，上限为 `dns_log.max_page_size`）与 cursor。诊断用的
-`/dns/query` 不写入该环。cursor 指向已被挤出环的记录时返回 `410 snapshot_expired`，
-客户端应丢弃 cursor 重新开始遍历。
+`src`、`limit`（默认 200，上限为 `dns_log.max_page_size`）与 cursor。`name` 是对问题
+域名的子串匹配，不是精确名或后缀。缓存命中的记录 `cached: true` 且不带 `upstream`，
+因为并没有联系上游；只有真正走上游的记录才带 `upstream`。诊断用的 `/dns/query` 不写入
+该环。cursor 指向已被挤出环的记录时返回 `410 snapshot_expired`，客户端应丢弃 cursor
+重新开始遍历。
 
 `GET /api/v1/dns/rules` 是当前 generation 的只读 DNS 规则字典（request 与 response 各自
 带 fallback）。`POST /api/v1/dns/query` 走与数据面相同的路由与缓存解析一个域名：
@@ -238,6 +240,8 @@ DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可
 
 `GET /api/v1/flows` 读取已关闭 flow 的历史：2048 条、保留 900 秒的环形记录，最新在前，
 可按 `network`、`state`、`connection_id` 过滤，带 `limit`（默认 100）与不透明 cursor。
+`connection_id` 对活跃快照与已关闭历史做精确匹配：用仍在运行的连接 ID 过滤会返回该 flow
+（`state: "active"`），而不是空列表。
 与 DNS 日志/缓存一样，cursor 记录的是客户端已收到的最后一条记录而不是偏移量，因此遍历期间
 在表头新增的记录不会让后续页重复或跳过；锚点记录已被挤出环时返回 `410 snapshot_expired`。
 `GET /api/v1/flows/{flow_id}` 返回单条，已过期返回 `410 flow_expired`。flow ID 为 `f_`
@@ -266,8 +270,13 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 `http` 只支持 TCP，`dns` 两者皆可）。`node` 目标探测单个节点；`group` 目标探测组成员，
 可用 `members` 收窄（`direct` 与 `leaves` 表示组本身）。
 
-每条结果给出 `healthy` 或 `unavailable`、`latency_ms`、实际应答的 transport 与 IP 版本，
-以及 `member_id` 中的目标 ID。三种 kind 各自测它名字所说的东西：
+`warmth` 只接受 `cold`；引擎每次探测都新建连接，无法承诺复用，因此 `warm` 返回
+`422 unsupported_value`，而不是给出与实际不符的结果。每条结果给出 `healthy` 或
+`unavailable`、`latency_ms`、实际应答的 transport 与 IP 版本，以及 `member_id` 中的
+目标 ID；`warmth` 恒为 `unknown`，因为新建逻辑连接并不能证明物理隧道是冷是热。因任务
+超时而未开始的工作为 `state: "unknown"` 并带错误信息，不能当作节点不健康。`ip_version`
+同样作用于检查目标：配置的主机会按请求的地址族解析，另一地址族的字面量会被拒绝。
+三种 kind 各自测它名字所说的东西：
 
 - `tcp_connect` 用直连 dialer 连节点自己的服务器地址（不经过该节点），报告该服务器是否
   接受连接；没有服务器地址的出站（builtin `direct` 组）回退为经由节点发起一次拨号。
@@ -278,7 +287,9 @@ cursor 返回 `409 event_cursor_expired`，客户端应丢弃它建立新的基�
 实际走的路径，而不是宿主机直连。工作量有上限：同时运行 4 个，最多排队 16 个（都满时返回
 `503 temporarily_unavailable` 并带 `Retry-After`），调用方限制为每分钟 120 次
 （`429 rate_limited`），单个任务最多展开 256 个成员、返回 512 条结果，并在 30 秒后停止，
-因此一个超大组不会永久占住队列。这些数字就是 `capabilities.probes.limits` 所声明的值。
+因此一个超大组不会永久占住队列。展开后的成员 × transport × 地址族超过 512 条时，请求在
+任何探测开始前返回 `413 request_too_large`，而不是静默丢弃其余维度。这些数字就是
+`capabilities.probes.limits` 所声明的值。
 
 ### 运行时汇总与出站计数器
 
