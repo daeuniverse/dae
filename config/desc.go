@@ -42,6 +42,7 @@ var GlobalDesc = Desc{
 	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
 	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",
 	"udp_check_dns":         "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
+	"check_dns_tcp":         "Additionally check whether udp_check_dns' host answers DNS over TCP. The result is advisory only: it is logged and shown per node, and never affects node selection.\nTurn it off to save the two extra probes per check_interval if dns.upstream uses https (DoH) or udp, where the legs cannot observe the real upstream anyway.",
 	"check_interval":        "Interval of connectivity check for TCP and UDP",
 	"check_tolerance":       "Group will switch node only when new_latency <= old_latency - tolerance.",
 	"lan_interface":         "The LAN interface to bind. Use it if you want to proxy LAN.",
