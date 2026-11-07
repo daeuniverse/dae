@@ -55,6 +55,11 @@ type tcHookSpec struct {
 	Name      string
 	Program   *ebpf.Program
 	Run       func(func() error) error
+	// Optional marks a best-effort hook (the direct-traffic observer). An
+	// attach/update/detach failure is reported to OnError and skipped; it must
+	// not fail the transaction that carries the mandatory forwarding hooks.
+	Optional bool
+	OnError  func(error)
 }
 
 func (s tcHookSpec) key() tcHookKey {
@@ -588,6 +593,17 @@ func (s *tcHookSet) restoreModesLocked(modes map[tcHookGroupKey]tcHookMode) {
 	}
 }
 
+// reportOptionalError surfaces a best-effort hook failure without aborting the
+// transaction. The observer caller stores it in DirectStatsStatus.last_error.
+func (s *tcHookSet) reportOptionalError(spec tcHookSpec, err error) {
+	if spec.OnError != nil {
+		spec.OnError(err)
+	}
+	if s.log != nil {
+		s.log.WithError(err).Warnf("optional TC hook %s on %s failed; continuing with the mandatory hooks", spec.Name, spec.Ifname)
+	}
+}
+
 func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 	for _, key := range sortedTCHookKeys(desired, false) {
 		spec := desired[key]
@@ -599,6 +615,10 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 		entry := group.entries[key.priority]
 		if entry == nil {
 			if err := s.attachLocked(group, spec); err != nil {
+				if spec.Optional {
+					s.reportOptionalError(spec, err)
+					continue
+				}
 				return fmt.Errorf("attach TC hook %s on %s: %w", spec.Name, spec.Ifname, err)
 			}
 			continue
@@ -608,6 +628,10 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 			continue
 		}
 		if err := s.updateLocked(group, entry, spec); err != nil {
+			if spec.Optional {
+				s.reportOptionalError(spec, err)
+				continue
+			}
 			return fmt.Errorf("update TC hook %s on %s: %w", spec.Name, spec.Ifname, err)
 		}
 	}
@@ -625,6 +649,10 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 		// transaction rollback reattaches/replaces the snapshot unconditionally.
 		delete(group.entries, key.priority)
 		if err != nil {
+			if entry.spec.Optional {
+				s.reportOptionalError(entry.spec, err)
+				continue
+			}
 			return fmt.Errorf("detach TC hook %s on %s: %w", entry.spec.Name, entry.spec.Ifname, err)
 		}
 	}

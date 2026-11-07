@@ -319,10 +319,7 @@ func (c *controlPlaneCore) stageDirectStatsHooks(link netlink.Link, layer2 bool,
 	// leaves; the master keeps only the WAN local-upload egress hook. A LAN
 	// bridge with no enumerated port keeps the master hooks as a fallback.
 	masterIngress := len(observed) == 0
-	masterEgress := true
-	if !wan && !dual && len(observed) > 0 {
-		masterEgress = false
-	}
+	masterEgress := wan || dual || len(observed) == 0
 	if err := c.stageDirectStatsHookForLink(link, layer2, wan, dual, masterIngress, masterEgress); err != nil {
 		return err
 	}
@@ -374,6 +371,35 @@ func (c *controlPlaneCore) attachDirectStatsBridgePort(link netlink.Link) {
 	_ = c.addQdisc(link)
 	layer2 := link.Attrs().EncapType == "ether"
 	_ = c.stageDirectStatsHookForLink(link, layer2, role.wan, role.dual, true, !role.wan && !role.dual)
+	// The empty-bridge bind installed master ingress/egress as a fallback.
+	// Once the first member is observed, the port is the only place a routed
+	// packet or a DNAT reply crosses; keeping the master hooks would count the
+	// same bytes twice. WAN and dual-role bridges keep the master egress hook
+	// because locally generated packets never cross a port ingress.
+	masterIndex := link.Attrs().MasterIndex
+	if err := c.removeDirectStatsHooksOnInterface(masterIndex, "ingress"); err != nil {
+		c.recordDirectStatsError(fmt.Errorf("remove direct stats master fallback on bridge %d: %w", masterIndex, err))
+		c.log.WithError(err).Warnf("direct stats observer: cannot remove master ingress fallback on bridge %d", masterIndex)
+	}
+	if !role.wan && !role.dual {
+		if err := c.removeDirectStatsHooksOnInterface(masterIndex, "egress"); err != nil {
+			c.recordDirectStatsError(fmt.Errorf("remove direct stats master egress fallback on bridge %d: %w", masterIndex, err))
+			c.log.WithError(err).Warnf("direct stats observer: cannot remove master egress fallback on bridge %d", masterIndex)
+		}
+	}
+}
+
+// removeDirectStatsHooksOnInterface removes only the observer hooks whose name
+// starts with prefix on one device, leaving a WAN bridge's master egress hook
+// and every tproxy hook untouched.
+func (c *controlPlaneCore) removeDirectStatsHooksOnInterface(ifindex int, prefix string) error {
+	c.tcHookMu.Lock()
+	hooks := c.tcHooks
+	c.tcHookMu.Unlock()
+	if hooks == nil {
+		return nil
+	}
+	return hooks.removeHooksWithPrefix(tcHookScopeHost, ifindex, consts.AppName+"_direct_stats_"+prefix)
 }
 
 // rememberDirectStatsPort records that a bridge member is observed under the
@@ -394,11 +420,11 @@ func (c *controlPlaneCore) rememberDirectStatsPort(portIndex, masterIndex int, r
 // interface dae no longer owns and a recycled ifindex can be given the wrong
 // role.
 func (c *controlPlaneCore) handleDirectStatsLinkUpdate(upd netlink.LinkUpdate) {
-	if upd.Link == nil || upd.Link.Attrs() == nil {
+	if upd.Link == nil || upd.Attrs() == nil {
 		return
 	}
 	if upd.Header.Type == unix.RTM_DELLINK {
-		if upd.Link.Type() == "bridge" {
+		if upd.Type() == "bridge" {
 			c.forgetDirectStatsBridge(upd.Link.Attrs().Index)
 		}
 		c.forgetDirectStatsPort(upd.Link.Attrs().Index)
@@ -545,9 +571,16 @@ func (c *controlPlaneCore) stageDirectStatsHookForLink(link netlink.Link, layer2
 		if ingress == nil {
 			c.recordDirectStatsError(fmt.Errorf("direct stats observer has no %q program", ingressName))
 			c.log.Warnf("direct stats observer has no %q program; skipping ingress hook on %v", ingressName, link.Attrs().Name)
-		} else if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, directStatsPriority, 0x2023, ingress, consts.AppName+"_"+ingressName, nil)); err != nil {
-			c.recordDirectStatsError(fmt.Errorf("install direct stats ingress hook on %v: %w", link.Attrs().Name, err))
-			c.log.WithError(err).Warnf("direct stats observer: cannot install ingress hook on %v", link.Attrs().Name)
+		} else {
+			spec := makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, directStatsPriority, 0x2023, ingress, consts.AppName+"_"+ingressName, nil)
+			spec.Optional = true
+			spec.OnError = func(err error) {
+				c.recordDirectStatsError(fmt.Errorf("install direct stats ingress hook on %v: %w", link.Attrs().Name, err))
+			}
+			if err := c.stageTCHook(spec); err != nil {
+				c.recordDirectStatsError(fmt.Errorf("install direct stats ingress hook on %v: %w", link.Attrs().Name, err))
+				c.log.WithError(err).Warnf("direct stats observer: cannot install ingress hook on %v", link.Attrs().Name)
+			}
 		}
 	}
 	if egressHook {
@@ -555,9 +588,16 @@ func (c *controlPlaneCore) stageDirectStatsHookForLink(link netlink.Link, layer2
 		if egress == nil {
 			c.recordDirectStatsError(fmt.Errorf("direct stats observer has no %q program", egressName))
 			c.log.Warnf("direct stats observer has no %q program; skipping egress hook on %v", egressName, link.Attrs().Name)
-		} else if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookEgress, directStatsPriority, 0x2023, egress, consts.AppName+"_"+egressName, nil)); err != nil {
-			c.recordDirectStatsError(fmt.Errorf("install direct stats egress hook on %v: %w", link.Attrs().Name, err))
-			c.log.WithError(err).Warnf("direct stats observer: cannot install egress hook on %v", link.Attrs().Name)
+		} else {
+			spec := makeTCHookSpec(tcHookScopeHost, link, tcHookEgress, directStatsPriority, 0x2023, egress, consts.AppName+"_"+egressName, nil)
+			spec.Optional = true
+			spec.OnError = func(err error) {
+				c.recordDirectStatsError(fmt.Errorf("install direct stats egress hook on %v: %w", link.Attrs().Name, err))
+			}
+			if err := c.stageTCHook(spec); err != nil {
+				c.recordDirectStatsError(fmt.Errorf("install direct stats egress hook on %v: %w", link.Attrs().Name, err))
+				c.log.WithError(err).Warnf("direct stats observer: cannot install egress hook on %v", link.Attrs().Name)
+			}
 		}
 	}
 	return nil

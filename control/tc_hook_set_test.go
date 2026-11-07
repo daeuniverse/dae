@@ -57,6 +57,7 @@ type fakeTCHookBackend struct {
 	classicFiltersPresent   bool
 	classicFilterInspectErr error
 	attachErr               error
+	failAttachProgram       *ebpf.Program
 	updateErr               error
 	failUpdateProgram       *ebpf.Program
 	applyUpdateBeforeError  bool
@@ -78,6 +79,9 @@ func (b *fakeTCHookBackend) moduleBackend() tcHookBackend {
 		attachTCX: func(spec tcHookSpec, position tcxHookPosition) (tcxHookAttachment, error) {
 			if b.attachErr != nil {
 				return nil, b.attachErr
+			}
+			if b.failAttachProgram != nil && spec.Program == b.failAttachProgram {
+				return nil, stderrors.New("injected optional attach failure")
 			}
 			hook := &fakeTCXHook{backend: b, program: spec.Program}
 			b.attachments = append(b.attachments, fakeTCXAttach{spec: spec, position: position, hook: hook})
@@ -595,5 +599,36 @@ func TestTCHookSetRemoveHooksWithPrefixLeavesOtherHooks(t *testing.T) {
 	}
 	if backend.closed == 0 {
 		t.Fatal("removing a direct-stats hook did not close its attachment")
+	}
+}
+
+func TestOptionalTCHookFailureDoesNotAbortMandatoryHooks(t *testing.T) {
+	backend := &fakeTCHookBackend{}
+	set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+	mandatory := new(ebpf.Program)
+	optional := new(ebpf.Program)
+	backend.failAttachProgram = optional
+
+	if err := set.beginReplace(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(testTCHookSpec(1, mandatory)); err != nil {
+		t.Fatal(err)
+	}
+	optionalSpec := testTCHookSpec(2, optional)
+	optionalSpec.Optional = true
+	reported := false
+	optionalSpec.OnError = func(error) { reported = true }
+	if err := set.stage(optionalSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.commit(); err != nil {
+		t.Fatalf("optional attach failure aborted the transaction: %v", err)
+	}
+	if !reported {
+		t.Fatal("optional attach failure was not reported")
+	}
+	if len(backend.attachments) != 1 || backend.attachments[0].spec.Program != mandatory {
+		t.Fatalf("attachments = %#v, want only the mandatory hook", backend.attachments)
 	}
 }
