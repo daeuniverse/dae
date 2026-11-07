@@ -389,17 +389,37 @@ func (c *controlPlaneCore) attachDirectStatsBridgePort(link netlink.Link) {
 	}
 }
 
-// removeDirectStatsHooksOnInterface removes only the observer hooks whose name
-// starts with prefix on one device, leaving a WAN bridge's master egress hook
-// and every tproxy hook untouched.
-func (c *controlPlaneCore) removeDirectStatsHooksOnInterface(ifindex int, prefix string) error {
+// removeDirectStatsHooksOnInterface removes the observer hooks for one
+// direction on one device, leaving a WAN bridge's master egress hook and every
+// tproxy hook untouched.
+func (c *controlPlaneCore) removeDirectStatsHooksOnInterface(ifindex int, direction string) error {
 	c.tcHookMu.Lock()
 	hooks := c.tcHooks
 	c.tcHookMu.Unlock()
 	if hooks == nil {
 		return nil
 	}
-	return hooks.removeHooksWithPrefix(tcHookScopeHost, ifindex, consts.AppName+"_direct_stats_"+prefix)
+	// The program name carries the interface role, so the fallback staged on an
+	// empty bridge is direct_stats_ingress_* for a dual-role bridge but
+	// direct_stats_lan_ingress_* or direct_stats_wan_ingress_* otherwise. A
+	// single "ingress" prefix matched only the dual case and left a LAN/WAN
+	// master hook counting the same bytes as the member port.
+	for _, prefix := range directStatsProgramPrefixes(direction) {
+		if err := hooks.removeHooksWithPrefix(tcHookScopeHost, ifindex, prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func directStatsProgramPrefixes(direction string) []string {
+	base := consts.AppName + "_direct_stats_"
+	switch direction {
+	case "ingress":
+		return []string{base + "ingress_", base + "lan_ingress_", base + "wan_ingress_"}
+	default:
+		return []string{base + "egress_", base + "lan_egress_"}
+	}
 }
 
 // rememberDirectStatsPort records that a bridge member is observed under the

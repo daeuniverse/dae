@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
@@ -312,5 +313,58 @@ func TestStageDirectStatsFailureIsBestEffort(t *testing.T) {
 	}
 	if core.directStatsLastError() == "" {
 		t.Fatal("load failure was not recorded in the status")
+	}
+}
+
+// The observer program name carries the interface role, so the fallback staged
+// on an empty bridge is direct_stats_lan_ingress_* or direct_stats_wan_ingress_*,
+// not only direct_stats_ingress_*. Removing just the bare prefix left the master
+// hook counting the same bytes as the first member port.
+func TestDirectStatsMasterRemovalCoversRoleSpecificNames(t *testing.T) {
+	for _, tc := range []struct {
+		direction string
+		names     []string
+	}{
+		{"ingress", []string{
+			consts.AppName + "_direct_stats_ingress_l3",
+			consts.AppName + "_direct_stats_lan_ingress_l3",
+			consts.AppName + "_direct_stats_wan_ingress_l3",
+		}},
+		// A WAN bridge keeps its master egress hook, and the WAN program name
+		// has no role segment; only the bare and LAN-egress names are removed.
+		{"egress", []string{
+			consts.AppName + "_direct_stats_egress_l3",
+			consts.AppName + "_direct_stats_lan_egress_l3",
+		}},
+	} {
+		for _, name := range tc.names {
+			backend := &fakeTCHookBackend{}
+			set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+			program := new(ebpf.Program)
+			if err := set.beginReplace(); err != nil {
+				t.Fatal(err)
+			}
+			if err := set.stage(namedTCHookSpec(1, name, program)); err != nil {
+				t.Fatal(err)
+			}
+			if err := set.stage(namedTCHookSpec(2, consts.AppName+"_lan_ingress_l3", new(ebpf.Program))); err != nil {
+				t.Fatal(err)
+			}
+			if err := set.commit(); err != nil {
+				t.Fatal(err)
+			}
+			set.finalize()
+
+			core := &controlPlaneCore{tcHooks: set}
+			if err := core.removeDirectStatsHooksOnInterface(7, tc.direction); err != nil {
+				t.Fatal(err)
+			}
+			if got := set.countHooksWithPrefix(consts.AppName + "_direct_stats_"); got != 0 {
+				t.Errorf("direction %s left %d direct-stats hooks for %q", tc.direction, got, name)
+			}
+			if got := set.countHooksWithPrefix(consts.AppName + "_lan_ingress_"); got != 1 {
+				t.Errorf("direction %s removed the tproxy hook", tc.direction)
+			}
+		}
 	}
 }

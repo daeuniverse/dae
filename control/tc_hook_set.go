@@ -616,6 +616,17 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 		if entry == nil {
 			if err := s.attachLocked(group, spec); err != nil {
 				if spec.Optional {
+					// A classic replace records the requested state before it
+					// reports an ACK/read failure. Leaving that entry behind
+					// would count a hook that never reached the datapath, so
+					// remove the model entry and undo the partial attach.
+					if failed, ok := group.entries[key.priority]; ok {
+						if detachErr := s.detachLocked(group, failed); detachErr != nil {
+							err = stderrors.Join(err, detachErr)
+						}
+						delete(group.entries, key.priority)
+					}
+					s.pruneEmptyGroupsLocked()
 					s.reportOptionalError(spec, err)
 					continue
 				}

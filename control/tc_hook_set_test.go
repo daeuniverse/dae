@@ -632,3 +632,38 @@ func TestOptionalTCHookFailureDoesNotAbortMandatoryHooks(t *testing.T) {
 		t.Fatalf("attachments = %#v, want only the mandatory hook", backend.attachments)
 	}
 }
+
+// A failed optional attach in classic mode records the requested state before
+// returning the ACK error. That model entry must be undone: counting it made
+// DirectStatsStatus report Attached:true for a hook the kernel never installed.
+func TestOptionalClassicAttachFailureLeavesNoHook(t *testing.T) {
+	backend := &fakeTCHookBackend{classicFiltersPresent: true}
+	set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+	optional := new(ebpf.Program)
+	backend.failReplaceProgram = optional
+	backend.replaceErr = stderrors.New("injected optional classic failure")
+
+	optionalSpec := namedTCHookSpec(2, "dae_direct_stats_ingress_l3", optional)
+	optionalSpec.Optional = true
+	reported := false
+	optionalSpec.OnError = func(error) { reported = true }
+	if err := set.beginReplace(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(optionalSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.commit(); err != nil {
+		t.Fatalf("optional classic failure aborted the transaction: %v", err)
+	}
+	set.finalize()
+	if !reported {
+		t.Fatal("optional classic failure was not reported")
+	}
+	if got := set.countHooksWithPrefix("dae_direct_stats_"); got != 0 {
+		t.Fatalf("counted %d hooks after a failed optional attach, want 0", got)
+	}
+	if len(backend.classicDeletes) != 1 {
+		t.Fatalf("phantom classic filter was not cleaned up: deletes=%d", len(backend.classicDeletes))
+	}
+}
