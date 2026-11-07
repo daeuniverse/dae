@@ -45,6 +45,7 @@ func (c *DnsController) storeDnsCache(cacheKey string, cache *DnsCache) (previou
 	if !loaded {
 		c.dnsCacheSize.Add(1)
 	}
+	c.dnsCacheRevision.Add(1)
 	c.dnsCacheIndexAdd(cacheKey)
 	return previous, loaded
 }
@@ -53,6 +54,7 @@ func (c *DnsController) loadAndDeleteDnsCache(cacheKey string) (value any, loade
 	value, loaded = c.dnsCache.LoadAndDelete(cacheKey)
 	if loaded {
 		c.decrementDnsCacheSize()
+		c.dnsCacheRevision.Add(1)
 		c.dnsCacheIndexRemove(cacheKey)
 	}
 	return value, loaded
@@ -63,6 +65,7 @@ func (c *DnsController) compareAndDeleteDnsCache(cacheKey string, cache *DnsCach
 		return false
 	}
 	c.decrementDnsCacheSize()
+	c.dnsCacheRevision.Add(1)
 	c.dnsCacheIndexRemove(cacheKey)
 	return true
 }
@@ -76,6 +79,7 @@ func (c *DnsController) deleteDnsCacheEntry(key any) {
 	if !ok {
 		if _, loaded := c.dnsCache.LoadAndDelete(key); loaded {
 			c.decrementDnsCacheSize()
+			c.dnsCacheRevision.Add(1)
 		}
 		return
 	}

@@ -47,6 +47,17 @@ func (c *DnsController) baseContext() context.Context {
 	return context.Background()
 }
 
+type dnsCallerDeadlineKey struct{}
+
+func dnsWithCallerDeadline(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dnsCallerDeadlineKey{}, true)
+}
+
+func dnsHonorsCallerDeadline(ctx context.Context) bool {
+	honor, _ := ctx.Value(dnsCallerDeadlineKey{}).(bool)
+	return honor
+}
+
 func (c *DnsController) newWorkContext(timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(c.baseContext(), timeout)
 }
@@ -65,11 +76,21 @@ func (c *DnsController) forwardWithFallback(
 	isAsIs bool,
 ) (respMsg *dnsmessage.Msg, usedDialArg *dialArgument, err error) {
 	// Per-attempt timeout: each attempt gets the full DefaultDialTimeout budget.
-	// Deriving from the controller's lifecycle base (instead of the singleflight
-	// work context) strips that shorter deadline so a UDP black-hole timeout
-	// cannot exhaust the budget before the TCP fallback starts, while reload /
-	// shutdown cancellation still reaches in-flight attempts.
+	// Internal DNS work deliberately derives from the controller lifecycle
+	// base so a UDP black-hole timeout cannot exhaust the budget before the TCP
+	// fallback starts. The API query path marks its context as caller-deadline
+	// bound; only that path combines the caller's 5s budget with lifecycle
+	// cancellation, so it cannot return success after the advertised timeout.
 	attemptCtx := c.baseContext()
+	if dnsHonorsCallerDeadline(ctx) {
+		combined, cancelAttempt := context.WithCancel(attemptCtx)
+		stopCaller := context.AfterFunc(ctx, cancelAttempt)
+		defer func() {
+			stopCaller()
+			cancelAttempt()
+		}()
+		attemptCtx = combined
+	}
 	primaryCtx, primaryCancel := context.WithTimeout(attemptCtx, consts.DefaultDialTimeout)
 	defer primaryCancel()
 
@@ -108,6 +129,13 @@ func (c *DnsController) forwardWithFallback(
 			(truncated && udpUpgradeable))
 	if !canServe || primaryDialArg.l4proto != consts.L4ProtoStr_UDP {
 		return nil, primaryDialArg, primaryErr
+	}
+	if dnsHonorsCallerDeadline(ctx) {
+		if err := ctx.Err(); err != nil {
+			// The caller's deadline/cancellation won while the primary attempt
+			// was running; do not start a second attempt it did not budget for.
+			return nil, primaryDialArg, err
+		}
 	}
 
 	// The retry is a different transport for the same destination, so the

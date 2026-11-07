@@ -98,6 +98,9 @@ type dnsControllerStore struct {
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache     sync.Map // map[string]*DnsCache
 	dnsCacheSize atomic.Int64
+	// dnsCacheRevision changes on every cache mutation. A page cursor binds to
+	// it so a walk cannot continue on a snapshot that gained or lost entries.
+	dnsCacheRevision atomic.Uint64
 	// dnsCacheByBase indexes the exact cache keys stored under each base cache
 	// key (map[string]*dnsCacheKeySet). It lets family removal and knowledge
 	// resync touch only the affected family instead of walking the whole cache
@@ -126,7 +129,13 @@ type dnsControllerStore struct {
 	runtimeState      atomic.Pointer[dnsControllerRuntimeState]
 	runtimeMu         sync.RWMutex // Serializes runtime publication with reload cache projection.
 	cacheProjectionMu sync.RWMutex // Serializes cache membership with BPF projection callbacks.
-	dnsForwarderCache sync.Map     // map[dnsForwarderKey]*cachedDnsForwarder
+	// cacheMutationMu serializes cache deletion (delete/flush) with background
+	// refresh publication. cacheEpoch invalidates a refresh that resolved
+	// while an entry was deleted: the refresh must not write the deleted id
+	// back after the client was told it was gone.
+	cacheMutationMu   sync.Mutex
+	cacheEpoch        uint64
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedDnsForwarder
 	// dnsForwardersClosed is set before closeAllDnsForwarders sweeps the
 	// cache. getOrCreateDnsForwarder re-checks it after a store so an
 	// in-flight query admitted before the close handle-gate expired cannot

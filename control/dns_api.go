@@ -210,11 +210,17 @@ func (c *DnsController) evictDnsCacheWhere(predicate func(key string, cache *Dns
 		}
 		return true
 	})
+	c.cacheMutationMu.Lock()
+	defer c.cacheMutationMu.Unlock()
+	if len(targets) > 0 {
+		c.cacheEpoch++
+	}
 	c.cacheProjectionMu.Lock()
 	defer c.cacheProjectionMu.Unlock()
 	for _, item := range targets {
 		if c.dnsCache.CompareAndDelete(item.key, item.cache) {
 			c.decrementDnsCacheSize()
+			c.dnsCacheRevision.Add(1)
 			c.dnsCacheIndexRemove(item.key)
 			c.forgetDnsKnowledge(item.key, item.cache)
 			c.invokeCacheDeleteCallback(item.key, item.cache)
@@ -275,6 +281,10 @@ type DnsQueryResultSnapshot struct {
 // QueryDns resolves one name for each requested record type through the same
 // routing and cache the listener uses. bypass skips the response cache.
 func (c *DnsController) QueryDns(ctx context.Context, domain string, qtypes []uint16, upstreamName string, bypass bool) ([]DnsQueryResultSnapshot, error) {
+	// This entry point is the API's active query: the advertised query budget
+	// must cover the upstream exchange, unlike internal health/work queries
+	// that intentionally use the controller lifecycle budget.
+	ctx = dnsWithCallerDeadline(ctx)
 	runtime := c.runtime()
 	if runtime == nil || runtime.routing == nil {
 		return nil, fmt.Errorf("dns routing is not configured")
@@ -389,6 +399,14 @@ func dnsErrorStatus(err error) string {
 		return "TIMEOUT"
 	}
 	return "ERROR"
+}
+
+// DnsCacheRevision returns the current cache mutation revision.
+func (c *DnsController) DnsCacheRevision() uint64 {
+	if c == nil || c.dnsControllerStore == nil {
+		return 0
+	}
+	return c.dnsCacheRevision.Load()
 }
 
 // DnsCacheSize reports the number of entries currently in the runtime cache.
