@@ -71,3 +71,23 @@ func TestRedactInlineURLsKeepsPlainText(t *testing.T) {
 		t.Fatalf("RedactInlineURLs(%q) = %q, want it unchanged", in, got)
 	}
 }
+
+func TestRedactInlineURLsHandlesQuotedAuthorities(t *testing.T) {
+	cases := []string{
+		`socks5://u:pa'ss@127.0.0.1:1080`,
+		`socks5://u:pa\"ss@127.0.0.1:1080`,
+		`parse "socks5://u:pa'ss@127.0.0.1:1080": invalid port`,
+		`socks5://u:pa\'ss@127.0.0.1:1080`,
+	}
+	for _, in := range cases {
+		out := RedactInlineURLs(in)
+		for _, secret := range []string{"pa'ss", `pa\"ss`, `pa\'ss`} {
+			if strings.Contains(out, secret) {
+				t.Fatalf("RedactInlineURLs(%q) leaked %q: %q", in, secret, out)
+			}
+		}
+		if !strings.Contains(out, redactedPlaceholder) {
+			t.Fatalf("RedactInlineURLs(%q) did not redact the userinfo: %q", in, out)
+		}
+	}
+}

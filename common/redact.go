@@ -15,8 +15,11 @@ import (
 const redactedPlaceholder = "[redacted]"
 
 // inlineUserinfoPattern matches the authority of any scheme://user:pass@host
-// form inside free text.
-var inlineUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s/?#@"']+@`)
+// form inside free text. Quotes and backslashes are allowed inside the
+// authority: parser errors often print a %q-quoted link, and a password may
+// itself contain a quote. Excluding those characters left the credential in
+// the log whenever the text was quoted or escaped.
+var inlineUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)(?:[^\s/?#@]|\\.)+@`)
 
 // inlineQueryPattern matches a query string inside free text.
 var inlineQueryPattern = regexp.MustCompile(`\?[^\s"'<>]+`)
