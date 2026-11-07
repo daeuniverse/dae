@@ -154,7 +154,12 @@ type fetchedSubscription struct {
 // dialers and reports the tags whose payload produced no usable node. Those
 // keep the previous cached copy: persisting them would destroy the last good
 // copy a later failed fetch falls back to.
-func persistFetchedSubscriptions(log *logrus.Logger, configDir string, fetched []fetchedSubscription, report map[string]outbound.NodeParseCount) ([]string, error) {
+//
+// The cache is an optimization, not a requirement: a read-only configuration
+// directory must not turn a successful subscription fetch into a startup
+// failure. A write error is logged and the generation keeps running without a
+// cached copy, exactly like a deployment that never had one.
+func persistFetchedSubscriptions(log *logrus.Logger, configDir string, fetched []fetchedSubscription, report map[string]outbound.NodeParseCount) []string {
 	var rejected []string
 	for _, item := range fetched {
 		if count, ok := report[item.tag]; ok && count.Links > 0 && count.Parsed == 0 {
@@ -166,10 +171,10 @@ func persistFetchedSubscriptions(log *logrus.Logger, configDir string, fetched [
 			continue
 		}
 		if err := subscription.PersistPayload(configDir, item.cacheKey, item.payload); err != nil {
-			return rejected, err
+			log.WithError(err).Warnf(`cannot cache subscription %q; keeping the resolved nodes for this generation`, item.tag)
 		}
 	}
-	return rejected, nil
+	return rejected
 }
 
 func configureTransparentHugePages(log *logrus.Logger, disable bool) {
@@ -398,8 +403,11 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 
 	// Delete all files in persist.d that are not in tagToNodeList
 	files, err := os.ReadDir(filepath.Join(filepath.Dir(cfgFile), "persist.d"))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.WithError(err).Warnln("cannot read the subscription cache directory; continuing without cache maintenance")
+		}
+		files = nil
 	}
 	// Delete cached copies of subscriptions that are no longer configured. The
 	// key is derived from the configured list, not from tagToNodeList: a
@@ -416,7 +424,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 			continue
 		}
 		if err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name())); err != nil {
-			return nil, err
+			log.WithError(err).Warnf("cannot remove stale subscription cache %q; continuing", file.Name())
 		}
 	}
 
@@ -500,11 +508,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// A subscription body only replaces its cached copy once its links became
 	// dialers. A link-shaped payload that produced no dialer would otherwise
 	// leave the groups empty while the refresh reported success.
-	rejected, err := persistFetchedSubscriptions(log, filepath.Dir(cfgFile), fetched, c.NodeParseReport())
-	if err != nil {
-		_ = c.Close()
-		return nil, err
-	}
+	rejected := persistFetchedSubscriptions(log, filepath.Dir(cfgFile), fetched, c.NodeParseReport())
 	if len(rejected) > 0 {
 		for _, tag := range rejected {
 			subscriptionHealthUpdates[tag] = fmt.Errorf("subscription resolved links but none of them could be parsed; the previous copy is kept")

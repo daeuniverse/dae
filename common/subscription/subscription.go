@@ -79,11 +79,34 @@ func isShareLinkLine(line string) bool {
 	if i <= 0 || i+3 == len(line) {
 		return false
 	}
+	// A subscription may name a node before the link: "edge:socks5://...".
+	// The downstream outbound parser strips that tag before reading the scheme,
+	// so the filter must validate the scheme after the last colon rather than
+	// rejecting the line outright. Without this, every named node disappeared
+	// from a plaintext subscription.
+	schemeStart := 0
 	for j := 0; j < i; j++ {
+		if line[j] == ':' {
+			schemeStart = j + 1
+		}
+	}
+	if schemeStart >= i {
+		return false
+	}
+	if schemeStart > 0 {
+		// The tag itself must be one token: a second colon means the line is
+		// malformed, not a tag followed by a scheme.
+		for j := 0; j < schemeStart-1; j++ {
+			if line[j] == ' ' || line[j] == '\t' || line[j] == ':' {
+				return false
+			}
+		}
+	}
+	for j := schemeStart; j < i; j++ {
 		c := line[j]
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
-		case j == 0:
+		case j == schemeStart:
 			return false
 		case c >= '0' && c <= '9', c == '+', c == '-', c == '.':
 		default:

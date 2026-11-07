@@ -41,10 +41,7 @@ func TestPersistFetchedSubscriptionsKeepsCopyWhenNoLinkParsed(t *testing.T) {
 		"subB": {Links: 1, Parsed: 1},
 	}
 
-	rejected, err := persistFetchedSubscriptions(logrus.New(), dir, fetched, report)
-	if err != nil {
-		t.Fatalf("persist: %v", err)
-	}
+	rejected := persistFetchedSubscriptions(logrus.New(), dir, fetched, report)
 	if len(rejected) != 1 || rejected[0] != "subA" {
 		t.Fatalf("rejected = %v, want [subA]", rejected)
 	}
@@ -76,9 +73,7 @@ func TestResolvedSubscriptionIsPersisted(t *testing.T) {
 		t.Fatalf("payload/cacheKey dropped: %q %q", result.payload, result.cacheKey)
 	}
 	fetched := []fetchedSubscription{{tag: result.cacheKey, cacheKey: result.cacheKey, payload: result.payload}}
-	if _, err := persistFetchedSubscriptions(logrus.New(), dir, fetched, nil); err != nil {
-		t.Fatalf("persist: %v", err)
-	}
+	persistFetchedSubscriptions(logrus.New(), dir, fetched, nil)
 	got, err := os.ReadFile(filepath.Join(dir, "persist.d", result.cacheKey+".sub"))
 	if err != nil || len(got) == 0 {
 		t.Fatalf("cache file missing: %v", err)
