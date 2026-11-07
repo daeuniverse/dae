@@ -137,6 +137,7 @@ changed. Review them before upgrading:
 
 #### Bug Fixes
 
+- fix(control): let `EINVAL` trigger the raw-UDP fallback and log `bind_addr` on write failure
 - fix(control): flush short TCP splice writes without corking
 - fix(control): disable `send_redirects` on `conf/all` too, so LAN redirects actually stop
 - fix(config): restore `Marshaller.Bytes` for embedding callers such as dae-wing
