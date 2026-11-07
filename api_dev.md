@@ -1607,7 +1607,7 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 - [x] **重放早于入队**（已修：store 拆三阶段 `Accept`（占键，不发布 replay）/ `CommitReplayKey`（入队成功后发布）/ `ReleaseReplayKey`（释放）；窗口内的同键请求返回 409 而不再是 202；测试 `TestReservedKeyIsNotReplayableUntilQueued`）：`cmd/nativeapi_operations.go:79` 先 `store.Accept`（写 replay 表、返回 202），`:94` 才 `queueReloadRequest`；并发同键请求在窗口内拿到 202，而原请求随后被 `409` 拒绝。
 - [x] **结果 resolver 在入队之后安装**（已修：新增 `StartOperationWithResult(ctx, kind, scope, key, resolve)`，resolver 与入队同一临界区安装，provider 在调用前排好 resolver；`SetResultResolver` 不再由调用方事后调用）：`cmd/nativeapi_nodes_manage.go:38`/`:63`/`:143`、`cmd/nativeapi_groups.go:440` 都在 `StartOperation` 返回后才 `SetResultResolver`；窗口内完成的写操作会退化成 `ReloadResult`。
-- [x] **编辑器 replay 表比操作存储小且 scope 不含内容**（已修：上限改为复用 `MaxOperationReplayKeys` 同源常量，`PUT /config/sources` 的 scope 并入候选内容哈希，与节点写一致）：`cmd/config_editor.go:41` 256 vs `component/nativeapi/provider.go:22` 1024；`:706` 的 scope 只有 `target.abs`，所以不同内容同键不会 409（store 侧会重放旧 accepted）。
+- [x] **编辑器 replay 表比操作存储小且 scope 不含内容**（已修：删除编辑器自己的 replay 表，写盘前先经 `OperationStore.Replay` 预检；`PUT /config/sources` 与节点/组写入统一使用包含候选内容哈希的 scope，因此不同内容同键返回 409，且 replay 不会再产生未入队 reload 的落盘副作用）：`cmd/config_editor.go:643`、`component/nativeapi/operation_store.go:144`。
 
 ### 13.4 P0：配置写入与 reload 读盘的竞态
 
