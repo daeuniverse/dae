@@ -112,7 +112,9 @@ jobs:
           # END Linux RISCV64 rva20u64 rva22u64 rva23u64
       fail-fast: false
 
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 dropped clang-15 from the archive; the release build still
+    # uses it for the eBPF objects, so pin the image that ships it.
+    runs-on: ubuntu-24.04
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
