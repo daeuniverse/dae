@@ -160,7 +160,11 @@ func (p *nativeAPIProvider) DnsCache(ctx context.Context, filter nativeapi.DnsCa
 		return entries[i].EntryID < entries[j].EntryID
 	})
 	instance := p.status.snapshot().InstanceID
-	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit, controller.DnsCacheRevision())
+	// The bind names the filter set and limit, never the cache revision: every
+	// store bumps the revision, so binding it made page 2 unreachable on a busy
+	// resolver (and reported the mismatch as 400 instead of the contract's 410
+	// snapshot_expired). pageAfter's anchor is what notices eviction.
+	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit)
 	after := ""
 	if filter.Cursor != "" {
 		parsed, err := decodePageCursor(instance, "dns_cache", bind, filter.Cursor, now)
@@ -239,6 +243,17 @@ func (p *nativeAPIProvider) FlushDnsCache(ctx context.Context) (nativeapi.Delete
 	return nativeapi.DeleteMatchingCount{Matched: uint64(matched), Deleted: uint64(deleted)}, nil
 }
 
+// dnsLogNameMatches applies the contract's substring name filter. A canonical
+// name and filter both end in a dot, so name=example still matches
+// www.example.com, myexample.net and example.com; matching only the exact name
+// or a dot-suffix lost records the caller asked for.
+func dnsLogNameMatches(questionName, name string) bool {
+	if name == "" {
+		return true
+	}
+	return strings.Contains(dnsmessage.CanonicalName(questionName), name)
+}
+
 // DnsLog serves the bounded DNS query log.
 func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogFilter) (nativeapi.DnsLogList, error) {
 	if err := ctx.Err(); err != nil {
@@ -261,13 +276,8 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 	matched := make([]nativeapi.DnsLogRecord, 0, len(records))
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
-		if name != "" {
-			questionName := dnsmessage.CanonicalName(record.Question.Name)
-			// The filter is a name or a suffix: name=example must match
-			// www.example.com as well as example.com.
-			if questionName != name && !strings.HasSuffix(questionName, "."+name) {
-				continue
-			}
+		if !dnsLogNameMatches(record.Question.Name, name) {
+			continue
 		}
 		if len(types) > 0 {
 			if _, ok := types[record.Question.Qtype]; !ok {

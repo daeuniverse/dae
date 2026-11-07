@@ -81,8 +81,9 @@ func (c *DnsController) forwardWithFallback(
 	// fallback starts. The API query path marks its context as caller-deadline
 	// bound; only that path combines the caller's 5s budget with lifecycle
 	// cancellation, so it cannot return success after the advertised timeout.
+	honorCaller := dnsHonorsCallerDeadline(ctx)
 	attemptCtx := c.baseContext()
-	if dnsHonorsCallerDeadline(ctx) {
+	if honorCaller {
 		combined, cancelAttempt := context.WithCancel(attemptCtx)
 		stopCaller := context.AfterFunc(ctx, cancelAttempt)
 		defer func() {
@@ -91,10 +92,31 @@ func (c *DnsController) forwardWithFallback(
 		}()
 		attemptCtx = combined
 	}
-	primaryCtx, primaryCancel := context.WithTimeout(attemptCtx, consts.DefaultDialTimeout)
+	// The API query path advertises a budget that covers the exchange, so an
+	// earlier caller deadline becomes this attempt's socket deadline; the
+	// forwarder's ReadFrom only unblocks on the deadline, not on cancellation.
+	// Internal work deliberately keeps the full per-attempt budget: inheriting
+	// the singleflight 5s deadline made a UDP black hole consume it before the
+	// TCP fallback could start.
+	attemptTimeout := consts.DefaultDialTimeout
+	if honorCaller {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < attemptTimeout {
+				attemptTimeout = max(remaining, 0)
+			}
+		}
+	}
+	primaryCtx, primaryCancel := context.WithTimeout(attemptCtx, attemptTimeout)
 	defer primaryCancel()
 
 	respMsg, err = c.forwardWithDialArg(primaryCtx, upstream, primaryDialArg, data)
+	if honorCaller {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The caller gave up while the exchange was running. A late
+			// answer is not evidence the caller's budget was met.
+			return nil, primaryDialArg, ctxErr
+		}
+	}
 	if err == nil {
 		return respMsg, primaryDialArg, nil
 	}
@@ -130,7 +152,7 @@ func (c *DnsController) forwardWithFallback(
 	if !canServe || primaryDialArg.l4proto != consts.L4ProtoStr_UDP {
 		return nil, primaryDialArg, primaryErr
 	}
-	if dnsHonorsCallerDeadline(ctx) {
+	if honorCaller {
 		if err := ctx.Err(); err != nil {
 			// The caller's deadline/cancellation won while the primary attempt
 			// was running; do not start a second attempt it did not budget for.
@@ -162,10 +184,23 @@ func (c *DnsController) forwardWithFallback(
 		}).Debugln("DNS fallback to TCP after UDP failure")
 	}
 
-	fallbackCtx, fallbackCancel := context.WithTimeout(attemptCtx, consts.DefaultDialTimeout)
+	fallbackTimeout := consts.DefaultDialTimeout
+	if honorCaller {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < fallbackTimeout {
+				fallbackTimeout = max(remaining, 0)
+			}
+		}
+	}
+	fallbackCtx, fallbackCancel := context.WithTimeout(attemptCtx, fallbackTimeout)
 	defer fallbackCancel()
 
 	respMsg, err = c.forwardWithDialArg(fallbackCtx, &fallbackUpstream, fallbackDialArg, data)
+	if honorCaller {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fallbackDialArg, ctxErr
+		}
+	}
 	if err != nil {
 		if truncated {
 			c.reportDnsTruncatedFallback(upstream, false, primaryErr, err)
@@ -300,7 +335,10 @@ func (c *DnsController) Handle_(ctx context.Context, dnsMessage *dnsmessage.Msg,
 
 func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessage *dnsmessage.Msg, req *udpRequest, responseWriter dnsmessage.ResponseWriter) (err error) {
 	c.requireStore()
-	started := time.Now()
+	var started time.Time
+	if dnsLogActive() {
+		started = time.Now()
+	}
 	var loggedQuestion dnsmessage.Question
 	if len(dnsMessage.Question) > 0 {
 		loggedQuestion = dnsMessage.Question[0]
@@ -316,7 +354,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		case c.concurrencyLimiter <- struct{}{}:
 			defer func() { <-c.concurrencyLimiter }()
 		default:
-			c.recordDnsLog(loggedQuestion, req, "REFUSED", false, "", nil, time.Since(started))
+			c.recordDnsLog(loggedQuestion, req, "REFUSED", false, "", nil, started)
 			if responseWriter != nil || (req != nil && req.lConn != nil) {
 				if sendErr := c.sendRefusedWithResponseWriter_(dnsMessage, req, responseWriter); sendErr != nil {
 					return errors.Join(ErrDNSQueryConcurrencyLimitExceeded, sendErr)
@@ -350,7 +388,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		var err error
 		upstreamIndex, upstream, err = rt.routing.RequestSelect(ctx, qname, qtype)
 		if err != nil {
-			c.recordDnsLog(loggedQuestion, req, "ERROR", false, "", nil, time.Since(started))
+			c.recordDnsLog(loggedQuestion, req, "ERROR", false, "", nil, started)
 			return err
 		}
 		responseCacheKey = c.responseCacheKey(baseCacheKey, req, upstreamIndex, upstream)
@@ -385,7 +423,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
 				status = "TIMEOUT"
 			}
-			c.recordDnsLog(loggedQuestion, req, status, false, "", nil, time.Since(started))
+			c.recordDnsLog(loggedQuestion, req, status, false, "", nil, started)
 			return err
 		}
 
@@ -401,7 +439,7 @@ func (c *DnsController) HandleWithResponseWriter_(ctx context.Context, dnsMessag
 		if status == "" {
 			status = "NOERROR"
 		}
-		c.recordDnsLog(loggedQuestion, req, status, false, upstreamName, respMsg.Answer, time.Since(started))
+		c.recordDnsLog(loggedQuestion, req, status, false, upstreamName, respMsg.Answer, started)
 
 		// RFC 8305 resolution delay runs here, outside the singleflight leader:
 		// the shared resolution is complete, so waiting for the preferred
@@ -470,7 +508,8 @@ func (c *DnsController) resolveForSingleflight(
 	// and before this singleflight leader starts upstream resolution.
 	if resp, needRefresh := c.LookupDnsRespCache_(dnsMessage, responseCacheKey, false); resp != nil {
 		if needRefresh {
-			go c.backgroundRefresh(responseCacheKey, dnsMessage, req, upstreamIndex, upstream)
+			epoch := c.cacheEpochSnapshot()
+			go c.backgroundRefreshAt(responseCacheKey, dnsMessage, req, upstreamIndex, upstream, epoch)
 		}
 		respMsg := new(dnsmessage.Msg)
 		if err := respMsg.Unpack(resp); err != nil {
@@ -484,6 +523,9 @@ func (c *DnsController) resolveForSingleflight(
 	if err != nil {
 		return nil, fmt.Errorf("pack DNS packet: %w", err)
 	}
+	// Capture the invalidation epoch before the exchange: a delete/flush that
+	// lands while it is in flight must not be undone by this answer.
+	resolutionEpoch := c.cacheEpochSnapshot()
 	resolution, err := c.resolveDNSUpstream(ctx, 0, req, data, upstream)
 	if err != nil {
 		return nil, err
@@ -492,7 +534,7 @@ func (c *DnsController) resolveForSingleflight(
 	respMsg := resolution.response
 	respMsg.Id = dnsMessage.Id
 	respMsg.Compress = true
-	if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
+	if err := c.storeResolvedResponse(respMsg, responseCacheKey, resolutionEpoch); err != nil {
 		c.noteDnsCacheStoreFailure("controller response", err)
 	}
 	return respMsg, nil
@@ -511,7 +553,7 @@ func (c *DnsController) serveRejectWithWriter_(dnsMessage *dnsmessage.Msg, req *
 	if len(dnsMessage.Question) > 0 {
 		question = dnsMessage.Question[0]
 	}
-	c.recordDnsLog(question, req, "NOERROR", false, "", nil, 0)
+	c.recordDnsLog(question, req, "NOERROR", false, "", nil, time.Time{})
 	return true, c.sendRejectWithResponseWriter_(dnsMessage, req, responseWriter)
 }
 
@@ -540,7 +582,8 @@ func (c *DnsController) serveFromRespCacheWithRefresh_(dnsMessage *dnsmessage.Ms
 	// the wake-up is not deferred behind the upstream resolution.
 	c.notifyPreferenceWait(dnsMessage)
 	if needRefresh {
-		go c.backgroundRefresh(responseCacheKey, dnsMessage, req, upstreamIndex, upstream)
+		epoch := c.cacheEpochSnapshot()
+		go c.backgroundRefreshAt(responseCacheKey, dnsMessage, req, upstreamIndex, upstream, epoch)
 	}
 	if err := c.writeCachedResponse(resp, dnsMessage.Id, req, responseWriter, dnsMessage); err != nil {
 		return true, err
@@ -549,18 +592,17 @@ func (c *DnsController) serveFromRespCacheWithRefresh_(dnsMessage *dnsmessage.Ms
 	// upstream answer does. Returning before recording left /dns/log blind to
 	// every hit, which made a pure cache-serving resolver look idle.
 	if dnsLogActive() && len(dnsMessage.Question) > 0 {
+		// The answer came from the cache, so no upstream was contacted. Naming
+		// the configured upstream here made a pure cache hit look like a wire
+		// lookup that never happened.
 		status := "NOERROR"
 		var answers []dnsmessage.RR
-		packed := new(dnsmessage.Msg)
-		if unpackErr := packed.Unpack(resp); unpackErr == nil {
-			status = dnsRcodeName(packed.Rcode)
-			answers = packed.Answer
+		if value, ok := c.dnsCache.Load(responseCacheKey); ok {
+			if cache, ok := value.(*DnsCache); ok && cache != nil {
+				answers = cache.Answer
+			}
 		}
-		upstreamName := ""
-		if upstream != nil {
-			upstreamName = upstream.String()
-		}
-		c.recordDnsLog(dnsMessage.Question[0], req, status, true, upstreamName, answers, 0)
+		c.recordDnsLog(dnsMessage.Question[0], req, status, true, "", answers, time.Time{})
 	}
 	if c.log.IsLevelEnabled(logrus.DebugLevel) && len(dnsMessage.Question) > 0 {
 		q := dnsMessage.Question[0]

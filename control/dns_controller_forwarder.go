@@ -487,6 +487,9 @@ func (c *DnsController) dialSend(
 	// overwritten with the packed response, but the client's EDNS0 size
 	// must be read from the request when truncating oversized replies.
 	dnsRequestData := data
+	// Capture the invalidation epoch before the exchange so an answer that
+	// arrives after a delete/flush cannot repopulate the removed entry.
+	resolutionEpoch := c.cacheEpochSnapshot()
 	resolution, err := c.resolveDNSUpstream(ctx, 0, req, data, upstream)
 	if err != nil {
 		return err
@@ -549,7 +552,7 @@ func (c *DnsController) dialSend(
 	if responseWriter != nil {
 		// For responseWriter path, cache synchronously because
 		// responseWriter may need the message after we return.
-		if err = c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
+		if err = c.storeResolvedResponse(respMsg, responseCacheKey, resolutionEpoch); err != nil {
 			c.noteDnsCacheStoreFailure("response writer", err)
 		}
 		return responseWriter.WriteMsg(respMsg)
@@ -586,7 +589,7 @@ func (c *DnsController) dialSend(
 				c.log.Errorf("panic in async DNS cache: %v", r)
 			}
 		}()
-		if err := c.NormalizeAndCacheDnsResp_(respMsg, responseCacheKey); err != nil {
+		if err := c.storeResolvedResponse(respMsg, responseCacheKey, resolutionEpoch); err != nil {
 			c.noteDnsCacheStoreFailure("async after send", err)
 		}
 	}()

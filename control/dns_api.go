@@ -81,9 +81,13 @@ func dnsLogActive() bool {
 	return !dnsLogDisabled.Load()
 }
 
-func (c *DnsController) recordDnsLog(question dnsmessage.Question, req *udpRequest, status string, cached bool, upstream string, answers []dnsmessage.RR, elapsed time.Duration) {
+func (c *DnsController) recordDnsLog(question dnsmessage.Question, req *udpRequest, status string, cached bool, upstream string, answers []dnsmessage.RR, started time.Time) {
 	if !dnsLogActive() || c == nil || c.dnsControllerStore == nil || question.Name == "" {
 		return
+	}
+	elapsed := time.Duration(0)
+	if !started.IsZero() {
+		elapsed = time.Since(started)
 	}
 	src := ""
 	if req != nil {
@@ -198,6 +202,14 @@ func (c *DnsController) evictDnsCacheWhere(predicate func(key string, cache *Dns
 		key   string
 		cache *DnsCache
 	}
+	// Take the mutation lock before enumerating: a resolution that stores
+	// between the enumeration and the delete would otherwise survive a flush
+	// the caller was told had happened. The epoch advances on every call, even
+	// when nothing matches, so an exchange already in flight cannot repopulate
+	// an entry this delete/flush was asked to remove.
+	c.cacheMutationMu.Lock()
+	defer c.cacheMutationMu.Unlock()
+	c.cacheEpoch++
 	targets := make([]target, 0, 8)
 	c.dnsCache.Range(func(key, value any) bool {
 		cache, ok := value.(*DnsCache)
@@ -210,17 +222,11 @@ func (c *DnsController) evictDnsCacheWhere(predicate func(key string, cache *Dns
 		}
 		return true
 	})
-	c.cacheMutationMu.Lock()
-	defer c.cacheMutationMu.Unlock()
-	if len(targets) > 0 {
-		c.cacheEpoch++
-	}
 	c.cacheProjectionMu.Lock()
 	defer c.cacheProjectionMu.Unlock()
 	for _, item := range targets {
 		if c.dnsCache.CompareAndDelete(item.key, item.cache) {
 			c.decrementDnsCacheSize()
-			c.dnsCacheRevision.Add(1)
 			c.dnsCacheIndexRemove(item.key)
 			c.forgetDnsKnowledge(item.key, item.cache)
 			c.invokeCacheDeleteCallback(item.key, item.cache)
@@ -343,7 +349,8 @@ func (c *DnsController) QueryDns(ctx context.Context, domain string, qtypes []ui
 					// leave the flag set for good, so every later refresh of this entry
 					// would be skipped.
 					if needRefresh {
-						go c.backgroundRefresh(responseCacheKey, msg, nil, upstreamIndex, upstream)
+						epoch := c.cacheEpochSnapshot()
+						go c.backgroundRefreshAt(responseCacheKey, msg, nil, upstreamIndex, upstream, epoch)
 					}
 					response := new(dnsmessage.Msg)
 					if unpackErr := response.Unpack(packed); unpackErr == nil {
@@ -399,14 +406,6 @@ func dnsErrorStatus(err error) string {
 		return "TIMEOUT"
 	}
 	return "ERROR"
-}
-
-// DnsCacheRevision returns the current cache mutation revision.
-func (c *DnsController) DnsCacheRevision() uint64 {
-	if c == nil || c.dnsControllerStore == nil {
-		return 0
-	}
-	return c.dnsCacheRevision.Load()
 }
 
 // DnsCacheSize reports the number of entries currently in the runtime cache.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/control"
+	dnsmessage "github.com/miekg/dns"
 )
 
 func TestNativeDnsActionNamesTheUpstream(t *testing.T) {
@@ -92,4 +93,23 @@ func TestFlowSummaryCarriesConnectionID(t *testing.T) {
 		t.Fatalf("flow id = %q, want %q", summary.ID, flow.ID)
 	}
 	_ = nativeapi.FlowSummary{}
+}
+
+func TestDnsLogNameFilterMatchesSubstrings(t *testing.T) {
+	cases := []struct {
+		question string
+		filter   string
+		want     bool
+	}{
+		{"www.example.com.", "example.", true},
+		{"myexample.net.", "example.", true},
+		{"example.com.", "example.", true},
+		{"unrelated.test.", "example.", false},
+		{"anything.test.", "", true},
+	}
+	for _, tc := range cases {
+		if got := dnsLogNameMatches(tc.question, dnsmessage.CanonicalName(tc.filter)); got != tc.want {
+			t.Errorf("dnsLogNameMatches(%q, %q) = %v, want %v", tc.question, tc.filter, got, tc.want)
+		}
+	}
 }

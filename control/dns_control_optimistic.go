@@ -22,6 +22,14 @@ import (
 // currently being served from it, and evicting it would turn a refresh miss
 // into a resolution failure for every subsequent query.
 func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) {
+	c.backgroundRefreshAt(cacheKey, dnsMessage, req, upstreamIndex, upstream, c.cacheEpochSnapshot())
+}
+
+// backgroundRefreshAt runs one optimistic refresh against the invalidation
+// epoch captured by the caller before the refresh was spawned. Capturing it
+// inside the goroutine let a delete/flush that landed first be erased by the
+// refresh's own snapshot of the already-advanced epoch.
+func (c *DnsController) backgroundRefreshAt(cacheKey string, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream, refreshEpoch uint64) {
 	defer func() {
 		if recovered := recover(); recovered != nil && c.log != nil {
 			c.log.Errorf("panic in background DNS refresh: %v", recovered)
@@ -61,9 +69,6 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 	// refresh continues the triggering request). The caller always passes a
 	// query, never a response, so no response-owned records reach this path.
 
-	c.cacheMutationMu.Lock()
-	refreshEpoch := c.cacheEpoch
-	c.cacheMutationMu.Unlock()
 	if err := c.refreshDnsRespCache(ctx, refresh, req, upstream, cacheKey, refreshEpoch); err != nil &&
 		c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
 		c.log.WithFields(logrus.Fields{
@@ -157,15 +162,33 @@ func (c *DnsController) refreshDnsRespCache(ctx context.Context, request *dnsmes
 	return c.storeRefreshedResponse(response, cacheKey, refreshEpoch)
 }
 
-// storeRefreshedResponse publishes a background refresh only if no delete or
-// flush invalidated the cache while the upstream lookup was in flight. The
-// check and the store share cacheMutationMu, so a delete cannot land between
-// them and then be overwritten by this refresh.
-func (c *DnsController) storeRefreshedResponse(response *dnsmessage.Msg, cacheKey string, refreshEpoch uint64) error {
+// cacheEpochSnapshot captures the current cache-invalidation epoch. Callers
+// take it before starting an upstream exchange so a delete or flush that lands
+// while the exchange is in flight is not overwritten by the answer.
+func (c *DnsController) cacheEpochSnapshot() uint64 {
+	if c == nil || c.dnsControllerStore == nil {
+		return 0
+	}
 	c.cacheMutationMu.Lock()
 	defer c.cacheMutationMu.Unlock()
-	if refreshEpoch != c.cacheEpoch {
+	return c.cacheEpoch
+}
+
+// storeResolvedResponse publishes an upstream answer only if no delete or flush
+// invalidated the cache while the exchange was in flight. The check and the
+// store share cacheMutationMu, so a delete cannot land between them and then be
+// overwritten by this resolution.
+func (c *DnsController) storeResolvedResponse(response *dnsmessage.Msg, cacheKey string, resolutionEpoch uint64) error {
+	c.cacheMutationMu.Lock()
+	defer c.cacheMutationMu.Unlock()
+	if resolutionEpoch != c.cacheEpoch {
 		return nil
 	}
 	return c.NormalizeAndCacheDnsResp_(response, cacheKey)
+}
+
+// storeRefreshedResponse is storeResolvedResponse for the background-refresh
+// path, which already carries the epoch it captured before resolving.
+func (c *DnsController) storeRefreshedResponse(response *dnsmessage.Msg, cacheKey string, refreshEpoch uint64) error {
+	return c.storeResolvedResponse(response, cacheKey, refreshEpoch)
 }

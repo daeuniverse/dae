@@ -1309,9 +1309,10 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	}
 
 	// Track if connection is bad to avoid returning it to pool
+	var aborted atomic.Bool
 	badConn := false
 	defer func() {
-		if !badConn {
+		if !badConn && !aborted.Load() {
 			udpPool.put(conn)
 		}
 		// If badConn is true, conn.Close() was already called
@@ -1324,6 +1325,32 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	// SetDeadline may fail on connection types that don't support deadlines;
 	// context cancellation still provides timeout control.
 	_ = conn.SetDeadline(deadline)
+
+	// ReadUDPConnFrom does not return on context cancellation: only a socket
+	// deadline or close unblocks it. A caller that cancels (or whose earlier
+	// deadline is not representable as a socket deadline) would otherwise keep
+	// this pool slot until DefaultDialTimeout, so close the borrowed conn when
+	// the context ends. The watcher is joined before the deferred put returns
+	// the conn, so a closed socket can never re-enter the pool.
+	watchDone := make(chan struct{})
+	stopWatch := make(chan struct{})
+	if ctx.Done() != nil {
+		go func() {
+			defer close(watchDone)
+			select {
+			case <-ctx.Done():
+				aborted.Store(true)
+				udpPool.discard(conn)
+			case <-stopWatch:
+			}
+		}()
+	} else {
+		close(watchDone)
+	}
+	defer func() {
+		close(stopWatch)
+		<-watchDone
+	}()
 
 	// Extract original DNS ID for validation
 	var originalID uint16

@@ -98,9 +98,6 @@ type dnsControllerStore struct {
 	// dnsCache uses sync.Map for lock-free concurrent access
 	dnsCache     sync.Map // map[string]*DnsCache
 	dnsCacheSize atomic.Int64
-	// dnsCacheRevision changes on every cache mutation. A page cursor binds to
-	// it so a walk cannot continue on a snapshot that gained or lost entries.
-	dnsCacheRevision atomic.Uint64
 	// dnsCacheByBase indexes the exact cache keys stored under each base cache
 	// key (map[string]*dnsCacheKeySet). It lets family removal and knowledge
 	// resync touch only the affected family instead of walking the whole cache
