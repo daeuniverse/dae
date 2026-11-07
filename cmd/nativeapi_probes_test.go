@@ -14,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/config"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -221,5 +222,55 @@ func TestParseDNSReplyRejectsDeclaredAnswerWithoutBytes(t *testing.T) {
 	binary.BigEndian.PutUint16(reply[6:8], 1)
 	if _, err := parseDNSReply(reply, query, time.Millisecond); err == nil {
 		t.Fatal("parseDNSReply accepted a declared but missing answer section")
+	}
+}
+
+func TestProbeDeadlineRowIsUnknownNotUnavailable(t *testing.T) {
+	item := probeUnavailableResult(probeMember{id: "n"}, nativeapi.ProbeRequest{Kind: "dns"}, "udp", "ipv4", "probe job deadline exceeded")
+	if item.State != "unknown" {
+		t.Fatalf("state = %q, want unknown for work that never ran", item.State)
+	}
+	if item.Warmth != "unknown" {
+		t.Fatalf("warmth = %q, want unknown: a new logical stream does not prove a cold tunnel", item.Warmth)
+	}
+}
+
+func TestProbeDoesNotClaimColdWhenTunnelWarmthIsUnknown(t *testing.T) {
+	item := runProbeMember(context.Background(), probeMember{id: "n", dialer: nil}, nativeapi.ProbeRequest{Kind: "http"}, "tcp", "ipv4", 0, nil, probeCheckTargets{})
+	if item.Warmth != "unknown" {
+		t.Fatalf("warmth = %q, want unknown", item.Warmth)
+	}
+}
+
+func TestProbeAddressForFamilyRejectsTheOtherFamily(t *testing.T) {
+	if _, err := probeAddressForFamily(context.Background(), "1.1.1.1:53", "ipv6"); err == nil {
+		t.Fatal("an IPv4 literal must not satisfy an ipv6 probe")
+	}
+	if _, err := probeAddressForFamily(context.Background(), "[2606:4700:4700::1111]:53", "ipv4"); err == nil {
+		t.Fatal("an IPv6 literal must not satisfy an ipv4 probe")
+	}
+	got, err := probeAddressForFamily(context.Background(), "1.1.1.1:53", "ipv4")
+	if err != nil || got != "1.1.1.1:53" {
+		t.Fatalf("probeAddressForFamily = %q, %v", got, err)
+	}
+}
+
+func TestProbeTargetsFallBackToGlobalChecks(t *testing.T) {
+	active := &runtimeGeneration{conf: &config.Config{Global: config.Global{
+		TcpCheckUrl:        []string{"http://check.example/generate_204"},
+		TcpCheckHttpMethod: "HEAD",
+		UdpCheckDns:        []string{"one.one.one.one:53"},
+	}}}
+	targets := probeTargetsFor(active, nil, nativeapi.ProbeRequest{
+		Target: nativeapi.ProbeTarget{Type: "node", NodeID: "n_missing"},
+	})
+	if targets.httpURL != "http://check.example/generate_204" {
+		t.Fatalf("http url = %q", targets.httpURL)
+	}
+	if targets.httpMethod != "HEAD" {
+		t.Fatalf("http method = %q, want HEAD from global config", targets.httpMethod)
+	}
+	if targets.dnsAddress != "one.one.one.one:53" {
+		t.Fatalf("dns address = %q", targets.dnsAddress)
 	}
 }

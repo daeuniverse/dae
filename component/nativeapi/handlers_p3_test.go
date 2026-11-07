@@ -228,6 +228,12 @@ func TestP3JSONEndpoints(t *testing.T) {
 		t.Fatal("202 response must carry Location and Retry-After")
 	}
 
+	warm := doJSONRequest(server, http.MethodPost, "/api/v1/probes",
+		`{"target":{"type":"node","node_id":"n_1"},"kind":"tcp_connect","transport":["tcp"],"ip_version":"ipv4","warmth":"warm"}`, remote)
+	if warm.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("warm probe = %d, want 422: %s", warm.Code, warm.Body.String())
+	}
+
 	query := doJSONRequest(server, http.MethodPost, "/api/v1/dns/query", `{"domain":"example.com"}`, remote)
 	if query.Code != http.StatusOK {
 		t.Fatalf("dns query = %d, want 200: %s", query.Code, query.Body.String())

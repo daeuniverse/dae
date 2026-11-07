@@ -137,6 +137,15 @@ func (o *nativeAPIOperations) StartProbe(ctx context.Context, request nativeapi.
 		o.probes.release()
 		return accepted, nil
 	}
+	// Reject oversized fan-out before any probe work runs. The contract asks
+	// for 413 here, not a successful operation that silently drops the
+	// dimensions beyond the result cap.
+	if err := o.validateProbeFanout(request); err != nil {
+		o.probes.release()
+		o.store.ReleaseReplayKey(idempotencyKey)
+		o.store.Fail(accepted.OperationID, safeProbeError(err))
+		return nativeapi.OperationAccepted{}, err
+	}
 	// The work is queued, so the reserved key becomes replayable. Without this
 	// a retry with the same key answered 409 until the process restarted.
 	o.store.CommitReplayKey(idempotencyKey)
@@ -169,13 +178,6 @@ func (o *nativeAPIOperations) executeProbe(request nativeapi.ProbeRequest) (nati
 	if err != nil {
 		return nativeapi.ProbeResult{}, err
 	}
-	result := nativeapi.ProbeResult{
-		Target:           request.Target,
-		SelectionChanged: nativeapi.TransportBooleanMap{},
-		SelectionBefore:  nativeapi.TransportSelectionMap{},
-		SelectionAfter:   nativeapi.TransportSelectionMap{},
-		Results:          make([]nativeapi.ProbeResultItem, 0, len(members)*len(request.Transport)),
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeJobTimeout)
 	defer cancel()
 	soMark := plane.SoMarkFromDae()
@@ -186,21 +188,105 @@ func (o *nativeAPIOperations) executeProbe(request nativeapi.ProbeRequest) (nati
 		// left the IPv6 dimension silently untested.
 		ipVersions = []string{"ipv4", "ipv6"}
 	}
+	projected := len(members) * len(request.Transport) * len(ipVersions)
+	if projected > probeMaxResultsPerJob {
+		return nativeapi.ProbeResult{}, probeFanoutTooLarge(projected)
+	}
+	result := nativeapi.ProbeResult{
+		Target:           request.Target,
+		SelectionChanged: nativeapi.TransportBooleanMap{},
+		SelectionBefore:  nativeapi.TransportSelectionMap{},
+		SelectionAfter:   nativeapi.TransportSelectionMap{},
+		Results:          make([]nativeapi.ProbeResultItem, projected),
+	}
+	// Run rows with the per-target concurrency the capabilities advertise
+	// (`max_concurrent_per_target`). Sequential probing made a job with eight
+	// dead endpoints run for the whole 30 s job deadline; four workers finish
+	// the same rows in two per-row timeouts, while results keep the requested
+	// member/transport/family order.
+	type probeRow struct {
+		index     int
+		member    probeMember
+		transport string
+		ipVersion string
+	}
+	rows := make([]probeRow, 0, projected)
 	for _, member := range members {
 		for _, transport := range request.Transport {
 			for _, ipVersion := range ipVersions {
-				if len(result.Results) >= probeMaxResultsPerJob {
-					return result, nil
-				}
-				if ctx.Err() != nil {
-					result.Results = append(result.Results, probeUnavailableResult(member, request, transport, ipVersion, "probe job deadline exceeded"))
-					continue
-				}
-				result.Results = append(result.Results, runProbeMember(ctx, member, request, transport, ipVersion, soMark, plane.DirectDialer(), targets))
+				rows = append(rows, probeRow{index: len(rows), member: member, transport: transport, ipVersion: ipVersion})
 			}
 		}
 	}
+	workers := probeMaxActiveJobs
+	if workers > len(rows) {
+		workers = len(rows)
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for _, row := range rows {
+		wg.Add(1)
+		go func(row probeRow) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				result.Results[row.index] = probeUnavailableResult(row.member, request, row.transport, row.ipVersion, "probe job deadline exceeded")
+				return
+			}
+			result.Results[row.index] = runProbeMember(ctx, row.member, request, row.transport, row.ipVersion, soMark, plane.DirectDialer(), targets)
+		}(row)
+	}
+	wg.Wait()
 	return result, nil
+}
+
+// validateProbeFanout expands the target before the work is queued so an
+// oversized request is rejected with 413 instead of producing an operation
+// that silently omits the dimensions beyond the result cap.
+func (o *nativeAPIOperations) validateProbeFanout(request nativeapi.ProbeRequest) error {
+	if o == nil || o.supervisor == nil {
+		return fmt.Errorf("no active runtime generation")
+	}
+	active := o.supervisor.activeSnapshot()
+	if active == nil || active.controlPlane == nil {
+		return fmt.Errorf("no active runtime generation")
+	}
+	members, err := probeMembers(active.controlPlane, request)
+	if err != nil {
+		// Keep the 422 a malformed member already carries; an unknown target
+		// is a 404 instead of a provider-failure 503.
+		var apiErr *nativeapi.APIError
+		if errors.As(err, &apiErr) {
+			return err
+		}
+		return nativeapi.NewAPIError(404, "resource_not_found", err.Error())
+	}
+	ipVersions := 1
+	if request.IPVersion == "any" {
+		ipVersions = 2
+	}
+	projected := len(members) * len(request.Transport) * ipVersions
+	if projected > probeMaxResultsPerJob {
+		return probeFanoutTooLarge(projected)
+	}
+	return nil
+}
+
+func probeFanoutTooLarge(projected int) error {
+	return nativeapi.NewAPIError(413, "request_too_large",
+		fmt.Sprintf("probe expands to %d results, more than this engine supports", projected))
+}
+
+func safeProbeError(err error) *nativeapi.SafeError {
+	if err == nil {
+		return nil
+	}
+	var apiErr *nativeapi.APIError
+	if errors.As(err, &apiErr) {
+		return &nativeapi.SafeError{Code: apiErr.Code, Message: apiErr.Message}
+	}
+	return &nativeapi.SafeError{Code: "probe_failed", Message: err.Error()}
 }
 
 type probeMember struct {
@@ -301,8 +387,8 @@ func probeUnavailableResult(member probeMember, request nativeapi.ProbeRequest, 
 		Purpose:       purpose,
 		Transport:     transport,
 		IPVersion:     ipVersion,
-		Warmth:        "cold",
-		State:         "unavailable",
+		Warmth:        "unknown",
+		State:         "unknown",
 		HealthUpdated: false,
 		Error:         &reason,
 		ObservedAt:    time.Now().UTC().Format(time.RFC3339),
@@ -320,9 +406,10 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 		Purpose:   purpose,
 		Transport: transport,
 		IPVersion: ipVersion,
-		// Every probe below opens a fresh connection; copying the requested
-		// warmth claimed a reused connection the engine never had.
-		Warmth:        "cold",
+		// The engine opens a fresh logical connection per probe and does not
+		// track physical tunnel reuse, so it must not claim either "cold"
+		// (a new stream does not prove a cold tunnel) or the requested "warm".
+		Warmth:        "unknown",
 		State:         "unknown",
 		HealthUpdated: false,
 		ObservedAt:    time.Now().UTC().Format(time.RFC3339),
@@ -408,15 +495,32 @@ type probeCheckTargets struct {
 
 func probeTargetsFor(active *runtimeGeneration, plane *control.ControlPlane, request nativeapi.ProbeRequest) probeCheckTargets {
 	group := probeGroupFor(active, plane, request)
-	if group == nil {
-		return probeCheckTargets{}
+	targets := probeCheckTargets{}
+	if group != nil {
+		targets.httpMethod = group.TcpCheckHttpMethod
+		if len(group.TcpCheckUrl) > 0 {
+			targets.httpURL = group.TcpCheckUrl[0]
+		}
+		if len(group.UdpCheckDns) > 0 {
+			targets.dnsAddress = probeDNSHostPort(group.UdpCheckDns[0])
+		}
 	}
-	targets := probeCheckTargets{httpMethod: group.TcpCheckHttpMethod}
-	if len(group.TcpCheckUrl) > 0 {
-		targets.httpURL = group.TcpCheckUrl[0]
-	}
-	if len(group.UdpCheckDns) > 0 {
-		targets.dnsAddress = probeDNSHostPort(group.UdpCheckDns[0])
+	// A group only carries the values it overrides. The administrator normally
+	// sets tcp_check_url / udp_check_dns / tcp_check_http_method in `global`,
+	// and the dialer health checks inherit them from there. Falling back to the
+	// hard-coded public endpoints made http/dns probes ignore that
+	// configuration (including the HEAD method) whenever the group had no
+	// override of its own.
+	if active != nil && active.conf != nil {
+		if targets.httpURL == "" && len(active.conf.Global.TcpCheckUrl) > 0 {
+			targets.httpURL = active.conf.Global.TcpCheckUrl[0]
+		}
+		if targets.httpMethod == "" {
+			targets.httpMethod = active.conf.Global.TcpCheckHttpMethod
+		}
+		if targets.dnsAddress == "" && len(active.conf.Global.UdpCheckDns) > 0 {
+			targets.dnsAddress = probeDNSHostPort(active.conf.Global.UdpCheckDns[0])
+		}
 	}
 	return targets
 }
@@ -496,6 +600,34 @@ func probeNodeAddressForFamily(ctx context.Context, d *dialer.Dialer, ipVersion 
 	ips, err := net.DefaultResolver.LookupIP(ctx, network, host)
 	if err != nil || len(ips) == 0 {
 		return "", fmt.Errorf("node server has no %s address", ipVersion)
+	}
+	return net.JoinHostPort(ips[0].String(), port), nil
+}
+
+// probeAddressForFamily resolves a check destination to the requested address
+// family. A literal address of the other family is rejected instead of being
+// dialled, and a hostname is resolved through the matching family resolver.
+// The http and dns probes used to dial whatever the platform resolver returned,
+// so an ipv6 probe could pass by reaching an IPv4 listener.
+func probeAddressForFamily(ctx context.Context, address, ipVersion string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", err
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		isIPv6 := ip.To4() == nil
+		if (ipVersion == "ipv6") != isIPv6 {
+			return "", fmt.Errorf("check destination has no %s address", ipVersion)
+		}
+		return address, nil
+	}
+	network := "ip4"
+	if ipVersion == "ipv6" {
+		network = "ip6"
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, network, host)
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("check destination has no %s address", ipVersion)
 	}
 	return net.JoinHostPort(ips[0].String(), port), nil
 }
@@ -605,6 +737,10 @@ func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, 
 		method = http.MethodGet
 	}
 	dialContext := func(ctx context.Context, network, address string) (net.Conn, error) {
+		address, err := probeAddressForFamily(ctx, address, ipVersion)
+		if err != nil {
+			return nil, err
+		}
 		conn, err := d.DialContext(ctx, common.MagicNetwork(network, soMark, false), address)
 		if err != nil {
 			return nil, err
@@ -645,6 +781,10 @@ func probeDNS(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, s
 	address := targets.dnsAddress
 	if address == "" {
 		address = probeDNSAddress(ipVersion)
+	}
+	address, err := probeAddressForFamily(ctx, address, ipVersion)
+	if err != nil {
+		return 0, err
 	}
 	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 1, RecursionDesired: true})
 	builder.EnableCompression()

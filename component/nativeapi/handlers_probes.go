@@ -79,6 +79,14 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "warmth must be cold or warm")
 		return
 	}
+	// The contract requires an unimplementable reuse constraint to answer 422
+	// rather than mislabelled results. The engine opens a fresh connection per
+	// probe and cannot promise reuse, so warm is not accepted.
+	if request.Warmth == "warm" {
+		writeError(w, requestID, http.StatusUnprocessableEntity, codeUnsupportedValue,
+			"warm probe reuse is not supported by this engine")
+		return
+	}
 	if request.Target.Type == "node" && request.Members != nil {
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "members is only valid for a group target")
 		return
