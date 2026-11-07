@@ -7,9 +7,9 @@ package control
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"net/netip"
-	"strconv"
 	"time"
 )
 
@@ -47,9 +47,31 @@ type SessionFlowHistoryEntry struct {
 	State    string
 }
 
+// flowIDOf derives a stable id from the flow tuple and start time. It hashes a
+// stack buffer instead of concatenating strings: this runs on every connection
+// adoption, where the previous five allocations per flow showed up as a hot
+// path regression.
 func flowIDOf(network string, src, dst netip.AddrPort, started time.Time) string {
-	sum := sha256.Sum256([]byte(network + "\x00" + src.String() + "\x00" + dst.String() + "\x00" + strconv.FormatInt(started.UnixNano(), 10)))
-	return "f_" + hex.EncodeToString(sum[:8])
+	var key [1 + 16 + 2 + 16 + 2 + 8]byte
+	key[0] = 't'
+	if network == "udp" {
+		key[0] = 'u'
+	}
+	n := 1
+	srcAddr, dstAddr := src.Addr().As16(), dst.Addr().As16()
+	n += copy(key[n:], srcAddr[:])
+	binary.BigEndian.PutUint16(key[n:], src.Port())
+	n += 2
+	n += copy(key[n:], dstAddr[:])
+	binary.BigEndian.PutUint16(key[n:], dst.Port())
+	n += 2
+	binary.BigEndian.PutUint64(key[n:], uint64(started.UnixNano()))
+	n += 8
+	sum := sha256.Sum256(key[:n])
+	var id [18]byte
+	copy(id[:2], "f_")
+	hex.Encode(id[2:], sum[:8])
+	return string(id[:])
 }
 
 func (f *FlowRuntime) snapshot() SessionFlowSnapshot {
