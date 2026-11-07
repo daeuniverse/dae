@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/control"
 )
 
@@ -59,5 +60,31 @@ func TestConnectionBytesAbsentForFlowsWithoutCounters(t *testing.T) {
 	connection := p.nativeConnectionOf(flow)
 	if connection.UploadBytes != nil || connection.DownloadBytes != nil {
 		t.Fatalf("a flow without counters must not report bytes: up=%v down=%v", connection.UploadBytes, connection.DownloadBytes)
+	}
+}
+
+// A connection that is still open lives in the active snapshot, not in the
+// closed history. Filtering the list by its connection_id used to answer an
+// empty list even though GET /flows/{id} returned the flow.
+func TestFlowListConnectionIDIncludesActiveFlows(t *testing.T) {
+	active := control.SessionFlowSnapshot{ID: "f_active", Network: "tcp"}
+	history := []control.SessionFlowHistoryEntry{
+		{SessionFlowSnapshot: control.SessionFlowSnapshot{ID: "f_closed", Network: "tcp"}, State: "closed"},
+	}
+	filter := nativeapi.FlowFilter{ConnectionID: connectionIDOfFlow(active.ID)}
+	matched := matchingFlows([]control.SessionFlowSnapshot{active}, history, filter)
+	if len(matched) != 1 {
+		t.Fatalf("matched %d flows, want the active one: %+v", len(matched), matched)
+	}
+	if matched[0].ID != active.ID || matched[0].State != "active" {
+		t.Fatalf("matched = %+v, want the active flow", matched[0])
+	}
+	// A closed flow with the same filter is still found, and the exact id
+	// match keeps the other flow out of both walks.
+	if got := matchingFlows(nil, history, nativeapi.FlowFilter{ConnectionID: connectionIDOfFlow("f_closed")}); len(got) != 1 || got[0].ID != "f_closed" {
+		t.Fatalf("closed connection filter = %+v", got)
+	}
+	if got := matchingFlows([]control.SessionFlowSnapshot{active}, history, nativeapi.FlowFilter{ConnectionID: "c_other"}); len(got) != 0 {
+		t.Fatalf("unknown connection filter matched %+v", got)
 	}
 }

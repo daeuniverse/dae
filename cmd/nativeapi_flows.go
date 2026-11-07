@@ -364,17 +364,12 @@ func nativeFlowCoverage() nativeapi.FlowCoverage {
 	}
 }
 
-// ListFlows returns the retained closed-flow history, newest first.
-func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.FlowFilter) (nativeapi.FlowList, error) {
-	if err := ctx.Err(); err != nil {
-		return nativeapi.FlowList{}, err
-	}
-	plane, err := p.activeControlPlane()
-	if err != nil {
-		return nativeapi.FlowList{}, err
-	}
-	status := p.status.snapshot()
-	entries, _ := plane.FlowHistory()
+// matchingFlows applies the flow filters to the active snapshot and the closed
+// history. connection_id is an exact match over active and retained flows; the
+// history only holds closed ones, so a filter naming a connection that is still
+// open must also consult the active snapshot. Active flows come first because
+// they are the newest.
+func matchingFlows(active []control.SessionFlowSnapshot, entries []control.SessionFlowHistoryEntry, filter nativeapi.FlowFilter) []control.SessionFlowHistoryEntry {
 	// `all` is a contract selector, not a literal network/state value.
 	networkFilter := filter.Network
 	if networkFilter == "all" {
@@ -384,7 +379,22 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 	if stateFilter == "all" {
 		stateFilter = ""
 	}
-	matched := make([]control.SessionFlowHistoryEntry, 0, len(entries))
+	matched := make([]control.SessionFlowHistoryEntry, 0, len(entries)+1)
+	if filter.ConnectionID != "" {
+		for _, flow := range active {
+			if connectionIDOfFlow(flow.ID) != filter.ConnectionID {
+				continue
+			}
+			if networkFilter != "" && flow.Network != networkFilter {
+				continue
+			}
+			entry := control.SessionFlowHistoryEntry{SessionFlowSnapshot: flow, State: "active"}
+			if stateFilter != "" && entry.State != stateFilter {
+				continue
+			}
+			matched = append(matched, entry)
+		}
+	}
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
 		if networkFilter != "" && entry.Network != networkFilter {
@@ -400,6 +410,21 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 		}
 		matched = append(matched, entry)
 	}
+	return matched
+}
+
+// ListFlows returns the retained closed-flow history, newest first.
+func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.FlowFilter) (nativeapi.FlowList, error) {
+	if err := ctx.Err(); err != nil {
+		return nativeapi.FlowList{}, err
+	}
+	plane, err := p.activeControlPlane()
+	if err != nil {
+		return nativeapi.FlowList{}, err
+	}
+	status := p.status.snapshot()
+	entries, _ := plane.FlowHistory()
+	matched := matchingFlows(plane.ActiveFlowSnapshots(), entries, filter)
 	now := time.Now()
 	bind := pageCursorBind(filter.Network, filter.State, filter.ConnectionID, filter.Limit)
 	after, expectNext, oldest := "", "", ""
