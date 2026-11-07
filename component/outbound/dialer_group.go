@@ -44,15 +44,14 @@ type DialerGroup struct {
 	selectionStateMu sync.Mutex
 	selectionWriteMu sync.Mutex
 
-	// selectionIndexes holds the runtime-selected member per transport for
-	// `select` groups. Index 0 is TCP and 1 is UDP. The values start at the
-	// configured default index of a fresh generation, so a reload resets them.
-	selectionIndexes  [2]atomic.Int64
-	selectionRevision atomic.Uint64
-	// overrideIndexes holds a pinned member per transport for the automatic
-	// policies that accept an override. -1 means "no pin", so the policy keeps
-	// choosing. A fresh generation starts unpinned.
-	overrideIndexes [2]atomic.Int64
+	// selection holds the runtime-selected member per transport for `select`
+	// groups (slot 0 TCP, slot 1 UDP) and the pinned member per transport for
+	// the automatic policies that accept an override (-1 means no pin). It is
+	// one immutable snapshot behind a single atomic pointer, so a reader never
+	// observes TCP and UDP from different revisions and the per-flow snapshot
+	// needs no lock. A fresh generation starts at the configured default index
+	// and unpinned, so a reload resets both.
+	selection atomic.Pointer[dialerSelection]
 
 	dialersAnnotations  []*dialer.Annotation
 	checkTolerance      time.Duration
@@ -91,6 +90,41 @@ func (g *DialerGroup) Counters() *Counters {
 		return nil
 	}
 	return g.counters.Load()
+}
+
+// dialerSelection is the immutable runtime selection snapshot. Readers load
+// one pointer, so TCP and UDP indexes and the revision always belong to the
+// same write.
+type dialerSelection struct {
+	indexes   [2]int64
+	overrides [2]int64
+	revision  uint64
+}
+
+var emptyDialerSelection = &dialerSelection{overrides: [2]int64{-1, -1}}
+
+func (g *DialerGroup) currentDialerSelection() *dialerSelection {
+	if g == nil {
+		return emptyDialerSelection
+	}
+	if sel := g.selection.Load(); sel != nil {
+		return sel
+	}
+	return emptyDialerSelection
+}
+
+// mutateSelection applies fn to a copy of the published snapshot and stores the
+// result under the write lock, so a both-transport change is one atomic swap.
+func (g *DialerGroup) mutateSelection(fn func(*dialerSelection) bool) uint64 {
+	g.selectionWriteMu.Lock()
+	defer g.selectionWriteMu.Unlock()
+	current := *g.currentDialerSelection()
+	if !fn(&current) {
+		return current.revision
+	}
+	current.revision++
+	g.selection.Store(&current)
+	return current.revision
 }
 
 type dialerGroupSelectionState struct {
@@ -132,10 +166,10 @@ func NewDialerGroup(
 	case consts.DialerSelectionPolicy_Select, consts.DialerSelectionPolicy_Fixed:
 		defaultIndex = int64(p.FixedIndex)
 	}
-	group.selectionIndexes[0].Store(defaultIndex)
-	group.selectionIndexes[1].Store(defaultIndex)
-	group.overrideIndexes[0].Store(-1)
-	group.overrideIndexes[1].Store(-1)
+	group.selection.Store(&dialerSelection{
+		indexes:   [2]int64{defaultIndex, defaultIndex},
+		overrides: [2]int64{-1, -1},
+	})
 
 	for _, nt := range standardSelectionNetworkTypes() {
 		group.publishAliveChange(true, nt, true)
@@ -157,8 +191,9 @@ func (g *DialerGroup) SnapshotForEstablishedFlow(selected *dialer.Dialer) *Diale
 	if g == nil {
 		return nil
 	}
-	g.selectionWriteMu.Lock()
-	defer g.selectionWriteMu.Unlock()
+	// The selection fields are atomics; copying them without the write lock
+	// keeps this per-established-flow path free of mutex traffic. A snapshot
+	// that races a switch may carry the previous revision, not torn values.
 	view := &DialerGroup{
 		log:                    g.log,
 		Name:                   g.Name,
@@ -171,11 +206,9 @@ func (g *DialerGroup) SnapshotForEstablishedFlow(selected *dialer.Dialer) *Diale
 	view.selectionState.Store(&dialerGroupSelectionState{
 		policy: g.currentSelectionState().policy,
 	})
-	view.selectionIndexes[0].Store(g.selectionIndexes[0].Load())
-	view.selectionIndexes[1].Store(g.selectionIndexes[1].Load())
-	view.overrideIndexes[0].Store(g.overrideIndexes[0].Load())
-	view.overrideIndexes[1].Store(g.overrideIndexes[1].Load())
-	view.selectionRevision.Store(g.selectionRevision.Load())
+	// The pointer names an immutable snapshot, so the view can share it: the
+	// parent replaces its pointer on change and never mutates this value.
+	view.selection.Store(g.currentDialerSelection())
 	// The view is what flows retain as their egress binding, so it must carry
 	// the same process-level counters as the group it was built from.
 	view.counters.Store(g.counters.Load())
@@ -239,7 +272,7 @@ func (g *DialerGroup) Selection(network SelectionNetwork) (index int, ok bool) {
 	if slot < 0 {
 		return 0, false
 	}
-	return int(g.selectionIndexes[slot].Load()), true
+	return int(g.currentDialerSelection().indexes[slot]), true
 }
 
 // AutoSelected reports the dialer an automatic policy currently prefers for one
@@ -309,7 +342,7 @@ func (g *DialerGroup) SelectionRevision() uint64 {
 	if g == nil {
 		return 0
 	}
-	return g.selectionRevision.Load()
+	return g.currentDialerSelection().revision
 }
 
 // SetSelection switches the runtime selection of one transport and returns the
@@ -326,14 +359,15 @@ func (g *DialerGroup) SetSelection(network SelectionNetwork, index int) (uint64,
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
-	g.selectionWriteMu.Lock()
-	defer g.selectionWriteMu.Unlock()
-	// Re-selecting the current member changes nothing, so it must not bump the
-	// revision.
-	if g.selectionIndexes[slot].Swap(int64(index)) == int64(index) {
-		return g.selectionRevision.Load(), nil
-	}
-	return g.selectionRevision.Add(1), nil
+	return g.mutateSelection(func(sel *dialerSelection) bool {
+		// Re-selecting the current member changes nothing, so it must not bump
+		// the revision.
+		if sel.indexes[slot] == int64(index) {
+			return false
+		}
+		sel.indexes[slot] = int64(index)
+		return true
+	}), nil
 }
 
 // Override returns the pinned member index for a transport, if one is set.
@@ -345,7 +379,7 @@ func (g *DialerGroup) Override(network SelectionNetwork) (index int, pinned bool
 	if slot < 0 {
 		return 0, false
 	}
-	index = int(g.overrideIndexes[slot].Load())
+	index = int(g.currentDialerSelection().overrides[slot])
 	return index, index >= 0 && index < len(g.Dialers)
 }
 
@@ -362,7 +396,7 @@ func (g *DialerGroup) PinsSelection(network SelectionNetwork) bool {
 	if slot < 0 {
 		return false
 	}
-	return g.overrideIndexes[slot].Load() >= 0
+	return g.currentDialerSelection().overrides[slot] >= 0
 }
 
 // SetOverride pins a member for one transport so an automatic policy stops
@@ -378,45 +412,48 @@ func (g *DialerGroup) SetOverride(network SelectionNetwork, index int) (uint64, 
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
-	g.selectionWriteMu.Lock()
-	defer g.selectionWriteMu.Unlock()
-	if g.overrideIndexes[slot].Swap(int64(index)) == int64(index) {
-		return g.selectionRevision.Load(), nil
-	}
-	return g.selectionRevision.Add(1), nil
+	return g.mutateSelection(func(sel *dialerSelection) bool {
+		if sel.overrides[slot] == int64(index) {
+			return false
+		}
+		sel.overrides[slot] = int64(index)
+		return true
+	}), nil
 }
 
 // SetSelectionBoth switches TCP and UDP together and bumps the revision once,
 // so the pair is observed under one revision and a failure cannot leave one
 // transport switched.
 func (g *DialerGroup) SetSelectionBoth(index int) (uint64, error) {
-	return g.setBoth(g.selectionIndexes[:], index)
+	return g.setBoth(true, index)
 }
 
 // SetOverrideBoth pins TCP and UDP together, with the same single revision.
 func (g *DialerGroup) SetOverrideBoth(index int) (uint64, error) {
-	return g.setBoth(g.overrideIndexes[:], index)
+	return g.setBoth(false, index)
 }
 
-func (g *DialerGroup) setBoth(slots []atomic.Int64, index int) (uint64, error) {
+func (g *DialerGroup) setBoth(indexes bool, index int) (uint64, error) {
 	if g == nil {
 		return 0, fmt.Errorf("nil dialer group")
 	}
 	if index < 0 || index >= len(g.Dialers) {
 		return 0, fmt.Errorf("selected dialer index is out of range")
 	}
-	g.selectionWriteMu.Lock()
-	defer g.selectionWriteMu.Unlock()
-	changed := false
-	for i := range slots {
-		if slots[i].Swap(int64(index)) != int64(index) {
-			changed = true
+	return g.mutateSelection(func(sel *dialerSelection) bool {
+		changed := false
+		slots := &sel.overrides
+		if indexes {
+			slots = &sel.indexes
 		}
-	}
-	if !changed {
-		return g.selectionRevision.Load(), nil
-	}
-	return g.selectionRevision.Add(1), nil
+		for i := range slots {
+			if slots[i] != int64(index) {
+				slots[i] = int64(index)
+				changed = true
+			}
+		}
+		return changed
+	}), nil
 }
 
 // ClearOverrideBoth drops the pin of both transports under one revision.
@@ -424,12 +461,12 @@ func (g *DialerGroup) ClearOverrideBoth() (uint64, error) {
 	if g == nil {
 		return 0, fmt.Errorf("nil dialer group")
 	}
-	g.selectionWriteMu.Lock()
-	defer g.selectionWriteMu.Unlock()
-	for i := range g.overrideIndexes {
-		g.overrideIndexes[i].Store(-1)
-	}
-	return g.selectionRevision.Add(1), nil
+	return g.mutateSelection(func(sel *dialerSelection) bool {
+		sel.overrides = [2]int64{-1, -1}
+		// Clearing always bumps so the caller can observe that the state was
+		// re-read.
+		return true
+	}), nil
 }
 
 // ClearOverride drops the pin for one transport and reports the new revision.
@@ -443,10 +480,11 @@ func (g *DialerGroup) ClearOverride(network SelectionNetwork) (uint64, error) {
 	if slot < 0 {
 		return 0, fmt.Errorf("unsupported selection network %q", network)
 	}
-	g.selectionWriteMu.Lock()
-	defer g.selectionWriteMu.Unlock()
-	g.overrideIndexes[slot].Store(-1)
-	return g.selectionRevision.Add(1), nil
+	return g.mutateSelection(func(sel *dialerSelection) bool {
+		sel.overrides[slot] = -1
+		// Clearing an unpinned transport still bumps the revision.
+		return true
+	}), nil
 }
 
 func selectionSlot(network SelectionNetwork) int {
@@ -673,15 +711,15 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 	if len(g.Dialers) == 0 {
 		return nil, 0, nil, fmt.Errorf("no dialer in this group")
 	}
-	if index := g.pinnedIndex(networkType, policy); index >= 0 {
-		// A pin outranks the automatic policy for this transport, exactly like
-		// a selector's choice: it ignores 'excluded' and per-dialer health.
-		d := g.Dialers[index]
-		selected := preferAlternateSelectionNetworkType(d, networkType)
-		return d, 0, selected, nil
-	}
 	switch policy.Policy {
 	case consts.DialerSelectionPolicy_Random:
+		if index := g.pinnedIndex(networkType, policy); index >= 0 {
+			// A pin outranks the automatic policy for this transport, exactly
+			// like a selector's choice: it ignores 'excluded' and health.
+			d := g.Dialers[index]
+			selected := preferAlternateSelectionNetworkType(d, networkType)
+			return d, 0, selected, nil
+		}
 		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
 		for i := range count {
 			a := state.aliveDialerSets[networkTypes[i].Index()]
@@ -708,7 +746,7 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 		// A selector holds an explicit runtime choice per transport. Like
 		// Fixed, it ignores 'excluded': the user's choice outranks automatic
 		// failover, and the kernel admits the group optimistically.
-		index := int(g.selectionIndexes[selectionSlotIndex(networkType.L4Proto)].Load())
+		index := int(g.currentDialerSelection().indexes[selectionSlotIndex(networkType.L4Proto)])
 		if index < 0 || index >= len(g.Dialers) {
 			return nil, 0, nil, fmt.Errorf("selected dialer index is out of range")
 		}
@@ -719,6 +757,13 @@ func (g *DialerGroup) _select(networkType *dialer.NetworkType, state *dialerGrou
 	case consts.DialerSelectionPolicy_MinLastLatency,
 		consts.DialerSelectionPolicy_MinAverage10Latencies,
 		consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		if index := g.pinnedIndex(networkType, policy); index >= 0 {
+			// Same precedence as the random branch: a runtime pin replaces the
+			// policy's automatic winner for this transport.
+			d := g.Dialers[index]
+			selected := preferAlternateSelectionNetworkType(d, networkType)
+			return d, 0, selected, nil
+		}
 		networkTypes, count := g.selectionNetworkTypes(networkType, policy)
 		for i := range count {
 			a := state.aliveDialerSets[networkTypes[i].Index()]
@@ -741,7 +786,7 @@ func (g *DialerGroup) pinnedIndex(networkType *dialer.NetworkType, policy Dialer
 	if !policy.Policy.SupportsOverride() {
 		return -1
 	}
-	index := int(g.overrideIndexes[selectionSlotIndex(networkType.L4Proto)].Load())
+	index := int(g.currentDialerSelection().overrides[selectionSlotIndex(networkType.L4Proto)])
 	if index < 0 || index >= len(g.Dialers) {
 		return -1
 	}

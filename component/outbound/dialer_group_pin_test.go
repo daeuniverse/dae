@@ -22,9 +22,8 @@ func TestPinnedTransportKeepsAdmissionOpen(t *testing.T) {
 	d := newDirectDialer(option)
 	g := &DialerGroup{log: log, Name: "pinned", Dialers: []*dialer.Dialer{d}}
 	// NewDialerGroup starts every transport unpinned (-1); a hand-built fixture
-	// has to do the same or slot 0 reads as "pinned to member 0".
-	g.overrideIndexes[0].Store(-1)
-	g.overrideIndexes[1].Store(-1)
+	// has to publish the same snapshot or slot 0 reads as "pinned to member 0".
+	g.selection.Store(&dialerSelection{overrides: [2]int64{-1, -1}})
 
 	udp := TestDataUdp4NetworkType
 	tcp := &dialer.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
