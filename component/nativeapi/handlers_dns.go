@@ -6,8 +6,6 @@
 package nativeapi
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -193,9 +191,11 @@ func (s *Server) handleDnsQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request DnsQueryRequest
-	decoder := json.NewDecoder(io.LimitReader(r.Body, int64(s.cfg.MaxJSONBodyBytes)+1))
-	decoder.DisallowUnknownFields()
-	if err := decodeSingleJSON(decoder, &request); err != nil {
+	if err := decodeLimitedJSON(r, s.cfg.MaxJSONBodyBytes, &request); err != nil {
+		if err == errLimitedJSONBodyTooLarge {
+			writeError(w, requestID, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body is too large")
+			return
+		}
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "invalid JSON body")
 		return
 	}

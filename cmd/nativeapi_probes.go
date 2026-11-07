@@ -8,10 +8,12 @@ package cmd
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/outbound/netproxy"
 	"golang.org/x/net/dns/dnsmessage"
@@ -176,15 +179,25 @@ func (o *nativeAPIOperations) executeProbe(request nativeapi.ProbeRequest) (nati
 	ctx, cancel := context.WithTimeout(context.Background(), probeJobTimeout)
 	defer cancel()
 	soMark := plane.SoMarkFromDae()
+	targets := probeTargetsFor(active, plane, request)
+	ipVersions := []string{request.IPVersion}
+	if request.IPVersion == "any" {
+		// The contract advertises both families for `any`; a single IPv4 row
+		// left the IPv6 dimension silently untested.
+		ipVersions = []string{"ipv4", "ipv6"}
+	}
 	for _, member := range members {
-		if ctx.Err() != nil {
-			break
-		}
 		for _, transport := range request.Transport {
-			if len(result.Results) >= probeMaxResultsPerJob || ctx.Err() != nil {
-				break
+			for _, ipVersion := range ipVersions {
+				if len(result.Results) >= probeMaxResultsPerJob {
+					return result, nil
+				}
+				if ctx.Err() != nil {
+					result.Results = append(result.Results, probeUnavailableResult(member, request, transport, ipVersion, "probe job deadline exceeded"))
+					continue
+				}
+				result.Results = append(result.Results, runProbeMember(ctx, member, request, transport, ipVersion, soMark, plane.DirectDialer(), targets))
 			}
-			result.Results = append(result.Results, runProbeMember(ctx, member, request, transport, soMark, plane.DirectDialer()))
 		}
 	}
 	return result, nil
@@ -210,41 +223,36 @@ func probeMembers(plane *control.ControlPlane, request nativeapi.ProbeRequest) (
 		return []probeMember{{id: request.Target.NodeID, dialer: item}}, nil
 	}
 
-	groups := make(map[string]*dialer.Dialer)
 	groupDialers := make(map[string][]*dialer.Dialer)
 	for _, group := range plane.OutboundGroups() {
 		if group == nil {
 			continue
 		}
-		id := groupIDOf(group.Name)
-		groupDialers[id] = group.Dialers
-		for _, item := range group.Dialers {
-			if property := item.Property(); property != nil {
-				groups[nodeIDOf(property)] = item
-			}
-		}
+		groupDialers[groupIDOf(group.Name)] = group.Dialers
 	}
-	if _, ok := groupDialers[request.Target.GroupID]; !ok {
+	targetGroupID := request.Target.GroupID
+	targetDialers, ok := groupDialers[targetGroupID]
+	if !ok {
 		return nil, fmt.Errorf("group not found")
+	}
+	targetByID := make(map[string]*dialer.Dialer, len(targetDialers))
+	for _, item := range targetDialers {
+		if property := item.Property(); property != nil {
+			targetByID[nodeIDOf(property)] = item
+		}
 	}
 
 	var selected []string
 	if request.Members == nil || len(request.Members.Values) == 0 {
-		selected = append(selected, request.Target.GroupID)
+		selected = append(selected, targetGroupID)
 	} else {
-		for _, value := range request.Members.Values {
-			if value == "direct" || value == "leaves" {
-				selected = append(selected, request.Target.GroupID)
-				continue
-			}
-			selected = append(selected, value)
-		}
+		selected = append(selected, request.Members.Values...)
 	}
 
 	seen := map[string]struct{}{}
 	members := make([]probeMember, 0, len(selected))
-	addDialers := func(groupID string) {
-		for _, item := range groupDialers[groupID] {
+	addDialers := func() {
+		for _, item := range targetDialers {
 			property := item.Property()
 			if property == nil {
 				continue
@@ -258,18 +266,22 @@ func probeMembers(plane *control.ControlPlane, request nativeapi.ProbeRequest) (
 		}
 	}
 	for _, value := range selected {
-		if _, isGroup := groupDialers[value]; isGroup {
-			addDialers(value)
+		// `direct`/`leaves` and the target group itself select its whole
+		// direct-member set. Any other value must be one of those members; a
+		// node or group from another group is not a valid member of this one.
+		if value == targetGroupID || value == "direct" || value == "leaves" {
+			addDialers()
 			continue
 		}
-		if item, ok := nodeMap[value]; ok {
-			id := value
-			if _, duplicate := seen[id]; duplicate {
-				continue
-			}
-			seen[id] = struct{}{}
-			members = append(members, probeMember{id: id, dialer: item})
+		item, ok := targetByID[value]
+		if !ok {
+			return nil, nativeapi.NewAPIError(422, "invalid_request", "member "+value+" is not a direct member of the target group")
 		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		members = append(members, probeMember{id: value, dialer: item})
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].id < members[j].id })
 	if len(members) > probeMaxMembersPerJob {
@@ -278,18 +290,39 @@ func probeMembers(plane *control.ControlPlane, request nativeapi.ProbeRequest) (
 	return members, nil
 }
 
-func runProbeMember(parent context.Context, member probeMember, request nativeapi.ProbeRequest, transport string, soMark uint32, direct netproxy.Dialer) nativeapi.ProbeResultItem {
+func probeUnavailableResult(member probeMember, request nativeapi.ProbeRequest, transport, ipVersion, reason string) nativeapi.ProbeResultItem {
+	purpose := "data"
+	if request.Kind == "dns" {
+		purpose = "dns"
+	}
+	return nativeapi.ProbeResultItem{
+		MemberID:      member.id,
+		Kind:          request.Kind,
+		Purpose:       purpose,
+		Transport:     transport,
+		IPVersion:     ipVersion,
+		Warmth:        "cold",
+		State:         "unavailable",
+		HealthUpdated: false,
+		Error:         &reason,
+		ObservedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func runProbeMember(parent context.Context, member probeMember, request nativeapi.ProbeRequest, transport, ipVersion string, soMark uint32, direct netproxy.Dialer, targets probeCheckTargets) nativeapi.ProbeResultItem {
 	purpose := "data"
 	if request.Kind == "dns" {
 		purpose = "dns"
 	}
 	item := nativeapi.ProbeResultItem{
-		MemberID:      member.id,
-		Kind:          request.Kind,
-		Purpose:       purpose,
-		Transport:     transport,
-		IPVersion:     request.IPVersion,
-		Warmth:        request.Warmth,
+		MemberID:  member.id,
+		Kind:      request.Kind,
+		Purpose:   purpose,
+		Transport: transport,
+		IPVersion: ipVersion,
+		// Every probe below opens a fresh connection; copying the requested
+		// warmth claimed a reused connection the engine never had.
+		Warmth:        "cold",
 		State:         "unknown",
 		HealthUpdated: false,
 		ObservedAt:    time.Now().UTC().Format(time.RFC3339),
@@ -323,10 +356,17 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 	switch request.Kind {
 	case "tcp_connect":
 		// Report what the probe claims to test: whether the node's own server
-		// accepts a TCP connection. Dialling 1.1.1.1 through the proxy measured
-		// the far side's reachability instead, so a working node answered
-		// unavailable whenever the exit could not reach that address.
-		address := probeNodeAddress(member.dialer)
+		// accepts a TCP connection in the requested address family. Dialling
+		// 1.1.1.1 through the proxy measured the far side's reachability
+		// instead, so a working node answered unavailable whenever the exit
+		// could not reach that address.
+		address, addressErr := probeNodeAddressForFamily(ctx, member.dialer, item.IPVersion)
+		if addressErr != nil {
+			item.State = "unavailable"
+			reason := addressErr.Error()
+			item.Error = &reason
+			return item
+		}
 		if address == "" {
 			// A node without a server address (the builtin direct outbound) has
 			// no server to connect to, so fall back to a dial through the node.
@@ -336,9 +376,9 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 			elapsed, err = dialAndClose(ctx, conns, direct, soMark, "tcp", address)
 		}
 	case "http":
-		elapsed, err = probeHTTP(ctx, conns, member.dialer, soMark, item.IPVersion)
+		elapsed, err = probeHTTP(ctx, conns, member.dialer, soMark, item.IPVersion, targets)
 	case "dns":
-		elapsed, err = probeDNS(ctx, conns, member.dialer, soMark, item.IPVersion, transport)
+		elapsed, err = probeDNS(ctx, conns, member.dialer, soMark, item.IPVersion, transport, targets)
 	default:
 		item.State = "unavailable"
 		reason := fmt.Sprintf("probe kind %q is not supported", request.Kind)
@@ -355,6 +395,109 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 	item.State = "healthy"
 	item.LatencyMs = &latency
 	return item
+}
+
+// probeCheckTargets are the administrator-configured destinations for the
+// HTTP and DNS probes. A probe must exercise the same check URL / DNS target
+// the engine uses for health, not a hard-coded public endpoint.
+type probeCheckTargets struct {
+	httpURL    string
+	httpMethod string
+	dnsAddress string
+}
+
+func probeTargetsFor(active *runtimeGeneration, plane *control.ControlPlane, request nativeapi.ProbeRequest) probeCheckTargets {
+	group := probeGroupFor(active, plane, request)
+	if group == nil {
+		return probeCheckTargets{}
+	}
+	targets := probeCheckTargets{httpMethod: group.TcpCheckHttpMethod}
+	if len(group.TcpCheckUrl) > 0 {
+		targets.httpURL = group.TcpCheckUrl[0]
+	}
+	if len(group.UdpCheckDns) > 0 {
+		targets.dnsAddress = probeDNSHostPort(group.UdpCheckDns[0])
+	}
+	return targets
+}
+
+func probeGroupFor(active *runtimeGeneration, plane *control.ControlPlane, request nativeapi.ProbeRequest) *config.Group {
+	if active == nil || active.conf == nil {
+		return nil
+	}
+	byName := func(name string) *config.Group {
+		for i := range active.conf.Group {
+			if active.conf.Group[i].Name == name {
+				return &active.conf.Group[i]
+			}
+		}
+		return nil
+	}
+	if request.Target.Type == "group" {
+		for i := range active.conf.Group {
+			if groupIDOf(active.conf.Group[i].Name) == request.Target.GroupID {
+				return &active.conf.Group[i]
+			}
+		}
+		return nil
+	}
+	if request.Target.Type == "node" && plane != nil {
+		for _, group := range plane.OutboundGroups() {
+			if group == nil {
+				continue
+			}
+			for _, item := range group.Dialers {
+				if property := item.Property(); property != nil && nodeIDOf(property) == request.Target.NodeID {
+					return byName(group.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func probeDNSHostPort(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		raw = u.Host
+	}
+	if _, _, err := net.SplitHostPort(raw); err != nil {
+		return net.JoinHostPort(raw, "53")
+	}
+	return raw
+}
+
+// probeNodeAddressForFamily is probeNodeAddress with the requested address
+// family enforced. A tcp_connect request labelled ipv6 must not silently
+// connect to an IPv4 listener and report healthy.
+func probeNodeAddressForFamily(ctx context.Context, d *dialer.Dialer, ipVersion string) (string, error) {
+	if d == nil {
+		return "", fmt.Errorf("dialer is unavailable")
+	}
+	property := d.Property()
+	if property == nil {
+		return "", fmt.Errorf("dialer has no address")
+	}
+	host, port, err := net.SplitHostPort(property.Address)
+	if err != nil || host == "" || port == "" {
+		return "", nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		isIPv6 := ip.To4() == nil
+		if (ipVersion == "ipv6") != isIPv6 {
+			return "", fmt.Errorf("node server has no %s address", ipVersion)
+		}
+		return property.Address, nil
+	}
+	network := "ip4"
+	if ipVersion == "ipv6" {
+		network = "ip6"
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, network, host)
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("node server has no %s address", ipVersion)
+	}
+	return net.JoinHostPort(ips[0].String(), port), nil
 }
 
 // probeNodeAddress returns the node's own server address, which is what a
@@ -446,12 +589,21 @@ func dialAndClose(ctx context.Context, conns *probeConnRegistry, d netproxy.Dial
 
 // probeHTTP sends a real request through the node and requires a real response.
 // A bare TCP dial never proved the node forwards traffic.
-func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, soMark uint32, ipVersion string) (time.Duration, error) {
-	host := "1.1.1.1"
-	if ipVersion == "ipv6" {
-		host = "[2606:4700:4700::1111]"
+func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, soMark uint32, ipVersion string, targets probeCheckTargets) (time.Duration, error) {
+	target := targets.httpURL
+	if target == "" {
+		host := "1.1.1.1"
+		if ipVersion == "ipv6" {
+			host = "[2606:4700:4700::1111]"
+		}
+		target = "http://" + host + "/"
+	} else if !strings.Contains(target, "://") {
+		target = "http://" + target
 	}
-	target := "http://" + host + "/"
+	method := targets.httpMethod
+	if method == "" {
+		method = http.MethodGet
+	}
 	dialContext := func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := d.DialContext(ctx, common.MagicNetwork(network, soMark, false), address)
 		if err != nil {
@@ -465,7 +617,7 @@ func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, 
 		Transport: &http.Transport{DialContext: dialContext, DisableKeepAlives: true},
 		Timeout:   probeTimeout,
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -485,12 +637,15 @@ func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, 
 
 // probeDNS sends a real DNS query through the node and requires an answer to
 // that query, not merely any DNS-shaped packet.
-func probeDNS(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, soMark uint32, ipVersion, transport string) (time.Duration, error) {
+func probeDNS(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, soMark uint32, ipVersion, transport string, targets probeCheckTargets) (time.Duration, error) {
 	network := "udp"
 	if transport == "tcp" {
 		network = "tcp"
 	}
-	address := probeDNSAddress(ipVersion)
+	address := targets.dnsAddress
+	if address == "" {
+		address = probeDNSAddress(ipVersion)
+	}
 	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: 1, RecursionDesired: true})
 	builder.EnableCompression()
 	if err := builder.StartQuestions(); err != nil {
@@ -584,13 +739,29 @@ func parseDNSReply(reply []byte, query []byte, elapsed time.Duration) (time.Dura
 	if header.ID != queryHeader.ID {
 		return 0, fmt.Errorf("dns probe reply carries transaction ID %d, want %d", header.ID, queryHeader.ID)
 	}
-	replyQuestion, err := parser.Question()
+	replyQuestions, err := parser.AllQuestions()
 	if err != nil {
 		return 0, fmt.Errorf("dns probe reply carries no question")
 	}
-	if replyQuestion != queryQuestion {
+	if len(replyQuestions) != 1 || replyQuestions[0] != queryQuestion {
+		if len(replyQuestions) != 1 {
+			return 0, fmt.Errorf("dns probe reply carries %d questions, want 1", len(replyQuestions))
+		}
+		replyQuestion := replyQuestions[0]
 		return 0, fmt.Errorf("dns probe reply answers %s/%d, want %s/%d",
 			replyQuestion.Name.String(), replyQuestion.Type, queryQuestion.Name.String(), queryQuestion.Type)
+	}
+	// Parse every section a DNS message declares. Reading only the question
+	// let a header with ANCOUNT=1 and no answer bytes pass as healthy; a
+	// truncated authority/additional section was accepted for the same reason.
+	if _, err := parser.AllAnswers(); err != nil && !errors.Is(err, dnsmessage.ErrSectionDone) {
+		return 0, fmt.Errorf("dns probe reply has an incomplete answer section")
+	}
+	if _, err := parser.AllAuthorities(); err != nil && !errors.Is(err, dnsmessage.ErrSectionDone) {
+		return 0, fmt.Errorf("dns probe reply has an incomplete authority section")
+	}
+	if _, err := parser.AllAdditionals(); err != nil && !errors.Is(err, dnsmessage.ErrSectionDone) {
+		return 0, fmt.Errorf("dns probe reply has an incomplete additional section")
 	}
 	return elapsed, nil
 }

@@ -7,6 +7,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -27,8 +29,9 @@ type storedFrame struct {
 }
 
 type frameSubscriber struct {
-	ch    chan nativeapi.SSEFrame
-	match func(event string, data any) bool
+	ch      chan nativeapi.SSEFrame
+	match   func(event string, data any) bool
+	bindTag string
 }
 
 // frameHub is a bounded, resumable SSE ring shared by logs and events.
@@ -97,7 +100,7 @@ func (h *frameHub) publish(event string, data any) {
 			continue
 		}
 		select {
-		case sub.ch <- nativeapi.SSEFrame{ID: frame.id, Event: event, Data: data}:
+		case sub.ch <- nativeapi.SSEFrame{ID: boundSSEFrameID(frame.id, sub.bindTag), Event: event, Data: data}:
 		default:
 			// Slow client: close its stream instead of blocking the publisher.
 			close(sub.ch)
@@ -164,12 +167,49 @@ func (h *frameHub) frameID(seq uint64) string {
 	return fmt.Sprintf("%s:%s:%d", h.instanceID, h.prefix, seq)
 }
 
+// sseBindTag is a short, stable fingerprint of the normalized filter set.
+func sseBindTag(bind string) string {
+	if bind == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(bind))
+	return hex.EncodeToString(sum[:4])
+}
+
+func boundSSEFrameID(id, tag string) string {
+	if tag == "" {
+		return id
+	}
+	return id + "@" + tag
+}
+
+func splitSSECursor(id string) (string, string) {
+	if index := strings.LastIndexByte(id, '@'); index >= 0 {
+		return id[:index], id[index+1:]
+	}
+	return id, ""
+}
+
 // open builds a resumable stream. An unknown or expired cursor reports
 // event_cursor_expired, as the contract requires.
 func (h *frameHub) open(lastEventID string, match func(event string, data any) bool) (*nativeapi.SSEStream, error) {
+	return h.openBound(lastEventID, "", match)
+}
+
+// openBound binds the resumable cursor to one normalized filter set. The tag
+// is appended to every frame id this subscription sees, so a client that
+// changes level/target and reconnects with the old id is rejected instead of
+// receiving an empty replay that silently skips earlier matching records.
+func (h *frameHub) openBound(lastEventID, bind string, match func(event string, data any) bool) (*nativeapi.SSEStream, error) {
 	if h == nil {
 		return nil, nativeapi.NewAPIError(503, "temporarily_unavailable", "event stream is unavailable")
 	}
+	bindTag := sseBindTag(bind)
+	cursorID, cursorTag := splitSSECursor(lastEventID)
+	if cursorTag != "" && cursorTag != bindTag {
+		return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor was issued for a different filter set")
+	}
+	lastEventID = cursorID
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
@@ -202,6 +242,11 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 			switch {
 			case h.seq == 0 && lastEventID == h.frameID(0):
 				readySeq = 0
+			case h.length == 0 && h.seq > 0 && lastEventID == h.frameID(h.seq):
+				// The ring is empty but records existed. The checkpoint this
+				// server just handed out names the current sequence, not zero;
+				// accepting it keeps a reconnect from failing as expired.
+				readySeq = h.seq
 			case h.length > 0 && lastEventID == h.frameID(boundary):
 				readySeq = boundary
 			default:
@@ -210,10 +255,14 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 		}
 	} else if h.length > 0 {
 		readySeq = h.frames[h.start].seq - 1
+	} else {
+		// An empty ring still has a sequence: a new stream must checkpoint at
+		// that sequence, or reconnect would replay an id the hub rejects.
+		readySeq = h.seq
 	}
 
 	ready := nativeapi.SSEFrame{
-		ID:    h.frameID(readySeq),
+		ID:    boundSSEFrameID(h.frameID(readySeq), bindTag),
 		Event: "stream.ready",
 		Data: nativeapi.StreamReadyEvent{
 			InstanceID: h.instanceID,
@@ -229,12 +278,12 @@ func (h *frameHub) open(lastEventID string, match func(event string, data any) b
 		if match != nil && !match(frame.event, frame.data) {
 			continue
 		}
-		replay = append(replay, nativeapi.SSEFrame{ID: frame.id, Event: frame.event, Data: frame.data})
+		replay = append(replay, nativeapi.SSEFrame{ID: boundSSEFrameID(frame.id, bindTag), Event: frame.event, Data: frame.data})
 	}
 
 	id := h.nextSub
 	h.nextSub++
-	sub := &frameSubscriber{ch: make(chan nativeapi.SSEFrame, 256), match: match}
+	sub := &frameSubscriber{ch: make(chan nativeapi.SSEFrame, 256), match: match, bindTag: bindTag}
 	h.subs[id] = sub
 	cancel := func() {
 		h.mu.Lock()
@@ -375,7 +424,7 @@ func (p *nativeAPIProvider) OpenLogStream(ctx context.Context, level, target, la
 		}
 		return true
 	}
-	return p.logHub.open(lastEventID, match)
+	return p.logHub.openBound(lastEventID, "log\x00"+level+"\x00"+target, match)
 }
 
 // EventKinds lists the invalidation events this engine publishes.
@@ -402,7 +451,7 @@ func (p *nativeAPIProvider) OpenEventStream(ctx context.Context, kinds []string,
 		_, ok := allowed[event]
 		return ok
 	}
-	return p.eventHub.open(lastEventID, match)
+	return p.eventHub.openBound(lastEventID, "event\x00"+strings.Join(kinds, ",")+"\x00"+flowID, match)
 }
 
 func (p *nativeAPIProvider) publishRuntimeUpdated() {

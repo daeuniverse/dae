@@ -239,3 +239,48 @@ func TestFrameHubRefusesStreamsAfterClose(t *testing.T) {
 		t.Fatal("a closed hub accepted a new stream")
 	}
 }
+
+func TestFrameHubEmptyRingCheckpointIsResumable(t *testing.T) {
+	hub := newFrameHub("instance-1", "events", 2, time.Minute, 2)
+	hub.publish("runtime.updated", map[string]any{})
+	// Simulate the last retained frame expiring: the sequence remains, but the
+	// ring is empty.
+	hub.mu.Lock()
+	hub.start = 0
+	hub.length = 0
+	hub.mu.Unlock()
+
+	stream, err := hub.open("", nil)
+	if err != nil {
+		t.Fatalf("open empty ring: %v", err)
+	}
+	checkpoint := stream.Ready.ID
+	stream.Cancel()
+	if checkpoint == hub.frameID(0) {
+		t.Fatalf("empty ring checkpoint = %s, want the current sequence", checkpoint)
+	}
+	resumed, err := hub.open(checkpoint, nil)
+	if err != nil {
+		t.Fatalf("reconnecting with the empty-ring checkpoint failed: %v", err)
+	}
+	resumed.Cancel()
+}
+
+func TestFrameHubRejectsCursorFromDifferentFilterSet(t *testing.T) {
+	hub := newFrameHub("instance-1", "logs", 4, time.Minute, 4)
+	hub.publish("log", map[string]any{})
+	stream, err := hub.openBound("", "level=info\x00target=daemon", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := stream.Ready.ID
+	stream.Cancel()
+	if _, err := hub.openBound(checkpoint, "level=warn\x00target=daemon", nil); err == nil {
+		t.Fatal("a cursor from another filter set was accepted")
+	}
+	resumed, err := hub.openBound(checkpoint, "level=info\x00target=daemon", nil)
+	if err != nil {
+		t.Fatalf("same-filter resume failed: %v", err)
+	}
+	resumed.Cancel()
+}

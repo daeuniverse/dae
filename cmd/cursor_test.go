@@ -143,10 +143,24 @@ func TestPageAfterRejectsAnEvictedAnchor(t *testing.T) {
 func TestPageAfterExpectingDetectsEvictedNext(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	key := func(s string) string { return s }
-	if _, _, err := pageAfterExpecting([]string{"c", "b", "a"}, key, "c", "b", 1, "i", "dns_log", "bind", now); err != nil {
+	if _, _, err := pageAfterExpecting([]string{"c", "b", "a"}, key, "c", "b", "", 1, "i", "dns_log", "bind", now); err != nil {
 		t.Fatalf("intact walk failed: %v", err)
 	}
-	if _, _, err := pageAfterExpecting([]string{"c", "a"}, key, "c", "b", 1, "i", "dns_log", "bind", now); err == nil {
+	if _, _, err := pageAfterExpecting([]string{"c", "a"}, key, "c", "b", "", 1, "i", "dns_log", "bind", now); err == nil {
 		t.Fatal("evicted next record was not reported")
+	}
+}
+
+func TestPageAfterExpectingDetectsEvictedTail(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	key := func(s string) string { return s }
+	// The walk started when the oldest retained record was "a". If "a" has
+	// been evicted while the anchor survived, a later page would silently omit
+	// it even though expectNext still matches.
+	if _, _, err := pageAfterExpecting([]string{"c", "b"}, key, "", "", "a", 1, "i", "dns_log", "bind", now); err == nil {
+		t.Fatal("evicted tail was not reported")
+	}
+	if _, _, err := pageAfterExpecting([]string{"c", "b", "a"}, key, "", "", "a", 1, "i", "dns_log", "bind", now); err != nil {
+		t.Fatalf("intact tail failed: %v", err)
 	}
 }

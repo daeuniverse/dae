@@ -375,13 +375,22 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 	}
 	status := p.status.snapshot()
 	entries, _ := plane.FlowHistory()
+	// `all` is a contract selector, not a literal network/state value.
+	networkFilter := filter.Network
+	if networkFilter == "all" {
+		networkFilter = ""
+	}
+	stateFilter := filter.State
+	if stateFilter == "all" {
+		stateFilter = ""
+	}
 	matched := make([]control.SessionFlowHistoryEntry, 0, len(entries))
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
-		if filter.Network != "" && entry.Network != filter.Network {
+		if networkFilter != "" && entry.Network != networkFilter {
 			continue
 		}
-		if filter.State != "" && entry.State != filter.State {
+		if stateFilter != "" && entry.State != stateFilter {
 			continue
 		}
 		if filter.ConnectionID != "" && connectionIDOfFlow(entry.ID) != filter.ConnectionID {
@@ -393,17 +402,17 @@ func (p *nativeAPIProvider) ListFlows(ctx context.Context, filter nativeapi.Flow
 	}
 	now := time.Now()
 	bind := pageCursorBind(filter.Network, filter.State, filter.ConnectionID, filter.Limit)
-	after, expectNext := "", ""
+	after, expectNext, oldest := "", "", ""
 	if filter.Cursor != "" {
-		parsed, next, err := decodePageCursorNext(status.InstanceID, "flows", bind, filter.Cursor, now)
+		parsed, next, cursorOldest, err := decodePageCursorNext(status.InstanceID, "flows", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.FlowList{}, err
 		}
-		after, expectNext = parsed, next
+		after, expectNext, oldest = parsed, next, cursorOldest
 	}
 	// Flow IDs are stable across reads, so they anchor the walk while finished
 	// flows keep arriving at the head of the history.
-	page, next, err := pageAfterExpecting(matched, func(entry control.SessionFlowHistoryEntry) string { return entry.ID }, after, expectNext, filter.Limit, status.InstanceID, "flows", bind, now)
+	page, next, err := pageAfterExpecting(matched, func(entry control.SessionFlowHistoryEntry) string { return entry.ID }, after, expectNext, oldest, filter.Limit, status.InstanceID, "flows", bind, now)
 	if err != nil {
 		return nativeapi.FlowList{}, err
 	}
@@ -433,6 +442,17 @@ func (p *nativeAPIProvider) GetFlow(ctx context.Context, flowID string) (*native
 	}
 	status := p.status.snapshot()
 	entry, ok := plane.FlowHistoryByID(flowID)
+	if !ok {
+		// /connections exposes live flow ids; a GET of that id must return the
+		// live record instead of 410 until the flow closes and enters history.
+		for _, flow := range plane.ActiveFlowSnapshots() {
+			if flow.ID == flowID {
+				entry = control.SessionFlowHistoryEntry{SessionFlowSnapshot: flow, State: "active"}
+				ok = true
+				break
+			}
+		}
+	}
 	if !ok {
 		return nil, nativeapi.NewAPIError(410, "flow_expired", "flow is no longer retained")
 	}

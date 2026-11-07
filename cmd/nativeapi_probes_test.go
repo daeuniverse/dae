@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -121,7 +122,7 @@ func TestProbeNodeAddressUsesTheNodeServer(t *testing.T) {
 }
 
 func TestProbeRejectsUnknownKind(t *testing.T) {
-	item := runProbeMember(context.Background(), probeMember{id: "n", dialer: nil}, nativeapi.ProbeRequest{Kind: "icmp"}, "tcp", 0, nil)
+	item := runProbeMember(context.Background(), probeMember{id: "n", dialer: nil}, nativeapi.ProbeRequest{Kind: "icmp"}, "tcp", "ipv4", 0, nil, probeCheckTargets{})
 	if item.State != "unavailable" {
 		t.Fatalf("state = %q, want unavailable", item.State)
 	}
@@ -209,4 +210,16 @@ func buildProbeDNSReplyHeaderOnly(t *testing.T, id uint16) []byte {
 		t.Fatalf("finish: %v", err)
 	}
 	return msg
+}
+
+func TestParseDNSReplyRejectsDeclaredAnswerWithoutBytes(t *testing.T) {
+	query := buildProbeDNSQuery(t, 7, "example.com.")
+	reply := buildProbeDNSReply(t, query, 7, "example.com.")
+	// ANCOUNT=1 with no answer bytes: the header claims a section the payload
+	// does not contain. The old parser never read the section and reported it
+	// healthy.
+	binary.BigEndian.PutUint16(reply[6:8], 1)
+	if _, err := parseDNSReply(reply, query, time.Millisecond); err == nil {
+		t.Fatal("parseDNSReply accepted a declared but missing answer section")
+	}
 }

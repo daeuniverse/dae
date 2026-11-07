@@ -160,7 +160,7 @@ func (p *nativeAPIProvider) DnsCache(ctx context.Context, filter nativeapi.DnsCa
 		return entries[i].EntryID < entries[j].EntryID
 	})
 	instance := p.status.snapshot().InstanceID
-	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit)
+	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit, controller.DnsCacheRevision())
 	after := ""
 	if filter.Cursor != "" {
 		parsed, err := decodePageCursor(instance, "dns_cache", bind, filter.Cursor, now)
@@ -261,8 +261,13 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 	matched := make([]nativeapi.DnsLogRecord, 0, len(records))
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
-		if name != "" && dnsmessage.CanonicalName(record.Question.Name) != name {
-			continue
+		if name != "" {
+			questionName := dnsmessage.CanonicalName(record.Question.Name)
+			// The filter is a name or a suffix: name=example must match
+			// www.example.com as well as example.com.
+			if questionName != name && !strings.HasSuffix(questionName, "."+name) {
+				continue
+			}
 		}
 		if len(types) > 0 {
 			if _, ok := types[record.Question.Qtype]; !ok {
@@ -303,15 +308,15 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 	bind := pageCursorBind(name, filter.Types, filter.Src, filter.Limit)
 	// The epoch ties a cursor to this log: a replaced store restarts the ids.
 	kind := "dns_log:" + strconv.FormatUint(controller.DnsLogEpoch(), 10)
-	after, expectNext := "", ""
+	after, expectNext, oldest := "", "", ""
 	if filter.Cursor != "" {
 		var err error
-		after, expectNext, err = decodePageCursorNext(instance, kind, bind, filter.Cursor, now)
+		after, expectNext, oldest, err = decodePageCursorNext(instance, kind, bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsLogList{}, err
 		}
 	}
-	page, next, err := pageAfterExpecting(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, expectNext, filter.Limit, instance, kind, bind, now)
+	page, next, err := pageAfterExpecting(matched, func(record nativeapi.DnsLogRecord) string { return record.ID }, after, expectNext, oldest, filter.Limit, instance, kind, bind, now)
 	if err != nil {
 		return nativeapi.DnsLogList{}, err
 	}
@@ -382,7 +387,10 @@ func nativeDnsAction(kind, action string) string {
 		case "accept", "reject", "requery":
 			return action
 		}
-		return "accept"
+		// A response rule that names an upstream asks for that answer to be
+		// requeried through it; projecting "accept" dropped both the action
+		// and the upstream from the contract body.
+		return "requery"
 	}
 }
 
@@ -440,6 +448,15 @@ func (p *nativeAPIProvider) QueryDns(ctx context.Context, request nativeapi.DnsQ
 		}
 		return nativeapi.DnsQueryResponse{}, err
 	}
+	routeSource := "dns.routing"
+	switch {
+	case request.Upstream != "":
+		routeSource = "forced"
+	default:
+		if plane, planeErr := p.activeControlPlane(); planeErr == nil && len(plane.SnapshotDnsRules().Request) == 0 {
+			routeSource = "default"
+		}
+	}
 	response := nativeapi.DnsQueryResponse{
 		Domain:    request.Domain,
 		CacheMode: request.CacheMode,
@@ -456,14 +473,16 @@ func (p *nativeAPIProvider) QueryDns(ctx context.Context, request nativeapi.DnsQ
 				Name: result.Question.Name,
 				Type: dnsTypeName(result.Question.Qtype),
 			},
-			Route:   nativeapi.DnsRoute{Source: "dns.routing", Rule: nil},
+			Route:   nativeapi.DnsRoute{Source: routeSource, Rule: nil},
 			Answers: nativeDnsAnswers(result.Answers),
 		}
 		if result.CacheEntryID != "" {
 			value := result.CacheEntryID
 			item.CacheEntryID = &value
 		}
-		if result.Upstream != "" {
+		// A cache hit did not contact an upstream; naming one would claim an
+		// exchange that never happened.
+		if !result.Cached && result.Upstream != "" {
 			value := result.Upstream
 			item.Upstream = &value
 		}
