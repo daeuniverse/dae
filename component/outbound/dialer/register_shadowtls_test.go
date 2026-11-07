@@ -33,12 +33,12 @@ func TestShadowTLSNodeIDMatchesWithAndWithoutName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bare link: %v", err)
 	}
-	defer bare.Close()
+	t.Cleanup(func() { _ = bare.Close() })
 	named, err := NewFromLinkContext(context.Background(), option, InstanceOption{DisableCheck: true}, "edge:"+link, "")
 	if err != nil {
 		t.Fatalf("named link: %v", err)
 	}
-	defer named.Close()
+	t.Cleanup(func() { _ = named.Close() })
 	if got, want := shadowTLSNodeID(named), shadowTLSNodeID(bare); got != want {
 		t.Fatalf("named node id = %s, want the bare-link id %s (links %q / %q)", got, want, named.Property().Link, bare.Property().Link)
 	}

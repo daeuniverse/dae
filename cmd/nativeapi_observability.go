@@ -223,7 +223,8 @@ func (h *frameHub) openBound(lastEventID, bind string, match func(event string, 
 	}
 
 	readySeq := uint64(0)
-	if lastEventID != "" {
+	switch {
+	case lastEventID != "":
 		if cursor, ok := h.frameByIDLocked(lastEventID); ok {
 			readySeq = cursor.seq
 		} else {
@@ -253,9 +254,9 @@ func (h *frameHub) openBound(lastEventID, bind string, match func(event string, 
 				return nil, nativeapi.NewAPIError(409, "event_cursor_expired", "event cursor is unknown or expired")
 			}
 		}
-	} else if h.length > 0 {
+	case h.length > 0:
 		readySeq = h.frames[h.start].seq - 1
-	} else {
+	default:
 		// An empty ring still has a sequence: a new stream must checkpoint at
 		// that sequence, or reconnect would replay an id the hub rejects.
 		readySeq = h.seq
