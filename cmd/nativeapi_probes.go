@@ -41,6 +41,14 @@ const (
 	probeRateLimitedRetryAfter = 60
 )
 
+// probeTargetSlot is one node's permit semaphore plus the number of in-flight
+// acquisitions (holders and waiters) that reference it. The reference count is
+// what lets the slot table drop a node that is no longer being probed.
+type probeTargetSlot struct {
+	slots chan struct{}
+	refs  int
+}
+
 // probeGate bounds how much probe work a client can queue and how fast it can
 // submit it, so the advertised capabilities.limits are actually enforced.
 type probeGate struct {
@@ -103,26 +111,54 @@ func (g *probeGate) reserve(now time.Time) error {
 // capabilities.probes.limits.max_concurrent_per_target advertises and returns
 // its release. The permit is held for exactly one probe row, so the limit is
 // per node and independent of which job (or how many jobs) is probing it. The
-// map is keyed by node id and only ever holds ids a probe resolved through
-// probeMembers, so it stays proportional to the probed node set.
+// map is keyed by node id and its entries are dropped once the last acquisition
+// for a node finishes, so it stays proportional to the nodes being probed rather
+// than to every node id the process has ever probed.
 func (o *nativeAPIOperations) acquireProbeTarget(ctx context.Context, nodeID string) (func(), error) {
 	o.probeTargetsMu.Lock()
 	if o.probeTargetSlots == nil {
-		o.probeTargetSlots = make(map[string]chan struct{})
+		o.probeTargetSlots = make(map[string]*probeTargetSlot)
 	}
-	slots := o.probeTargetSlots[nodeID]
-	if slots == nil {
-		slots = make(chan struct{}, probeMaxActiveJobs)
-		o.probeTargetSlots[nodeID] = slots
+	entry := o.probeTargetSlots[nodeID]
+	if entry == nil {
+		entry = &probeTargetSlot{slots: make(chan struct{}, probeMaxActiveJobs)}
+		o.probeTargetSlots[nodeID] = entry
 	}
+	// Count holders and waiters alike: the entry may only be dropped when no
+	// acquisition can still reach it, or a waiter would be left on a channel
+	// nobody else limits.
+	entry.refs++
 	o.probeTargetsMu.Unlock()
 
 	select {
-	case slots <- struct{}{}:
+	case entry.slots <- struct{}{}:
 	case <-ctx.Done():
+		o.releaseProbeTarget(nodeID, entry)
 		return nil, ctx.Err()
 	}
-	return func() { <-slots }, nil
+	released := false
+	return func() {
+		if released {
+			return
+		}
+		released = true
+		<-entry.slots
+		o.releaseProbeTarget(nodeID, entry)
+	}, nil
+}
+
+// releaseProbeTarget drops one reference to a node's slot set and removes the
+// map entry once the last one is gone.
+func (o *nativeAPIOperations) releaseProbeTarget(nodeID string, entry *probeTargetSlot) {
+	o.probeTargetsMu.Lock()
+	defer o.probeTargetsMu.Unlock()
+	entry.refs--
+	if entry.refs > 0 {
+		return
+	}
+	if current, ok := o.probeTargetSlots[nodeID]; ok && current == entry {
+		delete(o.probeTargetSlots, nodeID)
+	}
 }
 
 // run waits for a concurrency slot, runs fn, then frees the queue slot.

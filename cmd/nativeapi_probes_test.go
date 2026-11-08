@@ -339,3 +339,45 @@ func TestProbeCheckIPOverrideFollowsTheConfiguredFamily(t *testing.T) {
 		t.Fatalf("override from an empty list = %q, want none", got)
 	}
 }
+
+// TestAcquireProbeTargetPrunesIdleNodes pins the memory behaviour of the slot
+// table: a node id that is no longer probed must not stay in the map, or every
+// node a long-running daemon ever probed would be retained forever.
+func TestAcquireProbeTargetPrunesIdleNodes(t *testing.T) {
+	o := &nativeAPIOperations{}
+	ctx := context.Background()
+	release, err := o.acquireProbeTarget(ctx, "n_transient")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if len(o.probeTargetSlots) != 1 {
+		t.Fatalf("slots = %d, want 1 while a probe holds the node", len(o.probeTargetSlots))
+	}
+	release()
+	if len(o.probeTargetSlots) != 0 {
+		t.Fatalf("slots = %d, want the idle node to be pruned", len(o.probeTargetSlots))
+	}
+
+	// A cancelled wait releases its reference too, so an abandoned probe cannot
+	// pin the entry.
+	held, err := o.acquireProbeTarget(ctx, "n_busy")
+	if err != nil {
+		t.Fatalf("acquire busy: %v", err)
+	}
+	for i := 0; i < probeMaxActiveJobs-1; i++ {
+		extra, err := o.acquireProbeTarget(ctx, "n_busy")
+		if err != nil {
+			t.Fatalf("acquire busy %d: %v", i, err)
+		}
+		defer extra()
+	}
+	cancelled, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if _, err := o.acquireProbeTarget(cancelled, "n_busy"); err == nil {
+		t.Fatal("the slot set is full, the wait must time out")
+	}
+	held()
+	if len(o.probeTargetSlots) != 1 {
+		t.Fatalf("slots = %d, want the node kept by the remaining holders", len(o.probeTargetSlots))
+	}
+}

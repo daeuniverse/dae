@@ -29,7 +29,7 @@ type nativeAPIOperations struct {
 	// across jobs. A single job already runs up to four rows at once, so
 	// without this four concurrent jobs put sixteen probes on one node.
 	probeTargetsMu   sync.Mutex
-	probeTargetSlots map[string]chan struct{}
+	probeTargetSlots map[string]*probeTargetSlot
 
 	// resultMu guards resultResolvers, which lets a write path say what its
 	// completed operation must report. The contract asks a node_create for the
