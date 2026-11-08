@@ -163,7 +163,19 @@ func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOpti
 		nodeToTagMap:      make(map[*dialer.Dialer]string),
 		nodeToProviderMap: make(map[*dialer.Dialer]string),
 	}
-	for providerTag, nodes := range tagToNodeList {
+	// Providers are visited in a fixed order: a group's member indexes are the
+	// dialer order, and `fixed(n)`/`select(n)` plus the API's member list name a
+	// member by that index. Go randomises map iteration, so ranging the map
+	// directly made the same configuration resolve index n to a different node
+	// on every start and reload. The empty key sorts first, which keeps the
+	// inline node section ahead of the subscriptions.
+	providerTags := make([]string, 0, len(tagToNodeList))
+	for providerTag := range tagToNodeList {
+		providerTags = append(providerTags, providerTag)
+	}
+	sort.Strings(providerTags)
+	for _, providerTag := range providerTags {
+		nodes := tagToNodeList[providerTag]
 		displayTag := providerTag
 		if tag, ok := displayTags[providerTag]; ok {
 			displayTag = tag
