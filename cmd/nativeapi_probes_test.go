@@ -331,4 +331,11 @@ func TestProbeCheckIPOverrideFollowsTheConfiguredFamily(t *testing.T) {
 	if got := probeCheckIPOverride(raw[:1], "ipv4"); got != "" {
 		t.Fatalf("override without a literal = %q, want none", got)
 	}
+	// An unconfigured list is nil, and indexing it must stay safe.
+	if got := probeCheckIPOverride(nil, "ipv4"); got != "" {
+		t.Fatalf("override from an empty list = %q, want none", got)
+	}
+	if got := probeCheckIPOverride([]string{}, "ipv6"); got != "" {
+		t.Fatalf("override from an empty list = %q, want none", got)
+	}
 }

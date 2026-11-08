@@ -613,8 +613,11 @@ func probeDNSHostPort(raw string) string {
 // probes have to honour the same entries or a configured IP is replaced by a
 // system-resolver lookup.
 func probeCheckIPOverride(raw []string, ipVersion string) string {
-	for _, value := range raw[1:] {
-		addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	// Index from 1 instead of slicing raw[1:]: an unconfigured check list is
+	// nil/empty, and slicing it at 1 panics. A list with only the destination
+	// simply has no override.
+	for i := 1; i < len(raw); i++ {
+		addr, err := netip.ParseAddr(strings.TrimSpace(raw[i]))
 		if err != nil {
 			continue
 		}
