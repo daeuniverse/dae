@@ -1,0 +1,1813 @@
+# dae Native API 适配计划（api-standardize）
+
+> 目标契约：`github.com/daeuniverse/api-standardize`（branch `honk`，contract `0.1.0-draft`）
+>
+> 本文是实施计划，不是最终契约文档。契约以 `api-standardize/api/openapi.yaml` 为准
+> （分模块文件：`api/{config,discovery,nodes-groups,runtime,dns,rules,operations-probes,...}.yaml`；仓库 `source/` 下是文档站点，不含 schema）。
+>
+> 实现状态（2026-11-03 同步，对照 `ef6514e`）：P0-1 ~ P0-6、P1-1 ~ P1-4、P2 的 nodes / 组健康 / can_override，以及 P3-1 ~ P3-12 全部完成（P0-6 为自托管前端 `/ui/`）。capabilities 中所有已接入资源按 provider 是否接入返回 `available: true`：`groups`、`traffic_history`、`operations`、`runtime_outbounds`、`runtime_memory`、`memory_history`、`datapath`、`rules`、`providers`、`geodata`、`dns_cache`、`dns_log`、`dns_rules`、`dns_query`、`connections`、`flows`、`events`、`logs`、`probes`。另已接入 `routing_trace`（`POST /routing/trace`，仅 `resolve: "none"`，规则步骤超过 4096 时不可用）、`runtime/direct-stats`（需 `api.direct_stats`）、P4 配置源级读写（受 `api.config_write` + 受管目录布局闸门）。仍声明不可用的是 `runtime/settings`、`auth/*`；providers 的创建/删除与 geodata 的 update 返回 `404 capability_not_supported`；`nodes` 写端点随写入闸门开放（关闭时 `404`），另新增契约外的 `PATCH /api/v1/nodes/{node_id}`（改名/换链接，见 3 节 P4-7 的 2026-11-05 补充），`providers/{id}/refresh` 只依赖 operations（运行期 `can_refresh=true`，仅订阅可刷新）。另有 `api.disable_connection_bytes`（停发连接的累计字节）、`runtime/outbounds` 不再输出 builtin `block` 行、`flows.coverage.kernel_block` 移除。P0-2 的 ServeMux 路径模式仍未采用（等价于 path switch）。剩余工作：契约 schema 测试（固定 `openapi.yaml` 到 testdata）与端到端集成测试。**2026-10-31 的线上联调修复（直连流量归属、节点延迟、`/rules` 体积、`/policies` 选区、`purpose` 取值、内存 cgroup）见「10. 联调问题修复纪要」。**
+>
+> **P4（配置写入：DNS / Routing 模块编辑）已于 2026-11-01 立项并落地，见 3 节 P4 章节。**
+> 闸门关闭时（未开 `api.config_write` 或目录布局不受管），`config*` 写端点返回 `403 permission_denied`，而 `PATCH /groups/{id}/config` 与 `POST/DELETE /nodes` 返回 `404 capability_not_supported`（对应能力位 `config.writable` / `groups.config_patch` / `nodes.can_manage` 同时为 false）。
+> P4 不引入 `global.data_dir`（订阅缓存仍在 `<配置目录>/persist.d/`），且 `api.dae` 对前端隐藏。
+
+## 1. 结论与范围
+
+### 1.1 现状
+
+- dae 目前没有原生 HTTP 控制面，只有 `pprof_port` 的 `net/http/pprof` listener。
+- 没有 instance id、config revision、runtime generation id。
+- 组策略支持 `random`、`fixed`、`min`、`min_avg10`、`min_moving_avg`，没有可运行时切换成员的 `select` 组。
+- 已有可复用能力：
+  - `control.SnapshotRuntimeStats`：上传/下载总量、速率、连接数、历史样本。
+  - `control.SnapshotNodeLatencies`：节点延迟快照。
+  - `control.ActiveTCPConnections`、`DefaultUdpEndpointPool.Len()`。
+  - reload / suspend 信号机制（`SIGUSR1` / `SIGUSR2`）。
+  - eBPF datapath generation（`datapathGeneration`）。
+
+### 1.2 本期范围
+
+按需求确定：
+
+1. 增加 `select` 组。
+2. 首期不涉及配置编辑与保存功能（P4 已补充源级写入）。
+3. 使用独立的顶级 `api` 配置段（不同于 honk 的 `experimental.native_api`）。
+4. 支持自托管前端：固定挂载 `/ui/`，目录由 `api.ui` 配置。
+
+建议首期实现：
+
+| 模块 | 内容 |
+|---|---|
+| `base` profile | discovery、version、capabilities、runtime |
+| `groups` | 只读 group 资源 + selector 的运行时 selection |
+| `operations` | reload / suspend / resume |
+| `traffic_history` | 运行时流量历史 |
+| `ui` | 自托管前端：`/ui/` 静态托管（公开），其余非 `/api` 路径 302 到 `/ui/` |
+| 安全 | token 认证、CORS、Host/Origin 校验、错误 envelope；非 loopback 必须 secret |
+| 可观测 | 访问日志：成功 debug、拒绝/5xx info/error、每 60s 汇总一行 |
+
+首期明确不做（以下为立项时范围；其中 config、nodes 写入、flows/connections/events/logs/DNS/probes 已在 P3/P4 实现，见 4 节）：
+
+- provider 创建/删除
+- geodata 设置、runtime settings PATCH
+- `full_transparency` profile
+
+> `GET /groups/{group_id}/config` 是只读，用于满足 groups 资源；不属于“配置编辑/保存”。
+
+## 2. 关键设计决策
+
+### 2.1 顶级 `api` 配置段
+
+```dae
+api {
+    enabled: true
+    listen: '127.0.0.1:9527'
+    secret: 'change-me'
+    allow_anonymous_loopback: false
+    allow_origins: 'http://localhost:5173,https://ui.example.com'
+    allowed_hosts: 'localhost,127.0.0.1,api.example.com'
+    ui: '/usr/share/doona'      # 可选：在 /ui/ 托管已构建的前端
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | bool | `false` | 避免旧配置升级后自动暴露 API；`Config.Marshal` 往返安全 |
+| `listen` | string | `127.0.0.1:9527` | 数字 IP + 端口（1–65535）；不接受 hostname 或 `:port` 简写 |
+| `secret` | string | 空 | 非空 = token mode；所有非 discovery 请求必须 `Authorization: Bearer <secret>` |
+| `allow_anonymous_loopback` | bool | `false` | 仅当 `secret` 为空且实际监听地址为 loopback 时，允许无凭证访问 |
+| `allow_origins` | []string | 空 | 逗号分隔；空表示关闭跨域 |
+| `allowed_hosts` | []string | 空 | DNS Host 白名单；防 DNS rebinding / 反向代理 Host 校验；省略端口按 80 处理 |
+| `ui` | string | 空 | 已构建前端的绝对目录；在 `/ui/` 无凭证托管，非 `/api` 路径 302 到此。目录不可用（缺失/无 `index.html`）只 warning，不阻断启动 |
+| `config_write` | bool | `false` | 允许 API 替换可写配置源、补丁组配置、增删 inline 节点；置 true 时 `secret` 必须非空，且配置目录必须符合受管布局（P4-1） |
+| `disable_connection_bytes` | bool | `false` | 为 true 时 `/connections` 不再输出 `upload_bytes` / `download_bytes`（恒 `null`），其余字段不变 |
+| `direct_stats` | bool | `false` | 只读 eBPF 直连观测开关；优先 TCX，内核不支持时回退 classic TC filter 并记 warning；开启后 `GET /runtime/direct-stats` 有数，并把内核直连链路字节并入 `runtime/outbounds` 的 builtin `direct` 行 |
+
+设计约束：
+
+- `api` 是顶级 section，不是 `global` 的子项，也不是 `experimental.native_api`。
+- `enabled=false` 时不监听。
+- `enabled=true` 时必须满足以下之一，否则 `dae validate` / 启动失败：
+  1. `secret` 非空（token mode）；
+  2. `secret` 为空 + `allow_anonymous_loopback: true` + 实际监听地址为 loopback。
+- 非 loopback 监听必须 `secret` 非空；`allow_anonymous_loopback` 不能替代 `secret`。
+- `0.0.0.0` / `::` 等 wildcard bind 视为非 loopback，必须 `secret`。
+- `secret` 非空时，即使监听 loopback，所有非 discovery 请求也必须带 `Authorization: Bearer <secret>`。
+- `secret` 只接受可见 ASCII 且不得含空白或逗号（bearer 语法）；非 loopback 且长度 < 16 bytes 只 warning，不拒绝。
+- `secret` 非空同时设置 `allow_anonymous_loopback` 只 warning（匿名不生效），不报错。
+- `config_write = true` 但 `secret` 为空时 `dae validate` / 启动失败（不允许匿名写者改配置）。
+- discovery（`GET /api`）是唯一公开端点；`secret` 模式下 version / capabilities 也需要 Bearer，其他资源全部需要。
+- dae 不提供 TLS listener。按契约，非 loopback 的 bearer 传输必须由 listener 或受信任的本机反向代理终止 TLS；dae 不在配置里强制 TLS，但非 loopback 启动时应打印 warning 提醒部署方确认 TLS 终止。
+- API listener 启动在 dae 进程初始 netns（host netns），不要放进 `withDaeNetnsRequiredFunc` 的 dae netns。
+- 路由边界：只有 `/api` 与 `/api/v1/...` 属于控制面（按配置认证）；其余路径一律是页面访问。
+- 自托管前端（`ui`）：
+  - `ui` 只接受绝对路径（相对路径在 `dae validate` 报错）；目录不存在或缺 `index.html` **不**报错、**不**退出：启动时 warning，`/ui/` 返回 `404`，API 与代理照常运行。
+  - 固定挂载在 `/ui/`；`/`、`/ui` 以及其他任何非 `/api` 路径都 302 到 `/ui/`（不会落到 401）。
+  - 静态文件公开（浏览器无法给 `<script src>` 附带 Bearer），但 Host/Origin 校验照旧；前端发出的 API 请求仍必须带 token（token 不注入页面）。
+  - 仅“无扩展名的未命中”回退到 `index.html`；缺失的资源/字体/manifest/service worker 返回 `404`，不回退 HTML；不提供目录列表。
+  - 越界路径（如 `/ui/../api/v1/runtime`）返回 `404`，不会落到 API 路由。
+  - 缓存：`assets/` 下按 immutable 缓存一年，其余 `no-cache`；`.webmanifest` 用 `application/manifest+json`。
+  - 与 honk 的 `ui: embedded` 不同：dae 只托管管理员配置的外部目录，不内嵌资源、不下载前端。
+- `api` section 的所有字段 restart-required：reload 读到与启动时**不同**的 `api`（含 `config_write` / `direct_stats` / `disable_connection_bytes`）会拒绝整次 reload 并记 `api settings changed; restart dae to apply the new listener`；suspend/resume 复用启动时的 `api`，不会误判为变更。如果后续要实现热更新，只对 `secret` / `allow_origins` / `allowed_hosts` 做原子切换；`listen` 与 `ui` 始终需要重启。
+
+### 2.2 `select` 组语义
+
+```dae
+group {
+    proxy {
+        filter: name(keyword: 'HK')
+        policy: select      # 默认选第 0 个成员
+        # policy: select(1) # 初始选第 2 个成员
+    }
+}
+```
+
+- `select` 是新的 `DialerSelectionPolicy`。
+- 运行时选择按 transport 分开：`tcp`、`udp`；DNS UDP 跟随 `udp`。
+- 选择只存在内存，不写配置文件；reload / restart 后恢复为配置默认索引。
+- `select` 组忽略 `excluded`，与 `fixed` 一样遵循用户显式意图。
+- kernel 侧按 optimistic alive 处理，避免组被误判为不可用。
+- 自动策略开放 `can_override`（2026-10-31 落地）：`random` / `min` / `min_avg10` / `min_moving_avg` 的 `PUT selection` 建立 pin（`source: "override"`），`DELETE` 清除后回到引擎实选（`source: "runtime"`）；`fixed` 两者都返回 `422 unsupported_value`。
+
+### 2.3 策略映射
+
+| dae 配置 | `policy.kind` | `can_select` | `can_override` | 说明 |
+|---|---|---|---|---|
+| `select` / `select(n)` | `selector` | true | false | `PUT selection` 生效；`DELETE` 返回 `409 state_conflict` |
+| `fixed(n)` | `fixed` | false | false | 固定成员；`PUT` / `DELETE` 均 `422 unsupported_value` |
+| `random` | `random` | false | true | 每连接随机；未 pin 时 `selection` 为 `null`，pin 后 `source: "override"` |
+| `min` / `min_avg10` / `min_moving_avg` | `urltest` | false | true | `PUT` 建立 pin，`DELETE` 清除后回到引擎实选 |
+
+### 2.4 与 honk native_api 的对应关系
+
+| honk `experimental.native_api` | dae `api` | 说明 |
+|---|---|---|
+| `enabled` | `enabled` | 默认 false |
+| `listen` | `listen` | 数字 IP + 端口；默认 `127.0.0.1:9527` |
+| `secret` | `secret` | 非空 = token mode |
+| `allow_anonymous_loopback` | `allow_anonymous_loopback` | 仅 secretless loopback 生效 |
+| `allow_origins` | `allow_origins` | 精确 origin |
+| `allowed_hosts` | `allowed_hosts` | DNS Host 白名单 |
+| `password_auth` | 不实现 | dae 首期只做 token mode |
+| `ui`（embedded） | `ui`（目录） | 只托管管理员配置的外部目录，不做内嵌资源 |
+| `record_*` | 不实现 | flows / logs / DNS log 始终开启，抓取范围由各资源能力位表达，没有 per-kind 录制开关 |
+| `config_write` | `config_write` | 复用同名语义：要求 `secret`，并额外要求受管目录布局（P4-1） |
+| 所有字段 restart-required | `api` 所有字段 restart-required | reload 检测到变化时拒绝或保留旧 listener |
+
+> 字段名与语义直接对齐 honk `experimental.native_api`（`crates/honk-config/src/experimental.rs`），
+> 而 honk 这两个字段落实的是契约 `docs/api-config.md` 的两条安全要求：精确 origin 白名单
+> （空列表=关闭跨域）与 Host 校验（防 DNS rebinding）。语义源自通用 Web 约定：`allow_origins`
+> 对应 CORS 的 `Access-Control-Allow-Origin` 精确值域，`allowed_hosts` 对应 Host 白名单
+> （Django `ALLOWED_HOSTS` / Rails `config.hosts` / Vite `server.allowedHosts` 同一套路）。
+
+> 与 honk 一致：非 loopback 必须有 `secret`；secretless 匿名仅限 loopback 且显式 `allow_anonymous_loopback: true`。TLS 不在 listener 配置中强制，由受信任反向代理终止。
+
+## 3. 分阶段任务清单
+
+### P0-1 配置层
+
+- [x] `config/config.go`
+  - [x] 新增 `Api` struct。
+  - [x] `Config` 增加 `Api Api` 字段，tag 为 `mapstructure:"api" desc:"ApiDesc"`。
+  - [x] 字段：`Enabled`、`Listen`、`Secret`、`AllowAnonymousLoopback`、`AllowOrigins`、`AllowedHosts`、`UI`、`ConfigWrite`、`DisableConnectionBytes`、`DirectStats`。
+- [x] `config/decode.go`
+  - [x] `configSectionSpecs` 增加 `{name: "api", decode: decodeApiSection}`。
+- [x] `config/desc.go`
+  - [x] 增加 `ApiDesc`。
+  - [x] `SectionSummaryDesc` 增加 `api`。
+  - [x] `SectionDescription` 增加 `"ApiDesc": ApiDesc`。
+  - [x] `GroupDesc.policy` 增加 `select` 说明。
+- [x] `config/marshal.go` / `config/outline.go`
+  - [x] 确认 `dae export outline` 包含 `api` 字段。
+  - [x] 确认 `Config.Marshal` 输出 `enabled:false` 时重新解析不会启用 API。
+- [x] `cmd/validate.go` / `cmd/run_config.go`
+  - [x] 校验 `listen` 为数字 IP + 端口，端口 1–65535；拒绝 hostname 与 `:port` 简写。
+  - [x] `enabled=true` 时必须有认证模式：
+    - [x] `secret` 非空（token mode）；或
+    - [x] `secret` 为空 + `allow_anonymous_loopback: true` + 实际监听地址为 loopback。
+    - [x] 两者都不满足 → 报错。
+  - [x] 非 loopback + `secret` 为空 → 报错；`allow_anonymous_loopback` 不能替代 `secret`。
+  - [x] wildcard bind（`0.0.0.0` / `::`）按非 loopback 处理，必须 `secret`。
+  - [x] 非 loopback + `secret` 长度 < 16 bytes → warning（不拒绝）。
+  - [x] `secret` 必须是可见 ASCII，且不含空白、逗号或控制字符（需匹配 HTTP bearer token 语法）。
+  - [x] `secret` 非空时 `allow_anonymous_loopback` 不生效（文档写明；可选择 warning）。
+  - [x] `allow_origins` 必须是绝对 `http(s)` origin，无 path/query/fragment/userinfo/通配符。
+  - [x] `allowed_hosts` 必须是明确 Host authority，无 scheme/path/credentials/通配符；省略端口按 80 处理。
+  - [x] 非 loopback + `secret` 允许启动，但启动时 warning：确认 TLS 由受信任的本机反向代理终止；dae 不提供 TLS listener。
+- [x] `cmd/run.go`
+  - [x] `conf.Api.Enabled` 时启动 API server。
+- [x] `cmd/run_reload_worker.go` / reload manager
+  - [x] reload 时比较新旧 `conf.Api`；变化时拒绝 reload 或保留旧 listener 并 warning，不做部分 listener 重启。
+- [x] 测试
+  - [x] 配置解析与默认值。
+  - [x] 非法 listen / 非 loopback 无 secret。
+  - [x] `secret` 为空且未开启 `allow_anonymous_loopback` 时启动失败。
+  - [x] `secret` 为空 + `allow_anonymous_loopback=true` 但 listen 非 loopback 时启动失败。
+  - [x] `dae validate -c` 覆盖 API 配置。
+- [x] 文档
+  - [x] `docs/en/configuration/api.md`（listener 配置与部署）
+  - [x] `docs/zh/configuration/api.md`
+  - [x] `docs/en/development/api.md`（端点与资源契约）
+  - [x] `docs/zh/development/api.md`
+  - [x] 中英文 README 配置示例。
+
+### P0-2 API server 骨架
+
+- [x] 新增包 `component/nativeapi`（或 `control/nativeapi`）。
+- [ ] 使用标准库 `net/http` + Go 1.22+ `ServeMux` 路径模式。（当前用 path `switch` 实现，功能等价；未采用 ServeMux pattern）
+- [x] `http.Server` 配置 `ReadHeaderTimeout`、`IdleTimeout`、`MaxHeaderBytes`。
+- [x] 生命周期：
+  - [x] control plane 创建、`runtimeSupervisor` / `reloadManager` 可用后启动。
+  - [x] reload 期间保持监听，不随 generation 重建。
+  - [x] 进程退出 `Shutdown(ctx)`。
+- [x] middleware：
+  - [x] 认证。
+  - [x] CORS 预检与 Origin/Host 校验。
+  - [x] request target / header / body 大小限制。
+  - [x] `Content-Type` 校验（`PUT /groups/{id}/selection`、`POST /operations/*`）。
+  - [x] 统一 JSON 错误 envelope。
+  - [x] `request_id` 生成。
+  - [x] `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`。
+  - [x] 访问日志：每条请求 `debug`（method/route/status/elapsed_ms/request_id/remote_ip/bytes），拒绝与 `5xx` 记 `info`/`error` 并带 `error_code`，每 60 秒一行 `Native API traffic` 汇总；不记录请求头与查询串。
+- [x] 已知但未实现的资源返回 `404 capability_not_supported`，不要落入普通 `404 resource_not_found`。
+- [x] 测试：
+  - [x] 路由 405 + `Allow`。
+  - [x] 未实现资源 404 capability。
+  - [x] 大小限制（request target / header / body）。
+  - [x] `Content-Type` 校验测试（P1 的 `PUT selection` 与 `POST operations`）。
+
+### P0-3 认证、安全、错误
+
+- [x] 只实现 token mode，不实现 password/setup/login。
+- [x] discovery 公开：
+  - [x] 无凭证返回 public view。
+  - [x] 有效凭证返回 full view。
+  - [x] 无效凭证返回 `401 authentication_required`，不能降级成 public view。
+- [x] 认证模式由 `secret` / `allow_anonymous_loopback` 决定：
+  - [x] `secret` 非空（token mode）：所有非 discovery 请求，包括 loopback，都要求 `Authorization: Bearer <secret>`。
+  - [x] `secret` 为空 + `allow_anonymous_loopback: true` + 实际 listener 为 loopback：允许无凭证；`auth.anonymous_loopback = true`。
+  - [x] `secret` 为空 + `allow_anonymous_loopback: false`：启动失败（没有认证模式）。
+  - [x] 非 loopback：`secret` 必须非空；匿名只允许 secretless loopback。
+- [x] TLS 不在 dae 配置中强制：dae 只提供 plain HTTP listener；非 loopback 必须部署在受信任的 TLS 反向代理后（契约要求 bearer 传输由 listener 或受信任本机反向代理终止 TLS）。
+- [x] token 常量时间比较。
+- [x] `401` 响应带 `WWW-Authenticate: Bearer`。
+- [x] CORS：
+  - [x] 仅允许 `allow_origins` 精确 origin；空列表关闭跨域。
+  - [x] 预检允许 `Authorization`、`Last-Event-ID`、`Content-Type`、`If-Match`、`Idempotency-Key`、`Accept`。
+  - [x] 暴露 `Location`、`Retry-After`、`ETag`。
+- [x] Host 校验：
+  - [x] 默认 Host 必须匹配具体监听 authority。
+  - [x] loopback listener 额外接受 `localhost`、`127.0.0.1`、`[::1]` 及同一端口。
+  - [x] wildcard bind 接受任意 IP-literal Host 和 `localhost`（同一监听端口）；DNS 名称必须由 `allowed_hosts` 明确允许。
+  - [x] 不信任 forwarded headers 作为授权依据。
+- [x] Origin 校验：
+  - [x] 仅自动允许与请求 Host 直接对应的 plain-HTTP origin；其他 origin 必须列入 `allow_origins`。
+  - [x] secretless loopback listener 拒绝 `Sec-Fetch-Site: cross-site`，即使没有 Origin。
+  - [x] 所有 native 请求拒绝未批准的 Origin，包括简单 Content-Type 的 POST。
+- [x] 统一错误结构：
+
+```json
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "...",
+    "details": null
+  },
+  "request_id": "req-..."
+}
+```
+
+- [x] 状态码顺序：
+  1. 认证 / 权限 / 路由：`401`、`403`、`404`、`405`
+  2. 请求边界：`428`、`400`、`415`、`413`
+  3. 幂等重放
+  4. `412`
+  5. 语义校验：`422`
+  6. 当前状态：`409`
+  7. `429` / `503`
+- [x] `limits` 与实际中间件一致：
+  - `max_request_target_bytes: 8192`
+  - `max_header_bytes: 8192`
+  - `max_json_body_bytes: 65536`
+- [x] 日志不记录 Authorization / secret。
+
+### P0-4 discovery / version / capabilities
+
+- [x] `GET /api`
+  - [x] full view：`name: "daeuniverse/native"`、`status: "draft"`、`api_major: 1`、`base_path: "/api/v1"`。
+  - [x] `links` 包含契约要求的全部固定路径（即使资源不可用）：
+    `version`、`capabilities`、`config`、`config_validate`、`runtime`、`runtime_outbounds`、`traffic_history`、`memory_history`、`logs`、`providers`、`rules`、`operations`、`geodata`。
+  - [x] public view：只含 `name`、`api_major`、`links.auth_setup`、`links.auth_login`、`auth.mode`、`auth.setup_required`。
+  - [x] `auth.mode = "token"`；`auth.anonymous_loopback` 按认证模式返回：secretless loopback + `allow_anonymous_loopback: true` 时为 true，否则 false。
+- [x] `GET /api/v1/version`
+  - [x] `api.name = "daeuniverse/native"`、`api.major = 1`、`api.status = "draft"`。
+  - [x] `engine.name = "dae"`；`engine.version` 与 `dae -v` 完全一致（单一来源 `resolveBuildMetadata`：ldflags → module 版本 → `git-<sha>` → `"unknown"`）。
+  - [x] `build`：`revision`/`target`/`built_at` 取自 Go build info，未知字段为 `null`；完全无信息时省略。
+- [x] `GET /api/v1/capabilities`
+  - [x] `profiles: ["base"]`，不要声明 `full_transparency`。
+  - [x] `resources.runtime.available = true`。
+  - [x] `resources.groups = { available: true, config_patch: <gate>, selection: true, max_patch_operations: 16 }`（`config_patch` 与 `config.writable` 同源）。
+  - [x] `resources.traffic_history = { available: true, max_window_seconds: 3600, max_points: 180 }`。
+  - [x] `resources.operations = { available: true, retention_seconds: 3600, max_replay_keys: 1024 }`；
+    `resources.reload` / `suspend` / `resume` available。
+  - [x] `resources.config` / `config_validate`：`configEditor` 始终注入，故恒 `available: true`；`writable` / `create` / `max_bytes` / `max_sources` / `x-dae` 按闸门输出（见 P4-1）。
+  - [x] `resources.runtime_direct_stats.available` 恒 true（直连观测关闭时端点仍响应，`enabled: false` + 全 0）；新增 `attached` / `counter_since` / `last_error` 区分“关闭”“未挂上”和“部分失败”。
+  - [x] 未实现资源用 `{ available: false }` 或省略。
+
+### P0-5 runtime 资源
+
+- [x] `GET /api/v1/runtime`，支持 `detail=summary|full`。
+- [x] 进程级状态：
+  - [x] `instance_id`：启动时生成，reload 不变。
+  - [x] `lifecycle.started_at`、`uptime_seconds`。
+  - [x] `lifecycle.state`：`starting` / `running` / `reloading` / `suspended` / `draining` / `degraded` / `failed`。（`degraded` 目前不会产生）
+- [x] generation 元数据：
+  - [x] `runtimeGeneration` 增加 `id`、`configRevision`、`activatedAt`。
+  - [x] `generation.active_id` 每次 reload 生成新值。
+  - [x] `config_revision` 用 accepted config 的 `Marshal` 结果做 SHA-256，作为 opaque string。
+- [x] `datapath`：
+  - [x] `kind: "ebpf"`。
+  - [x] `state: "active"`（异常时 `degraded`）。（当前恒为 `active`；suspend 时未映射为 `disabled`）
+  - [x] `visibility: "partial"`。
+  - [x] `ebpf: null` 一期即可。
+- [x] `traffic`：复用 `control.SnapshotRuntimeStats`
+  - [x] `scope: "visible"`、`observed_by: "userspace"`（2026-11-01 修订，取代此前的 `mixed` + `planes`；`traffic.planes` 已从类型中移除，见 10.3）：数据面不再做直连计数，合计只含 userspace relay 的 payload 字节；不开启 API 的部署不再为每包计数与直连索引付成本。代价是内核直连流量不计入，直连为主时数字低于真实链路速率。
+  - [x] `counter_since` = 进程级计数器起点（与 `runtime/outbounds.counter_since` 同一来源）。2026-10-31 修正：此前取 generation 激活时间，而 reload 后 totals 归零、`runtime/outbounds` 却继续累计，两个资源的"自何时起"和数字互相矛盾。
+  - [x] `connections.tcp = ActiveTCPConnections`、`connections.udp = UDPSessions`、`total` 为二者之和。
+  - [x] `bytes.upload/download` 为十进制字符串。
+  - [x] `rates.window_seconds = 1`，速率为字符串。（2026-10-30 修正：bucket 仅在记录流量时轮转，1s 速率在任何轮询节奏下都准确；此前只在 snapshot 时轮转，面板 5s 轮询下会读到 `0 B/s`）
+- [x] `process`：
+  - [x] `pid` 仅 `detail=full`。
+  - [x] `cpu_percent` 后台采样或 gopsutil；未采样时 `null`。
+- [x] `last_reload`：signal reload 和 API reload 都记录；无记录时 `null`。
+- [x] 读取 active control plane 使用 supervisor 快照或 generation lease，避免 reload 期间使用已 retired 的 plane。
+
+### P0-6 自托管前端
+
+- [x] `config/config.go`：`Api` 增加 `UI`（`mapstructure:"ui"`）。
+- [x] `config/api.go`：只要求绝对路径（相对路径报错）；目录不存在/缺 `index.html` 交由启动时 warning 处理；`enabled=false` 时忽略。
+- [x] 路由：仅 `/api` 与 `/api/v1/...` 走认证；其余路径（含 `/`、`/ui`、任意深链）302 到 `/ui/`，不再返回 401。
+- [x] `component/nativeapi`：固定前缀 `/ui/`；仅无扩展名的未命中回退 `index.html`；关闭目录列表；缺失资源/目录不存在返回 `404`（绝不返回 HTML，也不阻止启动）。
+- [x] 缓存与类型：`assets/` 下按 immutable 缓存一年，其余 `no-cache`；`.webmanifest` 使用 `application/manifest+json`。
+- [x] 安全：静态资源公开（浏览器无法给 `<script src>` 附带 Bearer），Host/Origin 校验照旧；API 调用仍要求 token；越界路径（`/ui/../api/v1/runtime`）返回 `404` 而不是落到 API。
+- [x] 日志：`route=/ui/*`，非 2xx 追加截断后的 `target`，便于定位缺失资源。
+- [x] 测试：index/重定向/资源/SPA 回退/目录 404/路径穿越/Host 校验/非 `/api` 路径一律 302（不再 401）/无 UI 时 404/缺 `index.html` 只 warning 且 API 照常/配置校验与解码。
+- [x] 文档：`docs/*/configuration/api.md` 新增「Self-hosted UI / 自托管前端」，中英文 README 示例补 `ui`。
+- [x] 实测：以 doona `v0.1.0-rc.3` 发布包为 `ui` 目录，`/ui/` 直接加载 UI 并以同源为后端，填 token 后仪表盘出数，Service Worker scope 为 `/ui/`。
+
+### P1-1 `select` 组
+
+- [x] `common/consts/dialer.go`
+  - [x] 新增 `DialerSelectionPolicy_Select = "select"`。
+- [x] `component/outbound/dialer_selection_policy.go`
+  - [x] 解析 `select` 和可选的 `select(index)`。
+  - [x] 复用 `FixedIndex` 作为初始成员索引。
+- [x] `component/outbound/dialer_group.go`
+  - [x] 增加 per-transport 运行时选择状态（tcp/udp 原子索引）。
+  - [x] `_select` 增加 `Select` case，按 `networkType.L4Proto` 选择，忽略 `excluded`。
+  - [x] `policyNeedsAliveState` 对 `select` 返回 `false`。
+  - [x] `groupPublishesOptimisticAlive` 对 `select` 返回 `true`。
+  - [x] `selectionNetworkTypes` 对 `select` 按 `fixed` 处理，不做 DNS UDP → TCP 回退。
+  - [x] 新增 `SetSelection(network, index)`、`Selection(network)`、`SelectionRevision()`。
+- [x] reload 行为
+  - [x] 新 generation 按配置默认索引初始化。
+  - [x] 运行时选择不跨 reload 保留。
+- [x] 健康检查
+  - [x] 一期可以不做选择组健康检查，`runtime.health` 返回 `[]`。
+  - [ ] 如需延迟显示，显式 `ActivateCheck` 并导出 dialer 健康快照（需评估额外探测流量）。（一期未做）
+- [x] 测试
+  - [x] 默认成员。
+  - [x] `select(1)` 初始成员。
+  - [x] tcp/udp 独立切换。
+  - [x] 越界索引错误。
+  - [x] reload 后恢复默认。
+  - [x] kernel optimistic alive 不回归。
+- [x] 文档
+  - [x] 中英文 README。
+  - [x] `docs/*/configuration/separate-config.md`。
+
+### P1-2 groups 资源
+
+- [x] `GET /api/v1/groups`
+  - [x] 返回 `GroupSummary[]`。
+  - [x] 不包含 builtin `direct` / `block`，只列用户配置组。
+- [x] `GET /api/v1/groups/{group_id}`
+  - [x] 返回完整 `Group`。
+- [x] `GET /api/v1/groups/{group_id}/config`
+  - [x] 返回 `{policy, config}`。
+  - [x] `ETag` 为带引号的 `config_revision`。
+- [x] `PATCH /api/v1/groups/{group_id}/config`（2026-11-02 落地）
+  - [x] `config_patch=false`（写入闸门关闭）时返回 `404 capability_not_supported`。
+  - [x] 打开时只接受 `application/json-patch+json`，RFC 6902 白名单 2 个路径：`/config/check_interval`（秒，>0）、`/config/tolerance`（毫秒，≥0）；越界/类型错误 `422 unsupported_value`，未知路径 `422 unsupported_value`，`test` 不通过 `409 state_conflict`。
+  - [x] 需强 `If-Match`（值 = 组配置 `ETag`，即 config revision）：缺失 `428 precondition_required`，不符 `412 stale_revision`；1–16 个操作。
+  - [x] 有实质变更 → 改写 `config.d/group.dae` 并排队 `group_update` operation，返回 `202`；无变更 → `200` + 当前 `GroupConfigDocument`。
+  - [x] `GroupCapabilities.mutable_config`：可写时 `["check_interval","tolerance"]`，否则 `[]`。
+- [x] `PUT /api/v1/groups/{group_id}/selection`
+  - [x] 仅 `select` 组可用。
+  - [x] `network` 支持 `tcp` / `udp` / `both`。
+  - [x] 返回 `GroupSelectionResult`，`source: "runtime"`，`connections_interrupted: false`。
+- [x] `DELETE /api/v1/groups/{group_id}/selection`
+  - [x] `select` 组返回 `409 state_conflict`。
+  - [x] 自动策略返回 `422 unsupported_value`（一期无 override）。
+- [x] 稳定 ID
+  - [x] 组 ID：`g_<sha256(name)[:12]>`。
+  - [x] 节点 ID：`n_<sha256(link 或 name+address+protocol)[:12]>`。
+- [x] `GroupConfig` 返回全部 7 个 key（可为 `null`）：
+  - [x] `default_member_id`
+  - [x] `final_outbound`
+  - [x] `check_url`
+  - [x] `check_interval`
+  - [x] `tolerance`
+  - [x] `idle_timeout`
+  - [x] `interrupt_connections`
+  - [x] dae 扩展放 `config["x-dae"]`：
+    - [x] `check_addresses`
+    - [x] `tcp_check_http_method`
+    - [x] `udp_check_dns`
+- [x] `GroupCapabilities` 五个字段都要有：
+  - [x] `can_select`
+  - [x] `can_override`
+  - [x] `supports_nested_groups: false`
+  - [x] `mutable_config`：写入闸门打开时为 `["check_interval","tolerance"]`，否则 `[]`
+  - [x] `probe_transports: []`
+- [x] `runtime/memory` 的 cgroup 部分依赖系统是否委派 memory 控制器（2026-10-31 补充）：cgroup v2 只有在父级 `cgroup.subtree_control` 里写了 `+memory` 时，子 cgroup 才会出现 `memory.current/max/events`。没委派时 dae 如实返回 `cgroup: null`（不是解析失败），capabilities 的 `runtime_memory.metrics` 也只列出真正读到的指标。
+  - [x] `memory.max` 为字面量 `max`（无限制）与"文件不存在"区分开：前者 `limit_bytes: null` 但照常声明 `cgroup.limit_bytes` 指标，前端据此渲染"无限制"而不是"未知"。
+- [x] `Group.runtime.selection` 同时包含 `tcp` 和 `udp`：
+  - [x] `select`：当前成员，`source: "runtime"`。
+  - [x] `fixed`：固定成员，`source: "policy"`。
+  - [x] `min` / `min_avg10` / `min_moving_avg`（2026-10-31 修正）：报告引擎当前实际选中的成员，`source: "runtime"`。取值来自 `DialerGroup.AutoSelected` → `AliveDialerSet.Selected()`（即 `minLatency.dialer`，含"首个存活 dialer"的乐观初选），与日志 `Group selects dialer` 同源。此前一律返回 `null`，导致前端 `/policies` 明明有选中节点却显示为空。
+  - [x] 被 override pin 住时 `source: "override"`，清除 pin 后回落到 `source: "runtime"`，不再回到 `null`。
+  - [x] `random`：仍为 `null`（每连接重掷，没有稳定成员）。
+- [x] `Group.runtime.health`
+  - [x] 一期返回 `[]`。
+- [x] `Group.icon`
+  - [x] 返回 `null`。
+- [x] 错误
+  - [x] 未知 group → `404 resource_not_found`。
+  - [x] 非直接成员 → `422 unsupported_value`。
+  - [x] 非法 `network` → `400 invalid_request`。
+  - [x] `select` 组 `DELETE` → `409 state_conflict`。
+
+### P1-3 operations
+
+- [x] `POST /api/v1/operations/reload`
+- [x] `POST /api/v1/operations/suspend`
+- [x] `POST /api/v1/operations/resume`
+  - [x] 返回 `202` + `OperationAccepted`。
+  - [x] `Location` 与 body `href` 一致。
+  - [x] `Retry-After: 1`。
+- [x] `GET /api/v1/operations/{operation_id}`
+  - [x] 返回 queued / running / succeeded / failed。
+- [x] 内存 operation store
+  - [x] 有界，按 `retention_seconds` 清理。
+  - [x] 未完成 operation 不淘汰。
+  - [x] 未知/过期 ID → `404 resource_not_found`。
+- [x] `Idempotency-Key`
+  - [x] P4 之前仅 reload/suspend/resume 支持；现在 `POST/DELETE /nodes`、`POST /providers/{id}/refresh`、`PUT /config/sources/{id}`、`PATCH /groups/{id}/config` 也接受。
+  - [x] key 绑定 `(kind, scope)`；相同 key + 相同请求 → 返回原 202 body。
+  - [x] 相同 key + 不同请求（另一 kind 或另一目标）→ `409 idempotency_conflict`；被拒绝的请求会释放 key。
+- [x] 接入 reloadManager
+  - [x] reload → `queueReloadRequest({isSuspend:false})`。
+  - [x] suspend → `isSuspend:true`。
+  - [x] resume → `isSuspend:false`。
+  - [x] 已有 reload 进行中 → `409 state_conflict`。
+- [x] 结果
+  - [x] reload 成功：`result.active_generation_id`、`result.datapath_generation_id`。
+  - [x] suspend 成功：`result.runtime_state = "suspended"`。
+  - [x] resume 成功：`result.runtime_state = "running"`。
+  - [x] reload 失败：返回 `reload_rejected`（`details` 未填 `committed` / `stage`，reloadManager 不区分失败阶段）。
+- [x] 更新 `runtime.last_reload`，signal reload 也记录。
+- [x] 如果本期不做 operations（不适用：本期已实现 operations）：
+  - [ ] `resources.operations.available = false`。
+  - [ ] `resources.reload` / `suspend` / `resume` 不可用。
+  - [x] 不能只暴露端点不实现。
+
+### P1-4 traffic history
+
+- [x] `GET /api/v1/runtime/traffic/history?window_seconds=&max_points=`
+- [x] 复用 `SnapshotRuntimeStats.Samples`。
+- [x] 默认值：`window_seconds=3600`、`max_points=180`。
+- [x] 超出上限/非法值 → `400 invalid_request`，不要静默截断。
+- [x] 样本字段：
+  - [x] `sampled_at` RFC3339。
+  - [x] `upload_bytes_per_second` / `download_bytes_per_second` 十进制字符串。
+  - [x] `connections` 一期 `null`。
+- [x] `sampled_every_seconds` 取返回采样点的实际间隔（记录器为 0.25s，抽稀后按实测间隔上报）。
+- [x] 抽稀按契约"每 N 个取一个"原样保留采样，不聚合（此前取桶内最大值，会伪造记录器没测到的峰值）；history 只含已完成的 250ms 桶，进行中的瞬时桶只参与 1s 速率计算。
+- [x] `observed_at` 用快照时间。
+
+### P2 可选增强
+
+- [x] `GET /api/v1/nodes`、`GET /nodes/{id}`
+  - [x] `Node.id/name/protocol/subscription_tag/group_ids/health` 必填。
+  - [x] `health` 返回真实探测观测（未探测的网络域省略，新进程为 `[]`；data-UDP 例外：镜像同 IP 版本的 DNS 样本）。
+  - [x] `limit` 1–1000，`cursor` / `next_cursor`（cursor 绑定 generation，过期返回 `410 snapshot_expired`）。
+  - [x] 列表来源为 generation 管理的全部 dialer（含未被任何组选中的节点，排除 builtin direct/block）；`group_id` 过滤；`provider_id` 在 P3-5 之后指向所属 provider（P2 阶段曾恒为 `null`）。
+  - [x] 同一分享链接出现在多个订阅时按 node ID 合并（成员关系与健康取并集）；`member_count` 与实际唯一成员数一致。
+  - [x] `nodes.can_manage` 与写入闸门（`config_write` + 受管布局）同源；闸门关闭时 `POST /nodes`、`DELETE /nodes/{id}` 返回 `404 capability_not_supported`。
+  - [x] 闸门打开时 `POST /nodes`（body 仅 `{name, link}`）→ `202` + `node_create` operation，完成后 `result` 是新建的 `Node`；名称与运行代次内全部来源（inline 与各订阅）比对，冲突 `409 state_conflict`；链接 scheme/解析失败 `422 unsupported_value`。
+  - [x] `DELETE /nodes/{id}` → `202` + `node_delete`，`result` 为 `NodeDeleteResult`；未知 id 幂等 `200 {"deleted": 0}`；订阅/文件来源的节点 `404 capability_not_supported`。
+- [x] 组健康 `runtime.health`
+  - [x] 导出 dialer alive / latency / avg10 / movingAvg / observedAt。
+  - [x] `sorting_latency_ms` 取**引擎实际排序值**（2026-10-31 修正）：`AliveDialerSet.SortingSnapshot()` 返回的 `latency + offset`，其中 `latency` 已含恢复/退避惩罚。此前是在投影层用策略指标重新算一遍，既漏了惩罚也漏了 `add_latency`，与日志 `latencyString(latency, offset)` 打印的 `471ms(+150ms=621ms)` 对不上。
+  - [x] `ranking` 不再恒为 `null`（2026-10-31）：填 `metric` / `score`(=引擎排序值) / `group_offset_ms` / `recovery_penalty_ms` / `rank`(1-based 名次) / `delta_to_best_ms`(落后最优多少) / `reason`。数据来自同一份 `SortingSnapshot()`，与日志的排序表同源。
+- [x] `purpose` 取值改为 `data` / `dns`（2026-10-31 修正）：TCP 此前导出 `purpose: "shared"`，而契约/前端约定的语义是"这段延迟用于什么流量"——TCP 与 data-UDP 都是 `data`，只有 DNS 是 `dns`（与 `/probes` 的结果一致）。前端 `/policies` 用 `transport=tcp && purpose=data` 取主延迟，取不到就把**所有节点都当成"未测试"**，显示"0 个可用"。
+- [x] data-UDP（`udp4`/`udp6`）健康样本（2026-10-31 新增）：data-UDP 没有自己的探针（真实 UDP 流量只翻 alive 标志、不记录延迟），引擎排序时借用同 dialer 的 DNS-UDP 样本（`snapshotLatencyForPolicy`）。API 此前直接跳过该 key，导致每个节点只有 4 条样本、而 alive set 日志里有 6 个网络。现在按同样规则镜像 DNS 样本，`sample_source` 仍为 `probe`，`measurement` 为 `dns_round_trip`。
+- [x] `can_override`（自动策略 pin 成员）
+  - [x] `random` / `min` / `min_avg10` / `min_moving_avg` 的 `can_override = true`；`PUT` 设置 pin（`source: "override"`），`DELETE` 清除。
+  - [x] pin 按 transport 独立、忽略 `excluded` 与探测健康、不改变 kernel 准入；reload 后重置。
+  - [x] UDP 准入（新流与既有 endpoint）对已 pin 的 transport 不做健康拦截，避免 pin 到 data-UDP 域未就绪的成员后黑洞。
+
+### P3 计划实现
+
+P3-1 ~ P3-12 全部实现，端点清单见下方「P3 已实现」。顺序按"数据已在进程内、只缺投影"到"需要新增采集/流式通道"排列。
+
+#### P3-1 `runtime/outbounds`
+
+- [x] `GET /api/v1/runtime/outbounds` → `RuntimeOutbounds`。
+- [x] 新增 per-outbound 计数器：当前只有全局 `RecordUploadTraffic` / `RecordDownloadTraffic`。
+  - [x] `upload_bytes` / `download_bytes`：在 TCP relay 与 UDP 收发热路径按出站归属累加，复用现有 record 回调签名（绑定 outbound index 的闭包），避免每次写入查表。
+  - [x] `total_connections` / `errors`：在 flow 建立与 dial 失败处累加。
+  - [x] `active_connections`：flow 生命周期计数（establish +1 / finish -1）。
+  - [x] `counter_since` 与进程启动/generation 激活对齐，reload 不重置（"retained across reloads"），仅进程重启或显式 reset 时变更。
+- [x] `kind`：`builtin`（仅 `direct`）、`group`（用户组）；`node` 未按成员聚合（计数器在出站层）。
+- [x] builtin `block` 行已移除（2026-11-02）：被丢的包在 datapath 就结束，永远没有计数器，该行只可能报 0。`flows.coverage.kernel_block` 同步移除，`flows.coverage.kernel_direct` 报 `none`。
+- [x] builtin `direct` 行默认只计走 userspace 的 `must_direct` payload 字节（2026-11-01 修订）。此前它靠常驻内核直连计数补齐（实测差 472 MB / 18%），代价是每包 map 更新与约 12 MiB memlock，现改为默认如实报告"只统计可见流量"。开启 `api.direct_stats`（只读 eBPF 观测钩子，默认关闭）后，`cmd/nativeapi_runtime.go` 的 `attributeDirectStats` 会把内核直连链路字节并入该行（混合口径），同时提供 `GET /api/v1/runtime/direct-stats`；`runtime.traffic` 仍只含 userspace 可见流量。
+- [x] 能力：`resources.runtime_outbounds = { available: true }`。
+- [x] 计数器使用原子加法（每次 record 仅一次 `atomic.Uint64.Add`，与现有全局计数器同量级）；基准结论：无需每 CPU 分片。
+- [x] 测试：单位计数、reload 后累计不回退、热路径记录归属。
+
+#### P3-2 `runtime/memory*`
+
+- [x] `GET /api/v1/runtime/memory`：进程 RSS（`/proc/self/status`）+ cgroup v2（`memory.current` / `memory.max` / `memory.events`）+ eBPF memlock（`/proc/self/fdinfo`）。
+- [x] `GET /api/v1/runtime/memory/history`：独立的有界 1s 采样环（3600 点），`window_seconds` 上限与 `traffic_history` 一致，抽稀规则相同。
+- [x] 能力：`resources.runtime_memory = { available: true, metrics: [...] }`、`resources.memory_history = { available: true, max_window_seconds: 3600, max_points: 180 }`。
+- [x] 测试：字段类型（十进制字符串）、cgroup scope、缺失文件降级为 `null`、history 窗口与抽稀。
+
+#### P3-3 `datapath`
+
+- [x] `GET /api/v1/datapath` → `Datapath`（`kind`/`state`/`visibility`/`ebpf`）。
+- [x] `ebpf` 明细：map 占用（`EbpfMaps`/`MapOccupancy`，`conn_state_map` 批量扫描）、TC attachment、routing generation/epoch（已有 `ControlPlane.DatapathGenerationID()`）。
+- [x] `visibility` 保持 `partial`（userspace 视图），不要声称 full transparency。
+- [x] 能力：`resources.datapath = { available: true, kinds: [ebpf], details: [attachments, maps] }`。
+- [x] 测试：无 BPF 时的降级状态、attachment scope 映射、map 缺失时 occupancy 为 `null`；`/api/v1/runtime` 的 `datapath.ebpf` 摘要与详细端点同源。
+
+#### P3-4 `rules`
+
+- [x] `GET /api/v1/rules`：导出已编译的 routing 规则（含 `routing.Rule` 的匹配集合与出站）。契约规定该资源不分页（`max_rules` 保证整个字典一次返回）。
+- [x] 需要新的只读导出视图（当前 `routingMatcher` 只保留匹配结构，不回显原始规则文本）。
+- [x] 能力：`resources.rules = { available: true, max_page_size }`。
+- [x] `expression` 用 `RoutingRule.DisplayString`（2026-10-31 修正）：运行期的规则树是 geosite **展开后**的，单条 `domain(geosite:...)` 会变成上万条 `suffix:`。此前用无损的 `String()` 渲染，实测响应 **8.5 MB**，前端光是下载+解析就卡住。现在每个函数最多渲染 `DisplayParamLimit`(8) 个参数并附 `+N more`，响应降到 KB 级，规则下标与运行期规则仍一一对应（flows 的 `rule_id` 语义不变）。无损形式 `String()`/`MarshalString()` 未改动，仍用于 reload 指纹与 policy hash。
+- [x] 测试：规则条目与 `dae validate` 的语义一致；敏感字段（节点 link）不泄漏；`DisplayString` 折叠大参数表、`String` 保持无损。
+
+#### P3-5 `providers*`
+
+- [x] `GET /api/v1/providers`、`GET /api/v1/providers/{provider_id}`：把 `subscription` / `node` section 投影为 provider（`subscription_tag` 即 provider 身份；`node_ids` 用稳定的 `n_` ID）。
+- [x] `POST /api/v1/providers/{provider_id}/refresh`：`can_refresh` 只看 operations 是否接好（运行期恒 `true`，与写入闸门无关）；只接受 `kind == subscription`，inline/file provider 返回 `404 capability_not_supported`。排队 `provider_refresh`（reload 会重新拉取订阅），`result` 为刷新后的 `Provider`；fetch 失败时保留上一次成功的节点。
+- [x] `Provider.status`：`node_count == 0` → `stale`；刷新回退到缓存或彻底失败 → `stale` + `last_error(subscription_refresh_failed)` + `updated_at` = 最后一次尝试时间。
+- [x] 订阅缓存：有 tag 用 tag 命名（`persist.d/<tag>.sub`），无 tag 用 `sub_<sha256(subscription)[..8]>`；只有成功解析出节点的 payload 才覆盖缓存，因此 fetch 失败或返回登录页时回退上一次成功的节点，刷新失败不再等于丢节点。
+- [x] 节点资源补 `provider_id`（P2 里恒为 `null`）：改为内联 `node` section 的 provider id 或订阅 tag。
+- [x] 能力：`resources.providers = { available: true, can_refresh: true, can_manage: false, max_page_size }`（创建/删除未实现，故 `can_manage` 恒 false）。
+- [x] 测试：provider 身份与 `Node.subscription_tag` 对应；未知 provider → `404 resource_not_found`。
+
+#### P3-6 `geodata`
+
+- [x] `GET /api/v1/geodata`：`externGeoDataDirs` + `geosite.dat` / `geoip.dat` 的读取状态、版本、校验和。
+- [x] `POST /api/v1/geodata/update`：需要写文件 + operations；首期不做（`can_update = false`）。
+- [x] 能力：`resources.geodata = { available: true, can_update: false, assets: [geoip, geosite] }`。
+- [x] 测试：缺失资产时为 `assets: []` 而不是启动失败。
+
+#### P3-7 `dns/*`
+
+- [x] `GET /api/v1/dns/cache`、`DELETE /api/v1/dns/cache/{entry_id}`、`POST /api/v1/dns/cache/flush`：需要 daedns 暴露缓存枚举与删除（当前只有 flush/统计）。
+- [x] `GET /api/v1/dns/log`、`GET /api/v1/dns/rules`、`POST /api/v1/dns/query`：
+  - [x] `dns/log` 需要新增有界环形日志（记录 qname/qtype/upstream/耗时），默认关闭或小容量；
+  - [x] `dns/rules` 是 `dns.routing` 的只读导出；
+  - [x] `dns/query` 是一次性主动查询，需限流并标记为观测用途。
+- [x] 能力：`dns_cache` / `dns_log` / `dns_rules` / `dns_query` 分别声明；`dns_log.max_records`、`dns_rules.max_rules` 取真实容量。
+- [x] 测试：缓存条目 ID 稳定；flush 为幂等；`dns/log` 不记录诊断 `/dns/query` 调用。
+
+#### P3-8 `connections*`
+
+- [x] `GET /api/v1/connections`：从 `SessionManager` 导出活跃 flow（`ConnectionId`、五元组、outbound、sniffed domain、耗时、字节）。
+- [x] `DELETE /api/v1/connections/{connection_id}`：关闭单条 flow（`force`/`interrupt` 语义），需要 session manager 支持按 ID 定位与关闭。
+- [x] 能力：`resources.connections = { available: true, can_close: true, max_page_size, max_window_seconds, sorts }`。
+- [x] 测试：`limit` 截断时报 `truncated` 且 `total_*` 仍为截断前匹配数；`src` 必须是 IP 字面量。
+- [x] 排序与时间窗口（2026-11-05）：`sort` + `order` 在 `limit` 截断**之前**排序，`window_seconds` 让每条连接额外返回 `upload_window_bytes` / `download_window_bytes`（见「P3-8 增补：排序与时间窗口」）。
+
+#### P3-8 增补：排序与时间窗口（2026-11-05）
+
+`GET /api/v1/connections` 新增三个查询参数，端点与既有字段保持兼容（不传时行为不变）：
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `sort` | `download` / `upload` / `total` / `window_download` / `window_upload` / `window_total` | 在 `limit` 截断**之前**对匹配结果排序，因此截断后的列表是真正的「前 N」而不是 `sync.Map` 遍历顺序的前 N 条。未知计数（UDP 流、被 `disable_connection_bytes` 关掉的字节）无论升降序都排在最后 |
+| `order` | `asc` / `desc`（默认 `desc`） | 仅在给了 `sort` 时有意义 |
+| `window_seconds` | 1–300 | 让每条连接额外返回 `upload_window_bytes` / `download_window_bytes`，即**最近 `window_seconds` 秒内**该连接搬运的字节；`window_*` 排序按此值排名 |
+
+响应新增两个字段：列表级 `window: {"seconds": N}`（回显请求的窗口），连接级 `upload_window_bytes` / `download_window_bytes`（十进制字符串，与 `upload_bytes` 同源）。窗口未知时这两个字段**不出现**（不是 `0`），因为「不知道」与「没流量」是两件事。
+
+实现语义与限制：
+
+- **观测式采样，不改数据面**：转发路径仍然只有一次原子加（`control.FlowRuntime.uploadBytes/downloadBytes`）。`cmd/nativeapi_flows_window.go` 的 tracker 只在**有人请求窗口**时按需采样：采样间隔 = `max(1s, 最长窗口 / (容量-1))`，每流保留 16 个基线（约 24 B/样本），无人请求 2 分钟后丢弃全部历史并停止遍历 flow 表。空闲进程为此只多一次定时器唤醒。
+- **精度 = 采样间隔**：`window_seconds=N` 的值是「当前累计 − 至少 N 秒前的基线」，多算的部分不超过一个采样间隔（窗口 ≤ 15s 时为 1s）。请求本身也是一次观测（第一次窗口请求会为每条流落一个基线），所以按固定节奏轮询的前端从**第二次**请求起就有值；只有引擎刚启动、或该窗口第一次被请求时的那条响应里窗口字段为空。
+- **比窗口年轻的流是精确的**：流建立时间晚于 `now - window` 时，窗口增量就等于它的累计值（之前没有流量），所以新连接不需要等一个窗口。
+- **计数器回退视为未知**：同一 ID 的累计值变小说明连接已被替换，此时不报差值。
+- **多窗口共用一个采样节奏**：采样间隔由当前被请求的最长窗口决定（`最长窗口/(容量-1)`，容量 16），因此同时有人请求 300s、有人请求 20s 时，20s 那份的误差上限是 20s 级；单个前端只用一种窗口时误差 ≤ 该窗口的 1/15。
+- **只覆盖 userspace TCP 流**：与 `upload_bytes` / `download_bytes` 完全同源，UDP 流与内核直连流量没有计数（见 P4-8「不做设备级流量统计」）。按设备/域名聚合的排行仍只覆盖部分链路，`window_*` 只是把「自连接到现在的累计量」换成「最近 N 秒的增量」，并没有扩大覆盖面。
+
+前端用法：`GET /api/v1/connections?type=all&detail=full&limit=1000&sort=window_download&order=desc&window_seconds=20`，即可在截断前拿到最近 20 秒下载量最高的连接，再按 `src` / `domain` 聚合出行榜。
+
+#### P3-9 `flows*`
+- [x] `GET /api/v1/flows`、`GET /api/v1/flows/{flow_id}`：flow 需要有界历史存储（当前只有活跃 session），字段含 outbound 与字节数。规则命中路径依赖逐 flow trace，当前 `trace` 报 `disabled` + `missing: [not_instrumented]`。
+- [x] 与 `connections` 的分工：`flows` 是短期历史（含已关闭），`connections` 是当前快照。
+- [x] 能力：`resources.flows = { available: true, max_page_size, retention_seconds }`。
+- [x] 测试：终态 flow 仍可查询；过期返回 `410 flow_expired`。
+
+#### P3-10 `events`
+
+- [x] `GET /api/v1/events`：事件流（SSE 或长轮询），`Last-Event-ID` 恢复，事件类型覆盖 `generation.changed`、flow/connection 终态、operation 完成。
+- [x] 需要新的进程内事件总线 + 有界 replay（`event_cursor_expired` 语义）。
+- [x] 与 operations 复用同一事件源，避免两套状态机。
+- [x] 能力：`resources.events = { available: true, kinds, retention_seconds, max_buffered_events, max_clients, heartbeat_seconds }`。
+- [x] 测试：断线重连不丢事件、不重复；未知/过期 Last-Event-ID → `409 event_cursor_expired`（契约用 409，不是 410，避免与分页游标混淆）。
+
+#### P3-11 `logs`
+
+- [x] `GET /api/v1/logs`：把 logrus 输出接入有界 ring / SSE 流，支持 `level`、`target` 过滤与 `Last-Event-ID` 续传。
+- [x] 安全：沿用 P0 规则，不记录 `Authorization`、secret 与查询串；日志条目需结构化字段而非自由文本。
+- [x] 能力：`resources.logs = { available: true, max_page_size, retention_seconds }`。
+- [x] 测试：ring 满时不阻塞业务线程；跨 reload 保留；日志内容不含凭证。
+
+#### P3-12 `probes`
+
+- [x] `POST /api/v1/probes`：对 node / group 发起一次受控探测，返回 `202` + operation（复用 P1-3 的 operation store）。
+- [x] 需要探测执行器（通过节点自己的 dialer 发起用户态拨号，支持 tcp/udp、ip_version、超时上限）与并发/速率限制。
+- [x] `result` 映射 `ProbeResult`（`results[]` 含 `member_id`、`transport`、`latency_ms`、`state`、`error`）。
+- [x] 能力：`resources.probes = { available: true, targets: [node, group], kinds, transports, ip_versions, limits }`。
+- [x] 测试：并发探测限流；探测不改变 selection（除显式 `selection_changed`）；超时返回结构化错误。
+
+#### P3 通用约束
+
+- [x] 每个资源先加 provider 接口 + `capabilities` 声明，再接实现：`available: false` 时端点必须返回 `404 capability_not_supported`（不能只暴露端点不实现）。
+- [x] 分页/游标统一语义（`limit` 1–1000、cursor 绑定快照、过期 `410 snapshot_expired`）。
+- [x] 所有新增写路径（flush/close/refresh/update/query）都要幂等键或明确非幂等说明，并评估是否需要 operation。
+- [x] 隐私与体积：`logs` / `dns/log` / `flows` 需要容量上限与脱敏规则后再开放。
+
+### P4 配置写入与 DNS / Routing 模块编辑
+
+> 2026-11-01 立项：dae 首次获得配置写入能力。目标是让前端能编辑配置文件的 `dns` 与 `routing`
+> 模块，`nodes` / `groups` 的写入复用同一底座。
+>
+> 契约依据：`api-standardize/api/config.yaml`（`/config`、`/config/sources*`、`/config/validate`）、
+> `api/discovery.yaml`（`resources.config` / `groups.config_patch` / `nodes.can_manage`）与
+> `api/nodes-groups.yaml`；行为基准：同组织 honk 的 `crates/honk-core/src/native_api/config.rs`。
+> 规则资源本身（`/rules`、`/dns/rules`）在契约里是只读的，规则编辑的唯一通道就是替换承载它的配置源。
+
+#### P4-0 范围与决策
+
+| # | 决策 | 依据 |
+|---|---|---|
+| P4-D1 | 只实现契约内的**源级**接口（`GET /config`、`GET`/`PUT /config/sources/{id}`、`POST /config/validate`；`POST /config/sources` 的 create 未实现）；**不做**模块级（`PUT /config/modules/{m}`）与规则级端点 | 目录规范让「文件即模块」成立：`config.d/routing.dae` 既是文件也是模块，源级 PUT 已经等价于模块级替换。旧提案的三个未决问题（模块跨多文件、body 形态、契约缺口）随之消失 |
+| P4-D2 | `PUT /config/sources/{id}` body 只收 `{content: 完整文本}` | 与 honk 一致；保真、不发明第二套语法、不需要反序列化再渲染 |
+| P4-D3 | 新增 `api.config_write`，默认 `false`，restart-required；置 true 时 `api.secret` 必须非空，否则 `dae validate` / 启动失败 | honk `experimental.native_api.config_write` + `credentialed()` 硬校验（`crates/honk-config/src/experimental.rs:181`） |
+| P4-D4 | 目录规范是唯一可写前提，不满足则**整体**禁用，不做逐文件降级 | 部分可写会产生「一个改成功、一个失败」的不可解释状态 |
+| P4-D5 | 可写源 = `config.d/*.dae`；`config.dae` 只读（`entry_source`）；**`api.dae` 对前端完全隐藏**（见 P4-4） | 用户约束 3 + 2026-11-01 决定 |
+| P4-D6 | **不引入 `global.data_dir`**：订阅缓存继续写在 `<配置目录>/persist.d/<tag>.sub`（`common/subscription/subscription.go:194,233`） | 2026-11-01 决定：保持现有部署兼容性，本次不做路径迁移。代价是配置目录里存在非 `.dae` 文件，可写判定必须只认 `config.d/*.dae`，不得假设「目录可写就等于整目录可写」 |
+| P4-D7 | 写盘前做 full 校验；写后 reload 失败**不回滚**已写字节，仅在写前保留 `<file>.bak` | honk 明确「激活失败不会自动回滚已写字节，应避免并发外部编辑」（`doc/zh/configuration.md:287`）；写前 full 校验是唯一防线，回滚会把「已写但激活失败」与「没写」两种状态混在一起 |
+| P4-D8 | `groups.config_patch` 与 `nodes.can_manage` 复用同一 `writable` 门禁 | 契约要求 `config_patch = true` 蕴含 `config.writable = true`（`api/discovery.yaml:749-758`） |
+
+> **实现状态（2026-11-01）**：已落地源级端点（`GET /config`、`GET /config/sources/{id}`、`PUT /config/sources/{id}`、`POST /config/validate`；契约里没有 `GET /config/sources` 列表，源清单从 `GET /config` 的 `sources[]` 取），布局闸门（`cmd/config_layout.go`，条件 1–8），`api.dae` 隐藏（404 / 400 与未知 id 行为一致），`config.dae` 与 `api` 段写保护，写前 full 校验，诊断带行号与列号，`.bak` 备份，`StartOperation` 失败时恢复原字节，`x-dae`（`layout`、`hidden_sources`、`read_only_reason`）已输出。
+>
+> **契约细节对齐（2026-11-01 补齐）**：
+> - `POST /config/validate` 的 `max_bytes` 按**候选源字节总和**判定（此前只逐源判定）；缺 `mode` 返回 `400 invalid_request`（`mode` 是必填字段），未广告的 mode 才是 `422 unsupported_value`；同一源在请求中出现两次返回 `400`（契约「duplicate effective source IDs」）。
+> - 写前 full 校验与 `dae validate -c` **同链**：`Api.Validate` → `validateRoutingRules` → `dns.ValidateRouting` → `validateFixedDomainTtl`。此前漏了前两项与 DNS 路由，会让 API 存下 daemon 启动不了的候选。
+>
+> **偏离 / 未完成（需后续对齐）**：
+> - `GET` 读取的是磁盘文件，不是进程内已接受快照；快照语义未实现。
+> - P4-D7 有例外：`StartOperation` 失败时会恢复写前字节（reload 未启动，磁盘不能保留被拒绝的编辑）；reload 已启动后的失败仍不回滚。
+> - 语义级端到端（改 `routing.dae` 后 `GET /rules` 与 `generation_id` 同步变化）需要运行时集成，未覆盖。
+> - `202` 之后 operation 走到 `succeeded` 未在本层断言（属 operations 层）。
+
+#### P4-1 编辑闸门（目录规范 + 显式开关）
+
+`detectManagedLayout(cfgFile) (ok bool, reason string)`：以下条件**全部**成立才 `writable = true`，任一不成立即整体禁用。
+
+| # | 条件 | 说明 |
+|---|---|---|
+| 1 | 入口文件名必须是 `config.dae`，`root = filepath.Dir(cfgFile)` | 固定约定，便于判定 |
+| 2 | 入口文件只允许一个 `include` 块，**不得**含其它 section | 用户约束 1 |
+| 3 | `include` 展开集合**精确等于** `{root/config.d/*.dae} ∪ {root/api.dae}` | 多一个或少一个都不接受；多出来说明有配置游离在管辖区外 |
+| 4 | `root/api.dae` 存在；`root/config.d/` 至少含 `global.dae`、`subscription.dae`、`node.dae`、`group.dae`、`routing.dae`、`dns.dae` | 用户约束 2 |
+| 5 | `config.d/*.dae` 内不得再出现 `include` | 禁止二级来源，否则「哪个文件是模块」重新变得不确定 |
+| 6 | 每个配置 section 只来自一个文件（`MergeWithOrigins`） | 规范是 1 文件 1 模块 |
+| 7 | 所有目标文件通过既有 `0037` 权限检查（`config/config_merger.go:83`），且父目录可写 | 复用现有校验，不新增第二套权限规则 |
+| 8 | `api.config_write = true` 且 `api.secret` 非空 | P4-D3 |
+
+> **include 参数个数**：Go `filepath.Glob`（`config/config_merger.go:129` `unsqueezeEntries` 使用）**不支持花括号** `{a,b}`，单个 pattern 无法同时覆盖 `config.d/*.dae` 与根目录 `api.dae`。
+> 因此「一个 include 块」在实现上允许 1~2 个 param，推荐写法：
+>
+> ```dae
+> include {
+>     _: './config.d/*.dae'
+>     _: './api.dae'
+> }
+> ```
+
+拒绝原因枚举，同时用于源列表的 `read_only_reason` 与错误响应的 `error.details.reason`：
+
+| reason | 触发条件 | 对外状态 |
+|---|---|---|
+| `writes_disabled` | 未开启 `api.config_write`，或 `secret` 为空 | 源列表 `writable:false`；写请求 `403 permission_denied` |
+| `layout_unmanaged` | 上表条件 1~7 任一不成立 | 源列表 `writable:false`；写请求 `403 permission_denied` |
+| `entry_source` | 目标是 `config.dae` | 同上（该源仍**可见**，便于用户看到结构） |
+| `listener_secret_in_content` | 目标源正文包含 `api.secret` 的值 | 同上（防把凭据写进可回读的源） |
+| `reload_in_progress` | 有 reload 在执行 | `409 state_conflict` |
+| `file_unwritable` | 目标文件不可写 / 目录只读 | `503 temporarily_unavailable` |
+
+`api.dae` 不在此表中：它对前端不可见（P4-4），不参与任何可达判定。
+
+能力声明（`GET /api/v1/capabilities`）：
+
+```json
+{
+  "config": {
+    "available": true,
+    "writable": "<gate>",
+    "create": false,
+    "max_bytes": 61440,
+    "max_sources": 16,
+    "x-dae": {"store": {"kind": "file"}, "layout": {"kind": "managed|unmanaged", "reason": "..."}}
+  },
+  "config_validate": {"available": true, "modes": ["syntax", "full"], "max_bytes": 61440, "max_sources": 16},
+  "groups": {"...": "...", "config_patch": "<gate>", "max_patch_operations": 16},
+  "nodes": {"available": true, "can_manage": "<gate>"}
+}
+```
+
+- `max_bytes = limits.max_json_body_bytes - 4096 = 61440`（与 honk `MAX_CONTENT_BYTES` 同款算式，`crates/honk-core/src/native_api/config.rs:47`）。
+- `max_sources` 含隐藏源在内计数，保证不小于已接受源总数；`sources[]` 只回显可见源（P4-4）。
+- `x-dae.layout` 是 dae 扩展：把「为什么不能写」变成可观测事实，前端据此隐藏编辑入口而不是反复试错。
+
+#### P4-2 只读端点
+
+- [x] `GET /api/v1/config` → `EffectiveConfig{sources[], diagnostics[], secrets_redacted, generation_id, revision}`。
+  - [ ] 取自**已接受快照**（进程内保存的源文本），不是重新读盘。**偏离**：当前每次从磁盘装载（`cmd/config_editor.go` `GetConfig` → `loadSources`）；`revision` 与 `runtime.generation.config_revision` 同源，所以「磁盘已改、尚未 reload」时两者不同，可据此判断。
+  - [x] `api` section 的 `secret` 值一律掩码（契约 `api-config` 可见性表）。
+  - [x] `sources[]` 过滤掉 `api.dae`（P4-4）。
+- [ ] `GET /api/v1/config/sources`（列表）：**契约没有这条路由**（`api/config.yaml` 只有 `POST /config/sources` 创建）。dae 对列表路径的非 `POST` 请求返回 `405 method_not_allowed`；源清单由 `GET /config` 的 `sources[]` 提供，不要按「列表端点」实现或调用。
+- [x] `GET /api/v1/config/sources/{source_id}` → `ConfigSourceContent`；`ETag` 为带引号的 `content_sha256`，**仅在内容未被掩码时下发**。
+- [x] `POST /api/v1/config/validate`：
+  - [x] `syntax` 模式只解析提交文本；`full` 模式额外跑语义校验，并从磁盘读取 include 依赖（**不联网**）。
+  - [x] 200 表示「校验完成」，`valid` 字段区分结果；400（请求形态非法）、413（超 `max_bytes`/`max_sources`）、422（未声明的 mode）。
+  - [x] 不写文件、不刷新缓存、不发布 generation、不产生 operation。
+
+#### P4-3 写端点
+
+- [x] `PUT /api/v1/config/sources/{source_id}`：
+
+| 步骤 | 内容 |
+|---|---|
+| 1 | 门禁：layout + `config_write` + 目标可写（P4-1 各 reason） |
+| 2 | `Content-Type: application/json`，body 仅允许 `{content:string}`（`additionalProperties:false`） |
+| 3 | **`If-Match` 必需**（缺失 → `428 precondition_required`），比对的是源 `content_sha256`（不是 config revision），不符 → `412 stale_revision` |
+| 4 | 长度 ≤ `max_bytes`，否则 `413 request_too_large` |
+| 5 | 组装候选全树：用新文本覆盖目标源，其余源取已接受快照 |
+| 6 | **full 校验**：`config.New` 全树解析 → `conf.Api.Validate()` → `validateRoutingRules`（`cmd/validate.go:87`）→ `dns.ValidateRouting`（`component/dns/routing_validate.go:54`）→ `validateFixedDomainTtl`；geodata 目录取 `filepath.Dir(cfgFile)`。失败 → `422 unsupported_value` + `error.details.diagnostics[]`（带行号/列号），**不写盘、不启动 reload** |
+| 7 | 备份 `<file>.bak` → 原子写（同目录临时文件 + `fsync` + `rename`，保留原 mode）→ 复读确认字节一致 |
+| 8 | `queueReloadRequest`（复用 `cmd/reload_manager.go:78`）+ operation store，`kind: reload`；返回 `202` + `Location` + `Retry-After: 1` |
+
+- [x] 额外拒绝（契约 403 描述）：替换文本**新增/修改 `api` section 内容**（listener 或 secret）→ `403 permission_denied`；监听配置永远只能人工改文件 + restart。
+- [x] 不提供 `POST /config/sources`（`create: false`，返回 `404 capability_not_supported`）：新增源文件需要改入口 `config.dae`，而入口不可写。
+- [x] `Idempotency-Key` 与 reload operation 复用现有 store；同 key 同 body 返回原 202，同 key 不同 body → `409 idempotency_conflict`。
+- [x] 语义边界：`routing` 模块 = `config.d/routing.dae`，`dns` 模块 = `config.d/dns.dae`。客户端改完整个文件文本再 PUT，daemon 不做行级手术，因此**注释、排版、行序完全由客户端保有**。
+
+#### P4-4 隐藏 `api.dae`（契约偏离，需留痕）
+
+目标：前端无法感知 `api.dae` 的存在，从而不可能直接编辑它。
+
+- [x] `GET /config` 的 `sources[]` 过滤掉 `api.dae`（没有 `GET /config/sources` 列表路由，见 P4-2）。
+- [x] `api.dae` 的 `source_id` **不可寻址**：`GET` / `PUT /config/sources/{id}` 一律返回 `404 resource_not_found`，与「未知 id」**不可区分**（避免通过状态码探测其存在）。
+- [x] `POST /config/validate` 中引用隐藏源 id → `400 invalid_request`；请求体出现 `path`/`id` 指向 `api.dae` → `400 invalid_request`。
+- [x] `diagnostics[]` 中属于隐藏源的条目一律丢弃（其内容仍进守护进程日志），避免通过诊断泄漏来源。
+- [x] 错误 `error.message` 与访问日志**不得**出现 `api.dae` 名称或其绝对路径（日志本身已不记录查询串与 body，这里是额外要求）。
+- [x] `revision` / `generation_id` 仍覆盖整份配置（含隐藏源），保证「配置变则 revision 变」不被破坏。
+- [x] **契约偏离记录**：契约 `GET /config` 写明「The source set is complete and bounded by `max_sources`; never truncate it」，隐藏 `api.dae` 与之冲突。这是有意的产品决定（防止前端直接编辑监听配置），已在 `docs/{en,zh}/development/api.md` 记录，并在 `capabilities.config.x-dae.hidden_sources` 暴露 `hidden_sources: ["api.dae"]`。
+
+#### P4-5 前置改造
+
+- [x] `pkg/config_parser/walker.go`：`Section` 增加 `StartLine` / `EndLine`。`parseExpression`（`walker.go:317`）手里有 `dae_config.IExpressionContext`，用 `ctx.GetStart().GetLine()` / `ctx.GetStop().GetLine()` 填充；嵌套 section（`dns.routing.request`）同样可得。
+  - 位置信息必须来自**单文件解析**（`config_parser.Parse(单文件文本)`），不能用合并后的 AST——合并会把多个文件的行号混在一起。
+- [x] `config/config_merger.go`：新增 `MergeWithOrigins()`，返回 `section → {file, lineRange}`，用于判定「一 section 一文件」（P4-1 条件 6）。
+- [x] 复用校验链，不复制第二套：`readConfig` → `config.New` → `conf.Api.Validate` → `validateRoutingRules` → `dns.ValidateRouting` → `validateFixedDomainTtl`。
+- [x] `component/nativeapi`：新增 `ConfigProvider` / `ConfigSourceProvider` 接口 + `handlers_config.go`；`Server` 增加 `config` 字段；`handlers.go` 的 capabilities 按 gate 输出。
+- [x] `cmd/config_editor.go`：串行锁（`sync.Mutex`）+ 已接受快照（源文本、`content_sha256`、`loaded_at`）+ 写流程；`reload_in_progress` 由 `reloadManager.reloadActive` 判定。
+
+#### P4-6 测试
+
+- [x] 布局判定：合法目录通过；缺 `api.dae`、`config.d` 缺模块文件、入口含额外 section、`config.d` 内嵌套 `include`、section 跨文件重复、文件权限过宽 —— 逐项 `writable=false` 且 reason 正确。
+- [x] 开关：`config_write=true` + 空 `secret` 时 `dae validate` 失败（夹具必须带 secret 才能通过 full 校验）；`config_write=false` 时写端点 `403 writes_disabled` 且**磁盘字节不变**、`reloads == 0`。
+- [x] 隐藏：源列表不含 `api.dae`；其 id 的 GET/PUT 均 404；`diagnostics` 不泄漏；错误信息不含该名称。
+- [x] 写流程：`If-Match` 缺失 → 428；哈希不符 → 412；语法错误 → 422 且带 diagnostics 行号；超长 → 413；成功 → 202 + `Location` / `Retry-After`。
+- [ ] 语义：改 `routing.dae` 里的 fallback 后，`GET /rules` 的 fallback 变化且生成新 `generation_id`；改 `dns.dae` 的 upstream 与路由后，`GET /dns/rules` 同步变化。**未做**：需要运行时集成。
+- [x] 保真：含注释与特殊排版的文件经 PUT 往返后字节完全一致（daemon 不做重写）。
+- [x] 校验链等价：PUT 拒绝的候选，`dae validate -c` 也拒绝（防止 API 比 CLI 松）；已覆盖 DNS 路由与 `fixed_domain_ttl` 两类只被语义链拦下的候选。
+- [x] 契约偏离回归：断言 `sources[]` 数量 = 可见源数、`x-dae.hidden_sources` 存在。
+
+#### P4-7 后续复用（P5 / P6）
+
+- [x] `POST /nodes` / `DELETE /nodes/{id}`：写 `config.d/node.dae`，复用 P4-3 的校验/备份/原子写/reload，另加来源判定（订阅节点不在配置树内 → `404 capability_not_supported`）与全局重名校验（`409 state_conflict`）。
+- [x] `POST /providers/{id}/refresh`：只允许订阅，排队 `provider_refresh`（reload 会重新拉取订阅）。
+- [x] `PATCH /groups/{id}/config`：写 `config.d/group.dae`，RFC 6902 白名单 2 个路径（`/config/check_interval`、`/config/tolerance`），`If-Match` 对 config revision，`max_patch_operations: 16`。
+
+##### P4-7 研究结论（2026-11-01，以 demo 面板为准）
+
+**前端实际行为**（`https://demo.daeuniverse.org` 实测 + bundle `assets/index-*.js`、`assets/nodes-*.js` 分析）：
+
+- 入口在节点页的「粘贴节点链接」按钮；弹窗只有两个输入：`名称` + `节点链接`，单个链接必须填名称，多链接自动命名，一次最多 200 条。
+- 调用 `POST /api/v1/nodes`，body 为契约的 `NodeCreate { name, link }`；成功后弹「<name> 已添加」并刷新列表。删除走 `DELETE /api/v1/nodes/{node_id}`。
+- demo 后端是 honk，前端同时内置一份 **mock 后端**（`app.js` 的 `createNode` 实现），可直接当行为 oracle。实测三条 mock 链接（`vless://`、`trojan://`）均「已添加」成功，节点计数 6→8。
+
+**参考语义（mock 后端逐条）**：
+
+| 情形 | 行为 |
+|---|---|
+| `resources.nodes.can_manage == false` | `404 capability_not_supported`「Node management is unavailable」 |
+| 链接不匹配 `^([a-z][a-z0-9+.-]*):\/\/\S+$` 或 scheme 不在白名单 | `422 unsupported_value`「Unsupported share link scheme "X"」 |
+| 名称已被 inline 节点占用 | `409 state_conflict`「An inline node named X already exists」 |
+| 写入 | `Ht(source, "node", "  name: 'link'\n")`：源文本已有 `node {\n` 就在块首插入一行，否则在文件末尾追加一个 `node { … }` 块 |
+| 之后 | 触发 reload；同步模式返回节点，异步模式返回 `202` + `node_create` 操作 |
+| 删除 | 只允许 `provider_id == "inline"`，否则 `404` |
+
+**dae 当时的现状与差距（2026-11-01 立项时；同日已在下方「实现」中补齐）**：
+
+- `component/nativeapi/handlers_nodes.go` 对 `POST/DELETE` 硬编码 `404 capability_not_supported`，capabilities 里 `nodes.can_manage` 恒为 `false` —— 前端添加节点必然失败。
+- 无分享链接解析入口。可行方案：用 `daeuniverse/outbound` 的 dialer 注册表真实建一次 dialer（`D.NewFromLink`），能建即接受；只做 scheme 白名单会放过语法正确但内容坏的链接。
+- 节点模型：`node` 段是 `name → link` 的 `KeyableString` 映射；节点 API id 为 `n_` + `sha256(link)` 前 16 位（无 link 时用 name），创建响应必须用同一算法，否则前端刷新后找不到新节点。
+- 可复用件：P4 的 `configEditor`（读源、候选构造、full 校验、`.bak`、原子写、reload 排队）、`MergeWithOrigins`（section → 文件 + 行号）、`nodeIDOfLink`。
+
+**实现（2026-11-01 落地）**，按用户裁决的四条约束：
+
+1. 允许删除：`DELETE /nodes/{id}` 只删 `config.d/node.dae` 里的行；未知 id 幂等 `200 {"deleted": 0}`，订阅/文件来源的节点 `404 capability_not_supported`。
+2. 写入源固定为 `config.d/node.dae`（不取「node 段所在文件」），订阅节点只读。
+3. 允许面板手动刷新订阅：`POST /providers/{id}/refresh`，只接受 `kind == subscription`，排队 `provider_refresh` —— reload 本身会重新拉取订阅，失败保留上次成功的节点。
+4. 节点名全局唯一：与运行代次里所有来源（inline 与各订阅）比对，冲突 `409 state_conflict`。
+
+实现要点：
+
+- 闸门：`nodes.can_manage` 跟 `config_write` + 受管布局同源；`providers.can_refresh` 只看 operations（运行期恒 `true`），`providers.can_manage` 恒 `false`（不建订阅）。
+- 文本插入/删除按参考实现：有 `node {` 就在块首插一行，否则末尾追加整块；删除按行移除，注释与排版不动。
+- 链接校验：先 `shareLinkScheme`，再真实建一次 dialer 并要求解析出 `host:port` —— 只建 dialer 不够，协议 dialer 懒解析会放过 `vless://only-a-host`。
+- 写盘复用 P4 的 `.bak` + 原子写 + 全链校验 + reload 排队，返回 `202` + `node_create` / `node_delete`。
+
+**已知偏离**：契约允许 `201`（同步生效）或 `202` + 操作；dae 只有异步，统一 `202`。`provider_refresh` 的结果是 reload 结果而非契约里的 Provider 快照。
+
+**节点编辑（2026-11-05 补充，契约外扩展）**：契约 `nodes-groups.yaml` 与 honk、doona 前端（build `99fcca4`）都只有新增/删除，没有编辑端点，因此 dae 自行定义：
+
+- `PATCH /api/v1/nodes/{node_id}`，body `{"name"?: string, "link"?: string}`，缺省字段保留当前值（`null`/缺省同义），至少给一个，否则 `400 invalid_request`。
+- 只改 inline 节点：先判定存在与归属，再校验值（未知 id `404 resource_not_found`、订阅/文件来源 `404 capability_not_supported` 先于 422）。
+- 名称用 `validateNodeName`，链接用 `validateNodeLink`（真实 dialer 解析 + host:port）；校验同时返回引擎将派生的节点 id（`nodeIDOf(property)`，插件链接会被归一化，不能用原始串哈希预测）。
+- 换链接守卫：目标链接被其他 inline 条目或已加载节点占用 → `409 state_conflict`（节点 ID 由链接派生，两条同链接会塌成一个节点）。
+- 索引里有而 `node.dae` 里已无该行 → `409 state_conflict`；无 key 形式（`node { 'ss://…' }`）没有名称可寻址，首期不支持通过 API 编辑。
+- 首期按行定位条目：同一行写多个条目（`a: 'x' b: 'y'`）时只有第一个可寻址；节点写不带 `If-Match`，语义为 last-writer-wins（外部同时手改以最后一次写入为准）。
+- 写盘复用 `commitSourceUpdate`（`.bak` + 原子写 + 全链校验 + 写后 reload），操作类型 `node_update`，结果为新 `Node`；改链接会得到新节点 id，改名 id 不变。
+- 文本改写保留该行的缩进、冒号后间距、行尾注释与换行风格（`updateNodeEntry` / `rewriteNodeLine`）；无引号裸值以行尾为终止符，不会吞掉下一行换行。
+- 完成操作的结果解析改成“按名称/由写路径算出的规范 id”定位节点（`nodeByName` / `resolve(nodeID)`），不再由适配层预测 id；`POST /nodes` 的 resolver 一并改为按名称查找。
+- 改名只重写 `node.dae`，不会改写其他源（`group.dae`）里的 filter/default/final 引用；需要时另行修改。
+
+**doona 编辑节点按钮的兼容条件（2026-11-05 实测 demo 前端 bundle）**：节点页的「节点操作 → 编辑…」并不调用 `PATCH /nodes`，而是：
+
+1. `GET /config` 取源清单，在 `kind = main|include` 的源文本里按名称定位 node 条目（要求恰好一条，且源的 `writable = true`、哈希可校验）；
+2. 本地重写源文本（改名时同时改同一源内的引用），先 `POST /config/validate`（`{mode:"syntax", sources:[{id:"node", content:"node { ... }\n"}]}`）；
+3. `PUT /config/sources/{id}` + `If-Match = content_sha256` 写回，等 `202` 操作完成。
+
+第 2 步在 dae 原先返回 `404 resource_not_found`（把 `id` 当成源引用），会让编辑直接失败。已按契约修正：`id` 是请求内诊断标识，未命中现有源时作为独立候选校验（见 `candidateOverrides`）；新增 `TestConfigValidateAcceptsAnUnknownRequestLocalID` 与端到端 `TestNodeEditFlowOverHTTP`（读源 → 校验 → If-Match 写入）。
+
+**真机联调（2026-11-05，OpenWrt x86_64 + 本地构建替换 `/usr/bin/dae`）**：API 侧全部通过——`PATCH /nodes/{id}` 改名（`202` + `node_update` → `succeeded`，文件与 `/nodes` 同步）、no-op `200 {"updated":0}`、重名 `409`、坏链接 `422`、未知 id `404`；`POST /config/validate` 以 `id:"node"` 返回 `valid:true`；`PUT /config/sources/{subscription.dae}` 改写订阅标签后 `/providers` 由 `testsub` 变为新标签、删除后 provider 消失。**前端限制**：设备自带 doona（build `99fcca4`）的节点页「编辑…」/「更多操作 → 编辑」只对 `engine.name === "honk"` 生效——`Xn(discovery).daeText` 对 dae 为 `false`，`vn(config.writable, source.writable, hashComplete)` 因此恒假；include 源的节点「移除」也被前端按 "声明于主配置文件以外的文件" 禁用。dae 能走通的界面路径是节点来源/节点行的「打开配置文件」→ 内置源编辑器 → 应用（实测改名 `testsub` → `testsub_ui` 生效）。要让节点页直接编辑，需要前端改为调用 `PATCH /nodes/{id}`（或在 doona 内新增 dae 描述符）；daemon 侧无需再改。
+
+**测试方案**：
+
+- mock 数据：`cmd` 包内用临时 managed 目录 + mock 分享链接（`vless://`、`trojan://`、`ss://`）覆盖：写入文本形态、重名 `409`、坏 scheme `422`、订阅节点 `404`、闸门关闭 `404`、写后 reload 只排队一次。
+- demo 对照：以 `https://demo.daeuniverse.org` 的提示文案与状态码为 oracle。
+- 端到端（手工）：本地起 dae（`config_write: true` + managed 布局），把 doona 后端地址指向它，走一遍「粘贴节点链接」。
+
+#### P4-8 不做与已知风险
+
+- 不做 `global.data_dir`（P4-D6）：订阅缓存留在 `<配置目录>/persist.d/`，因此**配置目录里必然存在非 `.dae` 文件**；可写判定只认 `config.d/*.dae`。
+- 不做配置修订历史 / DB 存储（honk 有 `revisions` 与 `SourceStore::Db`），dae 只有文件源。
+- 不做自动回滚（P4-D7）：人工外部编辑与 API 写并发时，靠 `If-Match` 拒绝而非合并。
+- `config.dae` / `api.dae` 不可写意味着「改监听地址、改 secret、改端口」永远只能人工改文件 + restart；前端必须把这些字段标为只读。
+- `max_bytes = 61440` 对大规则集可能不够：超限时返回 413 而非静默截断；如需更大，应提高 `limits.max_json_body_bytes` 而不是放宽该校验。
+- **不做设备级流量统计**（2026-11-01 决定）：`GET /api/v1/connections` 的 `upload_bytes` / `download_bytes` 只对 userspace TCP 流有值（`control.FlowRuntime.snapshot` 置 `HasBytes: true`），UDP 流与内核直连流量都没有计数。任何按来源/域名聚合出的「流量排行」天生只覆盖一部分链路，补一套覆盖内核直包的 per-device 计量成本极高。因此提供 `api.disable_connection_bytes` 让部署方直接停发这两个字段（恒为 `null`），连接的其余字段不变，而不是去「适配」排行。**2026-11-05 补充**：`window_seconds` 只改变「累计量」到「最近 N 秒增量」的口径，覆盖面仍是同一批 userspace TCP 流；`api.disable_connection_bytes` 开启时窗口字段同样不输出。
+
+## 4. 端点清单
+
+### 实现
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api` | discovery |
+| GET | `/api/v1/version` | 版本 |
+| GET | `/api/v1/capabilities` | 能力声明 |
+| GET | `/api/v1/runtime` | 运行时状态 |
+| GET | `/api/v1/runtime/traffic/history` | 流量历史 |
+| GET | `/api/v1/groups` | 组列表 |
+| GET | `/api/v1/groups/{group_id}` | 组详情 |
+| GET | `/api/v1/groups/{group_id}/config` | 组配置（只读，`ETag` 为 config revision） |
+| PATCH | `/api/v1/groups/{group_id}/config` | 组配置补丁（写入闸门；`check_interval` / `tolerance`） |
+| PUT | `/api/v1/groups/{group_id}/selection` | 运行时选择（`select`）或 pin（自动策略） |
+| DELETE | `/api/v1/groups/{group_id}/selection` | 清除 pin；`select` 返回 409，`fixed` 返回 422 |
+| POST | `/api/v1/operations/reload` | 异步 reload |
+| POST | `/api/v1/operations/suspend` | 异步 suspend |
+| POST | `/api/v1/operations/resume` | 异步 resume |
+| GET | `/api/v1/operations/{operation_id}` | operation 状态 |
+| GET | `/api/v1/nodes` | 节点列表（`group_id` / `limit` / `cursor`） |
+| GET | `/api/v1/nodes/{node_id}` | 节点详情 |
+| POST | `/api/v1/nodes` | 新增 inline 节点（写入闸门；202 + `node_create`） |
+| PATCH | `/api/v1/nodes/{node_id}` | 编辑 inline 节点的名称/链接（写入闸门；202 + `node_update`，无变化 200 `{"updated":0}`） |
+| DELETE | `/api/v1/nodes/{node_id}` | 删除 inline 节点（写入闸门；202 + `node_delete`，未知 id 幂等 200） |
+| GET | `/api/v1/runtime/outbounds` | 按出站累计计数器（reload 保留） |
+| GET | `/api/v1/runtime/memory` | 进程 / cgroup / eBPF 内存 |
+| GET | `/api/v1/runtime/memory/history` | 内存历史 |
+| GET | `/api/v1/datapath` | eBPF datapath 明细 |
+| GET | `/ui` / `/ui/*` | 自托管前端（配置 `api.ui` 时）：静态、公开，无需认证 |
+| GET | 其他任意路径（含 `/`） | 配置 `api.ui` 时 302 → `/ui/`；未配置时 404。**不会返回 401** |
+
+> 路由边界：只有 `/api` 与 `/api/v1/...` 属于控制面并参与认证；其余路径一律视为页面访问。
+
+### P3 已实现
+
+以下端点均已接入；仅明确标注的子能力（providers 增删、geodata update）仍返回 `404 capability_not_supported`。
+
+| Method | Path | 计划 | 依赖 |
+|---|---|---|---|
+| GET | `/api/v1/rules` | P3-4 | routing 规则只读导出 |
+| GET | `/api/v1/providers` | P3-5 | `subscription`/`node` section 投影 |
+| GET | `/api/v1/providers/{provider_id}` | P3-5 | 同上 |
+| POST | `/api/v1/providers/{provider_id}/refresh` | P3-5 | 仅订阅可刷新（`can_refresh=true`），排队 `provider_refresh` |
+| GET | `/api/v1/runtime/direct-stats` | 2026-11-01 | 直连观测计数（需 `api.direct_stats`） |
+| POST | `/api/v1/routing/trace` | — | 按当前 generation 模拟路由，仅 `resolve: "none"` |
+| GET | `/api/v1/geodata` | P3-6 | geodata 资产状态 |
+| POST | `/api/v1/geodata/update` | P3-6 | 写文件 + operations（首期 `can_update=false`） |
+| GET | `/api/v1/dns/cache` | P3-7 | daedns 缓存枚举 |
+| DELETE | `/api/v1/dns/cache/{entry_id}` | P3-7 | 单条删除 |
+| POST | `/api/v1/dns/cache/flush` | P3-7 | 已有 flush |
+| GET | `/api/v1/dns/log` | P3-7 | 新增有界 DNS 日志 |
+| GET | `/api/v1/dns/rules` | P3-7 | `dns.routing` 只读导出 |
+| POST | `/api/v1/dns/query` | P3-7 | 主动查询 + 限流 |
+| GET | `/api/v1/connections` | P3-8 | SessionManager 活跃 flow 导出（`sort` / `order` / `window_seconds` 见 P3-8 增补） |
+| DELETE | `/api/v1/connections/{connection_id}` | P3-8 | 按 ID 关闭 flow |
+| DELETE | `/api/v1/connections` | P3-8 | 批量关闭（`type` / `src` 过滤，或显式 `all=true`；`type=all` 已不再被当作过滤器） |
+| GET | `/api/v1/flows` | P3-9 | flow 有界历史 |
+| GET | `/api/v1/flows/{flow_id}` | P3-9 | 同上 |
+| GET | `/api/v1/events` | P3-10 | 事件总线 + replay |
+| GET | `/api/v1/logs` | P3-11 | 日志 ring / 流式通道 |
+| POST | `/api/v1/probes` | P3-12 | 探测执行器 + operations |
+
+> `/api/v1/routing/trace` 已实现为模拟器（`mode: "simulation"`，不执行连接或 DNS，响应里 `dns: []`），仅支持 `resolve: "none"`，`live` 返回 `422 unsupported_value`；每主体 30 次/分钟、全局 120 次/分钟（超限 `429 rate_limited` + `Retry-After`）；规则步骤（规则 + 条件总数）超 4096 时不构建模拟器，`routing_trace.available=false` 并返回 `404 capability_not_supported`；单次求值超时 5s → `504 temporarily_unavailable`。
+
+实现要点（契约对齐）：
+
+- 分页：`nodes` / `providers` 的 cursor 绑定 generation（offset 形式），reload 后旧 cursor 返回 `410 snapshot_expired`；`dns/cache`、`dns/log`、`flows` 使用不透明 cursor（base64 JSON，含 walk 类型、过滤条件指纹、limit、5 分钟有效期，锚点是最后一条记录的 key），过滤条件或 limit 不一致同样返回 `410 snapshot_expired`。
+- 限额：`limit` 统一 1–1000（默认 100，`dns/log` 默认 200 且上限为 `dns_log.max_page_size`），越界返回 `400 invalid_request`；`connections` 按 limit 截断并置 `truncated`，`total_tcp` / `total_udp` 保持截断前的匹配数。
+- 限流：`dns/query` 60 次/分钟；`probes` 同时运行 4 个、排队 16 个、120 次/分钟。超限分别返回 `429 rate_limited` / `503 temporarily_unavailable`，并带 `Retry-After`。
+- 只读定位：`providers` 创建/删除、`geodata/update` 返回 `404 capability_not_supported`；`nodes` 写操作随写入闸门（关闭时同样 `404 capability_not_supported`）；`providers/{id}/refresh` 与写入闸门无关，只要求 operations 接好且 provider 是订阅。
+
+### P4 端点（已落地）
+
+P4 源级端点已落地，详见 3 节 P4 章节。`api.config_write` 关闭或布局不受管时，`config*` 写端点返回 `403 permission_denied` 且不写盘；`PATCH /groups/{id}/config` 与 `POST/DELETE /nodes` 则因能力位为 false 返回 `404 capability_not_supported`。
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/v1/config` | 已接受配置视图（`api.dae` 被隐藏）；`sources[]` 即源清单 |
+| GET | `/api/v1/config/sources/{source_id}` | 单个源正文；`ETag` = `content_sha256` |
+| PUT | `/api/v1/config/sources/{source_id}` | 整源替换 + reload（`If-Match` 必需，202 + operation） |
+| POST | `/api/v1/config/validate` | syntax / full 两种 dry-run 校验 |
+
+> 契约没有 `GET /api/v1/config/sources`（列表）与 `POST /api/v1/config/sources`（创建）的可用实现：前者不是契约路由（dae 返回 `405`），后者因 `config.create=false` 返回 `404 capability_not_supported`。源清单只能从 `GET /config` 的 `sources[]` 读取。
+
+> 规则资源（`GET /rules`、`GET /dns/rules`）保持只读。编辑 `routing` / `dns` 模块的方式是替换
+> 对应的 `config.d/routing.dae`、`config.d/dns.dae` 源文本，契约里没有规则级写端点。
+
+### 声明不可用（不在路线图内）
+
+以下已知契约资源没有实现计划，统一返回 `404 capability_not_supported`（不落入普通
+`404 resource_not_found`）。**`/api/v1/config*` 等已随 P4 从本清单移除。**
+
+- `/api/v1/runtime/settings`
+- `POST /api/v1/providers`、`DELETE /api/v1/providers/{id}`、`POST /api/v1/geodata/update`
+- `/api/v1/auth`、`/api/v1/auth/*`（只做 token mode）
+
+`config*`、`PATCH /groups/{id}/config`（仅 `/config/check_interval`、`/config/tolerance`，`application/json-patch+json` + 强 `If-Match`）、`POST/DELETE /nodes` 已随 P4 落地，受写入闸门约束（前者的失败是 `403`，后两者的失败是 `404 capability_not_supported`）。
+
+## 5. 契约易踩点
+
+1. **`AdmittedDiscovery.links` 要求全部固定链接**，即使资源不可用也要返回。
+2. **`GroupConfig` 的 7 个 key 全部必填**，可为 `null`。
+3. **`GroupCapabilities` 五个字段全部必填**，包括 `mutable_config` 和 `probe_transports`。
+4. **`GroupSummary.selection` 要求 `tcp_member_id` 和 `udp_member_id`**。
+5. **`Group.runtime.selection` 要求 `tcp` 和 `udp`**。
+6. **uint64 必须是十进制字符串**，bounded count/limit 才是 JSON number。
+7. **`ErrorResponse` 必须有 `request_id`**（可为 `null`）。
+8. **不可用资源返回 `404 capability_not_supported`**。
+9. **`PATCH /groups/{id}/config` 在 `config_patch=false` 时返回 404 capability_not_supported**，不能 405。
+10. **`DELETE /groups/{id}/selection` 对 selector 返回 `409 state_conflict`**。
+11. **`PUT /groups/{id}/selection` 对无 `can_select` / `can_override` 的策略返回 `422 unsupported_value`**。
+12. **不要声明 `full_transparency`**。
+13. **组/节点 ID 必须稳定**，不能从 name 直接推导，也不能 reload 后随机变化。
+14. **认证模式**：非 loopback 必须有 `secret`（token mode）；secretless 匿名仅限 loopback 且显式 `allow_anonymous_loopback: true`。TLS 是部署要求（listener 或受信任本机反向代理），不是 dae 配置校验项。
+15. **`PUT /config/sources/{id}` 的 `If-Match` 比的是源 `content_sha256`**，不是 `GET /groups/{id}/config` 那个 config revision；缺失 `If-Match` 返回 `428 precondition_required`（不是 412）。
+16. **`groups.config_patch = true` 蕴含 `config.available = true` 且 `config.writable = true`**（`api/discovery.yaml:749-758`）；只声明前者属于能力撒谎，契约测试会抓到。
+17. **`config.writable = false` 时 `config*` 写端点必须 `403 permission_denied`，不是 `404`**；`404 capability_not_supported` 只用于「资源整体未实现」。`PATCH /groups/{id}/config` 与 `POST/DELETE /nodes` 反过来：能力位（`groups.config_patch` / `nodes.can_manage`）本身为 false，契约要求 `404 capability_not_supported`。
+18. **full 校验失败的 `PUT` 返回 `422` + `error.details.diagnostics[]`**，不得返回 400/500，也不得先写盘再报错。
+19. **`GET /config` 的源集合契约要求「complete, never truncate」**；dae 隐藏 `api.dae` 是有意偏离，必须在 `x-dae.hidden_sources` 与文档中留痕（见 P4-4）。
+20. **`runtime/outbounds` 不输出 builtin `block` 行**，`flows.coverage.kernel_block` 已移除；消费方按 `kind` 枚举时必须容忍缺项，不要假定 `direct` + `block` 恒存在。
+21. **`api.direct_stats` 关闭时 `/runtime/direct-stats` 仍返回 200**（`enabled: false` + 全 0），不要据此判断资源不可用；`attached` 为 false，`last_error` 可能说明加载/挂载失败。`runtime.traffic` 无论开关都只含 userspace 可见流量。
+22. **`providers.can_refresh` 与写入闸门无关**（运行期恒 true），`providers.can_manage` 恒 false；刷新非订阅 provider 返回 `404 capability_not_supported`。
+23. **`PATCH /groups/{id}/config` 的 `If-Match` 比的是 config revision**（组配置 `ETag`），与 `PUT /config/sources/{id}` 比 `content_sha256` 不同；两者混用会得到 `412 stale_revision`。
+
+## 6. 测试与 CI
+
+- [x] 配置测试
+  - [x] `api` section 解析、默认值、`enabled:false` 不启动。
+  - [x] 非 loopback 无 secret 校验失败。
+  - [x] `secret` 为空且 `allow_anonymous_loopback=false` 校验失败。
+  - [x] `secret` 为空 + `allow_anonymous_loopback=true` 且 listener 非 loopback 校验失败。
+  - [x] `secret` 非空时 loopback / 非 loopback 都必须 Bearer。
+  - [x] `dae validate -c` 覆盖 API 配置。
+- [x] `select` 组单测
+  - [x] 默认/指定索引。
+  - [x] tcp/udp 独立切换。
+  - [x] 越界索引。
+  - [x] reload 重置。
+  - [x] `groupPublishesOptimisticAlive` 包含 `select`。
+- [x] handler 单测（`httptest` + fake provider）
+  - [x] discovery public/full view。
+  - [x] 401 / 403 / 404 capability / 405。
+  - [x] 409 / 422（随 P1 端点补）。
+  - [x] CORS 预检、Host/Origin、`Sec-Fetch-Site`。
+  - [x] body/header/target 限制。
+  - [x] uint64 十进制字符串、`Cache-Control` / `nosniff`。
+  - [x] 自托管前端：`/ui/` 公开、非 `/api` 路径 302（绝不 401）、无 UI 时 404、缺 `index.html` 仅 warning 且 API 可用。
+  - [x] P4 写路径能力位：`config` / `config_validate` / `groups.config_patch` / `nodes.can_manage` 随闸门输出（`handlers_p3_test.go`、`groups_test.go`、`nodes_test.go`）。
+  - [x] 组配置补丁：非 `json-patch+json` → 415、超 16 个操作 → 400、路径不在白名单 → 422、`test` 失败 → 409、缺 `If-Match` → 428、revision 不符 → 412（`handlers_p3_test.go`、`groups_test.go`）。
+  - [x] 路由模拟：`live` → 422、非法 network/port/domain → 400、超过限流 → 429、`routing_trace.available=false` → 404（`handlers_routing_test.go`）。
+  - [ ] RFC3339 时间戳格式断言。
+- [x] P4 编辑器单测（`cmd` 包）
+  - [x] `config_editor_test.go` / `config_editor_flow_test.go`：布局判定、闸门、隐藏源、写流程、保真、校验链等价。
+  - [x] `config_nodes_test.go`：文本插入/删除形态、重名 409、坏链接 422、订阅来源 404、闸门关闭 404、写后只排队一次 reload。
+  - [x] `config_groups_test.go`：白名单路径、整数量纲、`If-Match`、无变更不写盘。
+- [x] 直连观测测试
+  - [x] `control/direct_stats_test.go`（角色专用程序选择、计数器、关闭时零成本）、`cmd/nativeapi_runtime_test.go`（`/runtime/direct-stats` 与 `direct` 行合并）。
+  - [x] BPF ABI 对齐：`TestDirectStatsConnStateABIParity` / `TestDirectStatsTuplesKeyABIParity` / `TestDirectStatsObjectHasNoNATReverseMap` / `TestDirectStatsCounterValueLayout` 已加入 `.github/workflows/bpf-test.yml` 白名单；另有 `TestDirectStatsProgramsLoad` 通过 verifier 加载观察器对象。
+- [x] 订阅与缓存
+  - [x] `common/subscription/subscription_cache_test.go`：缓存键（tag 或内容哈希）、fetch 失败回退缓存、坏 payload 不覆盖好缓存。
+- [ ] 契约测试
+  - [ ] 将 `api-standardize/source/openapi.yaml` 固定到 `testdata/`（或 CI 拉取固定 commit）。
+  - [ ] 用 JSON Schema 校验每个 handler 的响应和错误 body。
+  - [ ] 覆盖 base、groups、selection、operations、traffic history。
+  - [x] 手工校验（一次性）：用 `honk` 分支的 `source/openapi.yaml` + ajv 校验真实 handler 输出 13/13 通过（`GroupList`、`Group`、`GroupConfigDocument`、`Capabilities`、`TrafficHistory`、`Operation`（queued/running/failed/succeeded）、`OperationAccepted`、`GroupSelectionResult`、`GroupSelectionRequest`、`ErrorResponse`）。自动化契约测试仍未接入。
+- [ ] 集成测试
+  - [ ] loopback + 无 secret 启动 API。
+  - [ ] discovery → capabilities → runtime → groups → selection → reload。
+- [x] CI
+  - [x] `gofmt`
+  - [x] `go vet`
+  - [x] `go test ./...`（`go test -tags dae_stub_ebpf ./...` 本地通过）
+
+## 7. 文档
+
+- 文档按内容分层（2026-10-31）：涉及配置文件（`api` section 字段、认证、TLS、
+  Host/Origin、`ui`、reload 语义）的写入 `docs/{en,zh}/configuration/api.md`；涉及端点、
+  资源契约与实现取舍的写入 `docs/{en,zh}/development/api.md`。
+- [x] `docs/en/configuration/api.md`、`docs/zh/configuration/api.md`
+- [x] `docs/en/development/api.md`、`docs/zh/development/api.md`
+- [x] 中英文 README 配置示例增加 `api` section。
+- [x] 组策略文档增加 `select`，说明“运行时选择不落盘、reload 重置”。
+- [x] `CHANGELOGS.md`。
+- [ ] 确认 dae-wing 等外部消费者能容忍新增 `api` section；`api.enabled=false` 时行为不变。
+- [x] 明确非 loopback 必须 `secret`，且所有非 discovery 请求带 `Authorization: Bearer`；TLS 由受信任反向代理终止，dae 不提供 TLS listener。
+
+## 8. 实施顺序
+
+1. 配置 + API server 骨架 + 认证/错误/中间件
+2. discovery / version / capabilities / runtime
+3. `select` 组策略 + groups 资源 + selection 端点
+4. operations（reload/suspend/resume）+ traffic history
+5. nodes / group health / can_override
+6. P3：runtime/outbounds → runtime/memory* → datapath → rules → providers → geodata →
+   dns/* → connections* → flows* → events → logs → probes（每项先 provider 接口 + capability）
+7. P4：配置源级读写 → inline 节点增删 + 订阅 refresh → 组配置补丁
+8. 契约测试 + 文档 + CHANGELOG
+
+## 9. 验收标准
+
+- [x] `dae validate -c` 对合法 `api` 配置通过，对非法配置给出明确错误。
+- [x] `api.enabled=false` 时完全不监听端口。
+- [x] secretless loopback 必须显式 `allow_anonymous_loopback: true` 才能匿名；否则启动失败。
+- [x] 非 loopback 无 secret 启动失败；非 loopback + secret 时所有非 discovery 请求必须带 `Authorization: Bearer`。
+- [x] `secret` 非空时 loopback 请求也必须 Bearer。
+- [x] TLS 不在 dae 配置中强制；文档要求非 loopback 部署在受信任 TLS 反向代理后。
+- [x] `GET /api`、`/api/v1/version`、`/api/v1/capabilities`、`/api/v1/runtime` 通过契约 schema 校验。（已用 origin/honk HEAD 与 doona pin 的两份契约手工校验 16/16 通过）
+- [x] `GET /api/v1/version` 的 `engine.version` 与 `dae -v` 完全一致，`build` 带 `revision`/`target`/`built_at`（未知为 `null`）。
+- [x] `/ui/`（配置 `api.ui` 时）无需任何认证即可加载；`/api` discovery 公开，`/api/v1/*` 在 token 模式返回 `401`。
+- [x] 任意非 `/api` 路径（含 `/`、深链、拼错路径）302 → `/ui/`，不会返回 `401`；未配置 `ui` 时返回 `404`。
+- [x] UI 目录缺失或缺 `index.html` 时只打 warning 且 `/ui/` 返回 `404`，进程、API 与代理照常运行。
+- [x] 访问日志：成功请求 `debug`、拒绝 `info`（带 `error_code`）、`5xx` `error`，每 60s 一行 `Native API traffic` 汇总；不记录请求头与查询串。
+- [x] `GET /api/v1/groups`、`/groups/{id}`、`/groups/{id}/config` 通过契约 schema 校验。（用 `honk` 契约 + ajv 对真实 handler 输出手工校验通过；自动化契约测试未接入）
+- [x] `select` 组可通过 `PUT /selection` 按 tcp/udp 切换成员，reload 后恢复配置默认。
+- [x] `DELETE /selection` 对 selector 返回 `409 state_conflict`。
+- [x] `PATCH /groups/{id}/config`：写入闸门关闭时返回 `404 capability_not_supported`；打开时按白名单改写 `config.d/group.dae` 并排队 `group_update`（`If-Match` 不符 `412`，无变更不写盘）。
+- [x] `POST/DELETE /nodes`：闸门关闭时 `404 capability_not_supported`；打开时排队 `node_create` / `node_delete`，删除未知 id 幂等 `200`。
+- [x] `/runtime/direct-stats` 在 `api.direct_stats=false` 时返回 200 + `enabled:false` + 全 0；开启后 `direct` 行并入内核直连链路字节。
+- [x] `POST /routing/trace` 返回 `mode: "simulation"`；`resolve: "live"` 返回 `422`，规则步骤超 4096 时能力位为 false 且端点 `404`。
+- [x] `runtime/outbounds` 不再输出 builtin `block` 行；`flows.coverage` 无 `kernel_block`。
+- [x] subscriptions 刷新失败仍保留上一版节点，`/providers` 报 `status: "stale"` + `last_error`。
+- [x] reload/suspend/resume 返回 202，operation 可轮询到 succeeded/failed。
+- [x] `traffic_history` 校验 `window_seconds` / `max_points` 上限，非法值返回 400。
+- [x] 所有错误响应包含 `error.code`、`error.message`、`request_id`。（应用层错误均带；>12288B 头部由 net/http 直接回 431 纯文本）
+- [x] 所有响应带 `Cache-Control: no-store` 和 `X-Content-Type-Options: nosniff`。
+
+## 10. 2026-10-31 联调问题修复纪要
+
+本轮以**远端真实路由器**（OpenWrt 25.12 / x86_64 / kernel 6.12.112，dae 由本仓 `make` 编译后替换 `/usr/bin/dae`）实测为准，逐条定位并修复。所有结论都带实测数字，不是推断。
+
+约束：只替换 dae 服务本体，其余系统项不动；诊断日志一律落 `/tmp`。
+
+### 10.1 总览
+
+| # | 症状 | 根因 | 性质 |
+|---|---|---|---|
+| R1 | `/runtime/outbounds` 的 `direct` 行恒为 0；`Σ(outbounds)` 与 `runtime.traffic` 差 18% | 直连字节只进混合总量，没有任何归属；且 `runtime` 总量是 generation 级，reload 归零 | 投影层缺陷 |
+| R2 | 节点延迟：API 只有 4 条、`sorting_latency_ms` 与日志对不上、`ranking` 恒 null | data-UDP 被丢弃；排序值在投影层重算；ranking 未实现 | 投影层缺陷 |
+| R3 | 前端取 `/rules` 极慢 | 响应体 **8.5 MB**（geosite 展开后按无损形式渲染） | 序列化缺陷 |
+| R4 | `/policies` 不显示选中节点 | 自动策略一律返回 `selection: null` | 投影层缺陷 |
+| R5 | `/policies` 显示「0 个可用 / 4 个未测试」 | TCP 样本的 `purpose` 用了 `shared`，前端按 `tcp + data` 取主延迟 | 契约字段值错误 |
+| R6 | `/overview` 内存卡片 7 项全为「—」 | 系统未委派 cgroup memory 控制器，整棵树没有 `memory.*` | 环境 + 少量代码 |
+| R7 | `/overview`「CPU 使用率」恒为「—」 | `process.cpu_percent` 在 provider 里硬编码 `nil`，引擎没有采样 | 功能缺失 |
+
+### 10.2 逐条记录
+
+#### R1 直连流量没有归属，且 reload 后总量归零
+
+> **后续修订（2026-11-01）**：本条的「常驻内核直连计数 + `traffic.planes`」方案已被取代——`direct_traffic_map`、`directTrafficCounters` 与 `planes` 已移除，`runtime.traffic` 改为 `observed_by: "userspace"`；内核直连观测改为可选的 `api.direct_stats`。reload 继承总量与进程级 `counter_since` 仍然有效。下文为当时的实测记录，保留作历史。
+
+**取证**
+
+- 内核 `direct_traffic_map`（percpu_array，map id 1698）真实在涨；
+- 受控测试：从 LAN 主机下载 `mirrors.aliyun.com` 51,301,092 字节（routing → direct）：
+  `direct_traffic_map` download `+52,389,589`，`/runtime` download `+52,038,366`，proxy 分项 `+1,933`；
+- 同时刻 `Σ(outbounds)=2.14 GB` vs `runtime.traffic=2.62 GB`，**差 472 MB（18%）**；
+- `dae reload` 后 `runtime.traffic` 归零（`counter_since` 变为新 generation 激活时间），而 `/runtime/outbounds` 继续累计。
+
+**根因**
+
+- `control/direct_traffic.go` 注释写明直连字节"只进 runtime.traffic，故意不进 per-outbound"；
+- `ControlPlane.runtimeStats` 是 generation 级（`newRuntimeStats()` 在构造时创建），reload 重建即归零，而出站计数器是**进程级** registry。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `control/direct_traffic.go` | 新增进程级 `directTrafficCounters`；直连增量同时写入 builtin `direct` 行与总量；新增 `recordDirect`；`record()` 拆出可测的 `publish()` |
+| `control/outbound_counters.go` | `attachOutboundCounters` 绑定 direct 计数器；新增 `OutboundCountersSince()` 作为两个资源共用的 `counter_since` |
+| `control/runtime_stats.go` | 新增 userspace / kernel_direct 两条平面累计；`publishRuntimeStatsStore` 在 generation 交接时**继承总量** |
+| `cmd/nativeapi_provider.go` | `counter_since` 改用进程级边界；输出 `traffic.planes` |
+| `component/nativeapi/types.go` | 新增 `TrafficPlanes` |
+| `control/direct_traffic_attribution_test.go` | 新增：直连归属 + reload 继承 |
+
+**验证**（51.3 MB 直连下载后）
+
+```json
+"bytes":  {"upload":"96035","download":"52376513"},
+"planes": {"userspace":{"upload":"35916","download":"36823"},
+           "kernel_direct":{"upload":"60119","download":"52339690"}}
+"direct": {"upload_bytes":"60119","download_bytes":"52339690"}
+```
+
+- `direct` 行 == `kernel_direct` 平面；
+- `userspace + kernel_direct == bytes`，精确闭合；
+- `Σ(outbounds)` 与总量只差 DNS 字节（DNS 不属于任何出站）；
+- `dae reload` 后 `counter_since` 不变、总量继续累加（122,181 → 175,005）。
+
+**未采纳的设想**：曾计划把 `direct_traffic_map` 改为 `LIBBPF_PIN_BY_NAME`，实测**不需要**——reload 走 BPF object 交接，map id 与数值都原样保留（452,170,343 → 454,944,592）。冷启动反而要清理旧 pin，加 pin 会带进陈旧计数。
+
+#### R2 节点延迟：data-UDP 缺失、排序值口径错误、ranking 未实现
+
+**取证**
+
+- 引擎日志按 6 个网络输出选路：`tcp4 / tcp6 / udp4(DNS) / udp6(DNS) / udp4 / udp6`；
+- API 每个节点只有 4 条健康样本，**没有 data-UDP**；
+- 日志 `min_moving_avg=689ms network=tcp6`，而 API 的 `sorting_latency_ms` 只等于原始指标（不含恢复惩罚与 `add_latency`）；
+- `ranking` 字段声明了但恒为 `null`。
+
+**根因**
+
+- data-UDP 没有自己的探针（真实 UDP 流量只翻 alive 标志），引擎排序时**借用**同 dialer 的 DNS 样本（`snapshotLatencyForPolicy`）；而投影层遇到 `LastProbe.CheckedAt` 为零就 `continue`，把该 key 丢掉了；
+- 引擎排序用 `rawLatency + offset`（`rawLatency` 含恢复/退避惩罚），投影层的 `sortingLatency()` 只重取策略指标；
+- 日志的延迟表只在 `debug` 级别构建，天然不能当数据源。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `component/outbound/dialer/alive_dialer_set.go` | 新增 `SortingSnapshot()`：返回每个 dialer 的 `latency / offset / sorting(=latency+offset) / rank`，排序规则与选择决策一致、不受 log level 影响 |
+| `cmd/nativeapi_nodes.go` | 按引擎同一规则镜像 DNS 样本生成 data-UDP 样本；`sorting_latency_ms` 改用引擎值；填充 `ranking` |
+| `component/nativeapi/types.go` | `GroupRanking` 新增 `rank`、`delta_to_best_ms` |
+| 测试 | `TestSortingSnapshotReportsEngineOrder`、`TestBuildRankingUsesEngineSortingValue` |
+
+**验证**
+
+```
+日志 08:14:01  min_moving_avg=689ms  network=tcp6
+API  (tcp6, US01_IPv4) sorting_latency_ms=689.354861
+      ranking={"metric":"min_moving_avg","score":689.354861,"rank":1,"delta_to_best_ms":0}
+    (tcp6, US01_IPv6) sorting_latency_ms=884.483085
+      ranking={...,"rank":2,"delta_to_best_ms":195.128}
+```
+
+每个节点由 4 条样本变为 **6 条**（含 2 条 data-UDP 镜像）。
+
+#### R3 `/rules` 响应 8.5 MB
+
+**取证**：`GET /api/v1/rules` → `8,517,179 bytes`，服务端耗时仅 30–70 ms（不是慢查询，是体积）。
+
+**根因**：运行期规则树是 **geosite 展开后**的——一条 `domain(geosite:category-ads-all)` 变成带 **194,282** 个 `suffix:` 参数的函数；`snapshotRoutingProgram` 用**无损**的 `RoutingRule.String()` 渲染。`config_parser.Function.String()` 本来自带 5 参数截断，但 `RoutingRule.String()` 自己手写参数循环，绕过了它。
+
+**修改（2026-10-31 二次修正：直接给原始值）**
+
+最初的修法是"折叠展开后的参数表"（`DisplayParamLimit` + `+N more`）。它解决了体积，但导出的仍然是 **optimizer 视角的规则**：名字被改写（`dport`→`port`、`dip`→`ip`、domain 的隐式 key 被补成 `suffix`）、`geosite` 被摊平、相邻同出站规则被合并、还混进了 `InferSniffPunt` 注入的规则。那不是用户写的配置。
+
+改为**直接导出配置原文**：
+
+| 文件 | 内容 |
+|---|---|
+| `control/routing_rules.go` | `snapshotRoutingProgram(program)` → `snapshotConfiguredRules(rules, fallback)`：接收配置解析结果，用无损 `String()` 渲染 |
+| `control/control_plane.go` | 在 `ApplyRulesOptimizers` 之后、`routingA.Rules = nil` 之前取快照，把**展开前**的规则交给 API |
+| `pkg/config_parser/section.go` | 删除 `DisplayParamLimit` / `DisplayString` / `displayFunction`（已无使用方） |
+| 测试 | 删除 `TestDisplayStringCollapsesExpandedParams`；新增 `TestSnapshotConfiguredRulesKeepsConfiguredForm` |
+
+**关键安全点**：`String()` / `MarshalString()` **一字未改**。它们被 reload 指纹（`cmd/reload_manager.go`）与 policy hash 使用，截断会导致两份不同配置算出同一指纹、reload 静默跳过真实变更。
+
+**语义变化（需注意）**：`index` / `rule_id` 现在表示**配置顺序**，不再等于内核评估顺序。优化器会合并相邻同出站规则、注入 sniff-punt 规则，因此两者的条数与下标可能不同。当前 `RoutingRuleExpressionByIndex` 无调用方，flows 的 `rule_source` 仍为 `unknown`，所以没有下游受影响；若将来要用 `rule_id` 回溯内核规则，需要额外建立映射。
+
+**验证**：`8,517,179 bytes → 配置原文（KB 级）`，且返回的就是配置里写的那几行：
+
+```json
+"domain(geosite: category-ads-all) -> block"
+"pname(dnsmasq, systemctl, ...) && !dport(53) -> must_direct"
+```
+
+#### R4 `/policies` 不显示当前选中节点
+
+**取证**：`/groups` 与 `/groups/{id}` 的 `selection` 对自动策略恒为 `{"tcp":null,"udp":null}`；而日志一直在打印 `Group selects dialer dialer=US02_IPv4_Juicity network=udp6`。
+
+**根因**：`selectionPair` 认为"自动策略没有稳定成员"，直接返回空；`DialerGroup.Selection()` 只反映 selector 的运行时切换，不包含自动策略的选择结果。引擎侧的选择存在 `AliveDialerSet.minLatency.dialer`，从未对外暴露。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `component/outbound/dialer/alive_dialer_set.go` | 新增 `Selected()`：返回 `minLatency.dialer` 及其排序延迟 |
+| `component/outbound/dialer_group.go` | 新增 `AutoSelected(network)`：按传输遍历健康域（TCP: tcp4/tcp6；UDP: data4/data6/dns4/dns6），取排序延迟最优者 |
+| `cmd/nativeapi_groups.go` | 自动策略：override pin 优先（`source:"override"`），否则报引擎实选（`source:"runtime"`）；`random` 仍为 null |
+
+**验证**：`selection.udp = US02_IPv4_Juicity`，与同一时刻日志 `udp6 → US02_IPv4_Juicity` 一致；清除 pin 后回落到 `source:"runtime"` 而非 `null`。
+
+**已知语义差**（非 bug）：`ranking.rank == 1` 是**瞬时**排序第一名，`selection` 是带 `check_tolerance`（本机 150 ms）滞回的 `minLatency`，两者可能指向不同节点——后者才是引擎真正要去拨的。
+
+#### R5 「0 个可用 / 4 个未测试」
+
+**根因**：前端取"主延迟"的条件是 `transport === "tcp" && purpose === "data"`；dae 给 TCP 样本填的是 `purpose: "shared"`。filter 结果为空 → 每个成员的 `health` 为 `undefined` → `healthy=false`、`unavailable=false` → 全部落进兜底桶计为"未测试"。
+
+契约语义是"这段延迟用于什么流量"：TCP 与 data-UDP 都是 `data`，只有 DNS 是 `dns`（与 `/probes` 的结果口径一致，`cmd/nativeapi_probes.go` 一直是 `data`/`dns`）。
+
+**修改**：`cmd/nativeapi_nodes.go` 的 `healthDomainOf(HealthDomainTCP)` 改为 `("tcp","data")`；测试改为按 `transport/purpose` 建索引（`tcp/data` 与 `udp/data` 同 purpose）。
+
+**验证**：`/nodes` 的 purpose 分布变为 `tcp/data`、`udp/dns`、`udp/data`；按前端逻辑复算 → `{'healthy': 4}`。
+
+#### R6 内存卡片 7 项全为「—」
+
+**取证**
+
+```
+/proc/<dae>/cgroup        → 0::/services/dae/dae
+该目录 memory.* 文件数     → 0
+/sys/fs/cgroup/cgroup.subtree_control → 空
+/sys/fs/cgroup/ 只有      → memory.stat、memory.reclaim
+```
+
+**根因**：cgroup v2 只有在父级 `cgroup.subtree_control` 写入 `+memory` 时，子 cgroup 才会生成 `memory.current / memory.max / memory.events`。本系统整棵树都没有，dae 如实返回 `cgroup: null`。
+
+**处理**
+
+1. **系统侧**（一次性、无持久化、可回滚）：
+
+   ```sh
+   echo +memory > /sys/fs/cgroup/cgroup.subtree_control
+   echo +memory > /sys/fs/cgroup/services/cgroup.subtree_control
+   echo +memory > /sys/fs/cgroup/services/dae/cgroup.subtree_control
+   ```
+
+   必须在开启后**重启 dae**：memcg 只对启用后新分配的页计费，重启前 `memory.current` 仅 405 KB，重启后立即约 100 MB。
+
+2. **dae 侧**（`control/memory_stats.go`）：区分 `memory.max` 的字面量 `max`（无限制）与"文件不存在"（系统不支持）。前者 `limit_bytes: null` 但**照常声明** `cgroup.limit_bytes` 指标，前端据此渲染「未设上限」。
+
+**验证**
+
+```json
+"cgroup": {"scope":"service","current_bytes":"101404672","limit_bytes":null,
+           "events":{"high":"0","oom":"0","oom_kill":"0"}}
+"kernel": {"ebpf_bytes":"22763288"}
+capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
+  cgroup.limit_bytes, cgroup.events.high, cgroup.events.oom, cgroup.events.oom_kill, kernel.ebpf_bytes]
+```
+
+### 10.3 本轮新增/变更的对外字段
+
+| 资源 | 字段 | 变化 |
+|---|---|---|
+| `runtime.traffic` | `planes.userspace` / `planes.kernel_direct` | 当时新增；2026-11-01 随 `observed_by: "userspace"` 移除，现不再输出 |
+| `runtime.traffic` | `counter_since` | 语义改为**进程级**边界，与 `runtime/outbounds.counter_since` 同源；reload 不再归零 |
+| `runtime/outbounds` | builtin `direct` 行 | 当时变为内核直连字节 + `must_direct` payload；2026-11-01 起默认只含 `must_direct` payload，仅开 `api.direct_stats` 时并入内核直连链路字节 |
+| `groups[].selection` / `groups[].runtime.selection` | `tcp_member_id` / `udp_member_id` | 自动策略不再为 null，报引擎实选成员（`source:"runtime"`）；`random` 仍为 null |
+| `groups[].runtime.health[]` | `sorting_latency_ms` | 改为引擎真实排序值（含恢复惩罚 + `add_latency`） |
+| `groups[].runtime.health[]` | `ranking` | 由恒 null 变为 `{metric, score, group_offset_ms, recovery_penalty_ms, rank, delta_to_best_ms, reason}` |
+| `nodes[].health[]` / `runtime.health[]` | `purpose` | TCP 由 `shared` 改为 `data`；取值集合变为 `data` / `dns` |
+| 同上 | 样本条数 | 每节点由 4 条变 6 条（补 data-UDP，镜像同 IP 族 DNS 样本） |
+| `runtime/memory` | `cgroup.*` | 系统委派 memcg 后填充；`limit_bytes: null` 表示"无限制"，由 `capabilities` 的 `cgroup.limit_bytes` 指标区分"不支持" |
+| `runtime.process` | `cpu_percent` | 由恒 `null` 变为真实值（2026-10-31） |
+| `capabilities.runtime_memory.metrics` | — | 动态：只声明真正读到的指标 |
+
+### 10.4 部署与回滚
+
+- 二进制：`make dae`（**必须走 make**，它会先 `go generate ./control/control.go` 重编 `kern/tproxy.c` 进 `bpf_bpfel.o`；纯 `go build` 会用仓库里那份生成物）；
+- 目标架构 x86_64，与路由器一致，无需交叉编译；
+- 替换方式：备份 → `scp` 到 `/tmp` → `/etc/init.d/dae stop` → 覆盖 `/usr/bin/dae` → `start`；
+- 备份点：`/tmp/dae.bak.<timestamp>`（每轮一份，最早一份是会话开始前的原始版本）；
+- 版本串：`unstable-20261031.r877.31bc21e`（仓库尚无新提交，`r877` 不随改动递增）。
+
+### 10.5 文档落位
+
+按内容分层维护，避免"配置"与"端点契约"混在一起：
+
+| 内容 | 文件 |
+|---|---|
+| `api` section 字段、认证模式、TLS 部署要求、Host/Origin 校验、`ui` 自托管、reload 语义 | `docs/{en,zh}/configuration/api.md` |
+| 端点清单、资源契约（`runtime` 的 planes、`outbounds` 的 direct 行、`runtime/memory` 的 cgroup 前提、`groups` 的 selection 与 health、`nodes` 的 purpose、`rules` 的配置态语义、日志） | `docs/{en,zh}/development/api.md` |
+
+两份文档互相链接：configuration 开头明确指向 development，反之亦然。本节的 6 个修复全部属于
+端点契约，已同步到 development（中英文各新增 `Runtime summary and per-outbound counters` 与
+`Memory` 两节，并更新 groups / nodes / rules 段落）。
+
+### 10.6 CPU 占用率
+
+**症状**：`/overview` 的「CPU 使用率」恒为 `—`。
+
+**根因**：`runtime.process.cpu_percent` 在 provider 里被硬编码为 `nil`（
+`cmd/nativeapi_provider.go`），引擎侧根本没有采样。
+
+**契约口径**（`api-standardize` `openapi.yaml`）：
+
+> CPU time the engine process used over the server's latest sampling interval, as
+> a percentage of one CPU. 100 means one core fully busy; the value may exceed 100
+> on multi-core hosts. Null until two samples exist or when unmeasurable.
+
+即：单核百分比、可超 100、且必须是**区间增量**而非生命周期均值。
+
+**修改**
+
+| 文件 | 内容 |
+|---|---|
+| `control/process_stats.go` | 新增 `processCPUStats`：读 `/proc/<pid>/stat` 的 `utime+stime`（USER_HZ=100，Linux ABI 固定值），按实际墙钟区间折算单核百分比；首次采样只作基线 |
+| `control/memory_stats.go` | CPU 采样搭在既有的 1s memory ticker 上（一个 goroutine 服务两个指标，且 1s 正是契约所说的采样区间） |
+| `control/control_plane.go` | 新增 `processCPU` 字段与构造 |
+| `cmd/nativeapi_provider.go` | 填充 `Process.CPUPercent` |
+| `control/process_stats_test.go` | comm 含空格/括号的解析、两次采样才出值、可超 100、文件消失后清空而非沿用旧值 |
+
+**取舍**
+
+- `/proc/<pid>/stat` 的 `comm` 用括号包裹且可能自带空格与括号，解析从**最后一个 `)`** 开始切分，避免进程名形如 `a) b` 时错位。
+- 读不到（文件消失/解析失败）时清空为 `null`，而不是沿用上一次的值——契约允许 `null`，但不允许陈旧数字冒充当前值。
+- 读数为进程级累计时间，reload 前后连续（`/proc/self` 不变），因此 reload 期间的 CPU 开销会被计入下一个区间的首个采样，短暂出现 >100 属于正常。
+
+**实测**（路由器 4 核实机）
+
+| 场景 | API `cpu_percent` | `/proc/stat` 真值 |
+|---|---|---|
+| 空闲 | 1–2% | 1.80%/10s |
+| 代理下载 4.1 MB/s | 11% | — |
+| 代理下载 2.6 MB/s | 10% | — |
+| 下载结束回落 | 1–2% | — |
+| `dae reload` 瞬间 | 44% → 127% → 146% | 与"重建数据面"一致 |
+| `detail=full` | `{pid: 13315, cpu_percent: 118.0}` | — |
+
+### 10.7 遗留项
+
+- **memcg 委派不持久化**：重启路由器后 cgroup 字段回到 `null`；持久化需写 `/etc/rc.local` 或 procd 配置，属于"dae 之外"的改动，未做。
+- **`rank` 与 `selection` 的语义差**：可在 `ranking` 增加 `selected: true` 标记让前端区分"瞬时最快"与"引擎实选"，未做。
+- **`/rules` 的完整形态**：`?detail=full` 逃生口与响应体 gzip（8.5 MB 可压到约 600 KB）未做。
+- **`warmth`**：恒为 `unknown`，真实冷/热需要按"是否有真实流量成功样本"判定，未做。
+- **直接流量与 outbounds 的口径混合**：仅开启 `api.direct_stats` 时，`direct` 行同时含链路字节（内核直连）与 payload 字节（`must_direct`），同一行跨流混合；默认只含 payload。
+
+## 11. 2026-11-01 ~ 11-03 增量纪要（写入闸门 / 直连观测 / 路由模拟）
+
+`7d4f29f` 之后的实现增量汇总。每项都给出对外表面与刻意的限制，作为「实现了什么」的同步点；细节仍以 3 节对应任务与 4 节端点表为准。
+
+| 增量 | 提交 | 对外表面 | 刻意不做 / 限制 |
+|---|---|---|---|
+| 节点与 provider 写闸门、写路径加固 | `bd46ccf` | `POST/DELETE /nodes`、`POST /providers/{id}/refresh`；`nodes.can_manage` / `groups.config_patch` 随 `config.writable` | provider 创建/删除不实现（`can_manage=false`）；refresh 只接受订阅 |
+| 订阅刷新失败回退缓存 | `569b1bd` | `/providers` 的 `status: "stale"` + `last_error`；无 tag 订阅按内容哈希命名缓存 | 不保留配置修订历史 |
+| 数据面只计 userspace 流量 | `cd123db` | `runtime.traffic` 仅含 userspace relay payload；`traffic.planes` 移除 | 内核直连不计入总量 |
+| 可选的直连观测 | `4982b4b`、`1804ed3`、`18f5786` | `api.direct_stats` + `GET /runtime/direct-stats`；开启后并入 outbounds 的 `direct` 行 | 默认关闭；链路字节、下限口径 |
+| 移除 builtin `block` 行 | `1804ed3` | `runtime/outbounds` 不再有 `block`；`flows.coverage.kernel_block` 删除 | — |
+| 路由模拟 | `b879d55` | `POST /routing/trace` + `routing_trace` 能力位 | 仅 `resolve: "none"`，不建连、不解析 DNS |
+| 组配置补丁 | `b879d55` | `PATCH /groups/{id}/config` + `groups.config_patch` / `mutable_config` | 只有 `check_interval` / `tolerance` 可改 |
+
+### 11.1 直连观测（`api.direct_stats`）
+
+- **2026-11-06 最新状态**：NAT 反向索引已删除（`a045b74`）；NAT 回包改由 **LAN egress** 观测（DNAT 之后），WAN ingress 只统计确认送达本机 socket 的回包，避免与非 NAT 场景双计。非 dual 的 LAN 接口现在能统计 MASQUERADE 客户端的下载；dual 接口仍保留 WAN ingress 单钩子的旧限制。
+- **载体**：`control/kern/direct_stats.c`（TC，观察专用）+ `control/direct_stats.go`。只读 `conn_state_map`，不写 mark，不改变转发；优先级 1，早于 tproxy 优先级 2 运行。
+- **挂载点**：dae 已绑定的 WAN/LAN 接口；桥会展开到成员口，netlink 监听器在成员加入/离开时增删观测器。加载/挂载失败只记录并跳过，不会阻断 bind 或启动。
+- **传输层**：优先 TCX；内核不支持时回退 classic TC filter 并告警。
+- **口径**：`up` = LAN ingress 或（WAN egress 且 `ingress_ifindex == 0`）；`down` = LAN egress 的转发回包 + WAN ingress 的本机 socket 回包。数值是**链路字节**且是**下限**：首包、重启前已存在的流、ICMP/非首片、缺失 `conn_state`、wildcard 本机 socket、部分 VLAN/QinQ egress 都不计；`packets` 是 skb 计数，GSO/GRO 下低于线缆包数。
+- **API**：`GET /runtime/direct-stats` 返回 `enabled`、`attached`、`counter_since`、四个十进制字符串计数器与 `last_error`；部分读取失败返回可读计数 + `last_error` 而不是清零。`attributeDirectStats` 仅在开启时把内核直连字节并入 outbounds 的 `direct` 行。
+- **注意**：本节下方 14.x 中关于 `direct_reverse_map` 的测量与边界是历史记录；该 map 已不存在。
+
+
+### 11.2 写路径加固（`bd46ccf`）
+
+- **一个门禁三处**：`config.writable` / `groups.config_patch` / `nodes.can_manage` 同源（`api.config_write` + 受管布局）。关闭时 `config*` 写端点 `403 permission_denied`，`PATCH /groups/{id}/config` 与 `POST/DELETE /nodes` 是 `404 capability_not_supported`（能力位本身为 false）。
+- **幂等键绑定 `(kind, scope)`**（scope 是目标，例如订阅 id）：同一个 `Idempotency-Key` 用在另一个资源/另一类请求上是 `409 idempotency_conflict`，不会把刷新某个订阅的操作重放到另一个订阅；被拒绝的请求会 `ReleaseReplayKey`，不占用该 key。
+- **分页 cursor 带最后一条记录的 key**（`dns/cache`、`dns/log`、`flows`，而非偏移）：列表头部增长时既不重复也不跳过；`nodes` / `providers` 仍是绑定 generation 的 offset。
+- **写操作带 result resolver**：operation 完成时返回资源体（`Node` / `Provider` / `NodeDeleteResult`），而不是 generation id。
+- **`DELETE /connections`**：必须给 `type` / `src`，或显式 `all=true`；`type=all` 不再被当作过滤器而隐式「全关」。
+- **流式资源**：`/logs` 有并发流上限 `LogMaxClients`；进程退出时对实现 `StreamCloser` 的 provider 调 `CloseStreams`，空闲 SSE 客户端不再拖满整个 grace period。
+- **订阅健康整表覆盖发布**（不合并，因此从配置里删掉的订阅会从 `/providers` 消失）：只有 control plane 构建成功的 reload 才写入；构建失败的 reload 不覆盖，`last_error` 仍指向最后一次成功构建时的结果。
+
+### 11.3 路由模拟（`b879d55`）
+
+- 用同一份 routing program 另建一个 trace matcher，并按 `ruleSpans` 与配置快照逐条对齐；步骤数（规则 + 条件）超过 4096 时不构建，`routing_trace.available=false`，端点返回 `404 capability_not_supported`。
+- 请求校验：`network` ∈ {tcp, udp}，`dst_port` 1–65535，`src_port`/`dscp` 越界 `400`，`domain` 与 `dst_ip` 至少给一个；`resolve: "live"` 返回 `422 unsupported_value`（不做 DNS 解析）。
+- 响应：`mode: "simulation"`、单条 `evaluations[]`（含逐条规则与条件的 `result` / `missing_inputs`）、`dns: []`；单次求值 5s 超时 → `504 temporarily_unavailable`；限流每主体 30 次/分钟、全局 120 次/分钟。
+- 不执行：DNS 解析、连接建立、命中后的出站拨号。它是「按当前 generation 重放匹配」，不是抓包证据。
+
+### 11.4 剩余工作（截至 2026-11-03）
+
+- **契约 schema 测试**：把 `api-standardize/openapi.yaml` 固定到 `testdata/`，用 JSON Schema 校验各 handler 的响应与错误体（当前只有一次性手工校验）。
+- **端到端集成测试**：loopback 起 dae，跑 discovery → capabilities → runtime → groups → selection → reload，以及「改 `routing.dae` 后 `/rules` 与 `generation_id` 同步变化」。
+- **`GET /config` 快照语义**：当前读盘而非已接受快照（P4-2 偏离项）。
+- **`/rules` 完整形态**：`?detail=full` 逃生口与响应体 gzip 未做（见 10.7）。
+- **`warmth`**：恒 `unknown`（见 10.7）。
+- **provider 创建/删除、`runtime/settings`、`auth/*`**：不在路线图内，持续 `404 capability_not_supported`。
+
+## 12. 收尾工作（2026-11-03 第二轮审查核验）
+
+对 `pullrequestreview-5750489216`（针对 `b879d557b8`）的 13 条断言在本地 `2b57ce1` 逐条核验：12 条成立，1 条表述不准确但指向真实偏差。本节只记**仍需动手**的项目，按「会丢流量 / 破坏用户配置 / 违反契约 / 成本」排序。`- [ ]` 表示未修复。
+
+**2026-11-04：除 12.7 的两条流程项外均已修复**，勾选项后附实现方式与测试位置；`api_dev.md` 本身按计划在功能收尾时删除。
+
+**2026-11-04 第三轮（13 节）：13.2–13.11、13.15 已修并以单测覆盖；13.9 的 `check_interval` 读投影、13.13、13.14 核查后确认为契约/设计约束，不改；13.7 的 decoder 收敛与 13.12 的分页语义明确延后（见 13.16）。**
+
+### 12.1 优先级总览
+
+| 优先级 | 项目 | 后果 |
+|---|---|---|
+| P0 | 垃圾订阅页覆盖缓存（12.2） | 组清空、流量中断，且守卫不触发 |
+| P0 | 无 tag 订阅节点归到 `p_inline`（12.2） | `DELETE /nodes` 误删 `node.dae` 行；`node_count` 混算 |
+| P0 | `provider_refresh` 失败仍 `succeeded`（12.2） | 客户端无法感知刷新失败 |
+| P0 | 组补丁不校验 `tolerance` + 缩进破坏（12.2） | 写入无效配置、文件格式损坏 |
+| P1 | `kernel_block` 缺失、validate 404、游标 400/410（12.3） | 契约不合规，客户端报错 |
+| P1 | `check_interval` 截断、patch 只认 `group.dae`（12.4） | 配置被静默改写 / 404 |
+| P1 | pin 被 alive 回调撤销、trace 在 `must_rules` 中断（12.5） | 运行时选择失效、trace 结果错误 |
+| P2 | `direct_stats` 未受 `enabled` 门控、`rkey` padding、反向索引与计数口径（12.6） | 白付成本、漏计/误计 |
+| P3 | 拆 PR、`api_dev.md` 落位、文档过期句（12.7） | 合并阻塞 |
+
+### 12.2 P0：数据面与写路径
+
+- [x] **订阅返回「能解析成 1 个伪节点」的垃圾页时覆盖缓存并清空组**（已实测复现；已修：`isShareLinkLine` 只接受 `scheme://…` 开头的行，缓存写入移到构建之后 `subscription.PersistPayload`，并用 `DialerSet.ParseReport` 在 reload 时拒绝「有链接但无 dialer」的订阅；测试 `common/subscription/subscription_cache_test.go`、`cmd/run_controlplane_persist_test.go`）
+  - 现象：`bogus://invalid`、含 `https://` 的登录页 HTML 都被 `ResolveSubscriptionAsBase64` 的行级兜底当成节点，`resolveSubscriptionNodes` 因「节点数 > 0」放行并写缓存，`CacheFallback=false`；后续 reload 里该链接解析失败被静默丢弃（`component/outbound/filter.go:156-166`），组容忍 0 成员（`control/control_plane.go:702-706`），而 0 节点守卫要求 `resolvingfailed`（`cmd/run_controlplane.go:378`）不成立。
+  - 修复：写缓存前用 `dialer.NewFromLinkContext` 真实解析并计数（或让 `resolveSubscriptionNodes` 只接受受支持 scheme 的行）；「解析成功但可用 dialer 为 0」也计入 reload 拒绝条件。
+  - 位置：`common/subscription/subscription.go:52-71`、`:190-200`、`:268-283`；`cmd/run_controlplane.go:297-328`、`:378`。
+  - 验证：`httptest` 返回登录页，断言 `Resolve` 走 `CacheFallback`（当前为 `false`）。
+
+- [x] **未打标签订阅的节点被归到 `p_inline`，可被当作 inline 删除**（live；已修：新增 `subscription.ProviderKey`，写入 `dialer.Property.ProviderTag` 作为 API 身份，`SubscriptionTag` 仍为空以保持 `subtag()` 语义；`providers()` 按 provider 身份统计；测试 `cmd/nativeapi_provider_identity_test.go`）
+  - 现象：`providerIDOf("")` 恒返回 `p_inline`（`cmd/nativeapi_providers.go:75-85`），而 `tagToNodeList[""]` 同时装 `node` 段与无 tag 订阅（`cmd/run_controlplane.go:187-191`、`:328`）：两类节点共享 provider、`node_count` 相加；`DELETE /nodes/{id}` 的所有权检查因 `provider_id == p_inline` 通过，再按名删 `node.dae`（`cmd/config_nodes.go:417-427`；`removeNodeEntry` `:187-206` 只比名字），同名的订阅节点因此删不掉且返回 `200 {"deleted": 0}`。
+  - 修复：给无 tag 订阅分配稳定 ID（复用 `subscription.CacheKey` 的 `sub_<hash8>`）并写进 dialer 的 `subscriptionTag`；`removeNodeEntry` 改为按 `(name, link)` 匹配或按 ID 定位行。
+  - 验证：`dup` 同时存在于 `node.dae` 与无 tag 订阅，断言两个 node id 与 `provider_id` 不同、删除互不影响。
+
+- [x] **`provider_refresh` 失败仍 `succeeded`，`updated_at` 前移**（live；已修：健康记录只保留最后成功时间并跨代继承，`updated_at` 为空时不回填；resolver 用 `providerRefreshError` 让操作以 `fetch_failed` 失败；测试 `cmd/nativeapi_provider_refresh_test.go`）
+  - 现象：reload 成功即操作成功（`cmd/nativeapi_operations.go:155-165`、`cmd/reload_manager.go:147-160`），与订阅健康无关；`publishSubscriptionHealth` 对每个 tag 无条件写 `updatedAt=now`（`cmd/nativeapi_providers.go:53-68`），`providers()` 再无条件回填（`:145-155`），失败刷新也推进 `updated_at`。
+  - 契约：`api/providers.yaml` 的 `Provider.updated_at` = "Last successful load or refresh"；refresh 说明要求「failure uses SafeError」。
+  - 修复：健康记录拆「最后尝试」与「最后成功」两个时间；`provider_refresh` 的结果 resolver 在 `health.err != ""` 时 `store.Fail` 并返回 `SafeError`。
+
+- [x] **组配置补丁不按策略校验 `tolerance`，且改写破坏缩进**（已实测复现；已修：按 `Policy.Kind` 拒绝非 urltest 的 tolerance 变更、`mutable_config` 按策略生成、插入点改为最后一条非空子行、只回写 diff 字段；测试 `cmd/config_groups_guard_test.go`）
+  - 现象：`isGroupPatchPath` 只比对路径字符串（`cmd/config_groups.go:201`），`mutable_config` 对所有组都广告 `check_interval` + `tolerance`（`cmd/nativeapi_groups.go:302-306`）。契约要求「结果策略非 URLTest 时，tolerance 有变更返回 422」（`api-standardize/api/nodes-groups.yaml:637-645`）。`setGroupConfigLine` 插入缺失行时 `text[:close]` 已含闭括号缩进，又拼 `childIndent+"    "`（`cmd/config_groups.go:262-283`），输出多一行空白、`check_tolerance` 与闭括号错位（实测 `select` 组输出闭括号被顶到行首）。
+  - 修复：补丁后按结果策略判定（非 urltest 拒绝 tolerance 变更）；插入点改为「最后一条非空子行行尾」；`mutable_config` 按策略生成。
+  - 验证：把复现用例固化成表测（`select` + `check_interval: 1500ms` + 只 patch `tolerance`），断言缩进与 `1500ms` 均保留。
+
+### 12.3 P1：契约字段与请求校验
+
+- [x] **`flows.coverage.kernel_block` 删除后未补 `"none"`**（已修：恢复字段并恒返回 `"none"`）：`component/nativeapi/types.go:894-900` 已无该字段；契约 `api/flows.yaml:1127` 列为 required，doona 读取。恢复字段并恒返回 `"none"`（block 在内核直接丢，本就没有计数器）。
+
+- [x] **`POST /config/validate` 只传 `content` 返回 404**（已修：无 id/path 时按 `source-N` 解析并合并为匿名 section，诊断归属该 ID；测试 `cmd/config_editor_validate_test.go`）：`cmd/config_editor.go:437-457` 在无 `id` 也无 `path` 时 `target` 为零值 → `404 resource_not_found`；契约 `api/config.yaml:1075-1090` 只要求 `content`，`id` 是请求内局部标识（缺省用 `source-N`）。修复：`id` 缺省按数组下标生成；只有 `content` 时作为「无路径候选」参与合并校验，不落盘。
+
+- [x] **分页游标：filters/limit 变更返回 410，契约要求 400；且未绑定实例**（已修：游标新增 `Instance` 字段，不符→410；bind 不符→400；三处列表传入 `p.status.snapshot().InstanceID`；测试 `cmd/cursor_test.go`）：`cmd/cursor.go:78-80` 把 kind 与 bind 用 `||` 合并，`api-standardize/source/v0.1.0/en/docs/errors.md:135-137` 要求「已识别游标 + 不同 filters/limit → 400 `invalid_request`」；`pageCursor`（`cmd/cursor.go:22-27`）无实例标识，`dns/log` 的 `dl_<seq>` 重启后会被新实例误认。修复：kind 不符 → 410，bind 不符 → 400；bind 加入 `instance_id`（`cmd/runtime_status.go` 已有）。
+
+  > 审查原文的「DNS cache pagination continues on another snapshot」判为**部分成立**：改用 keyset 锚点后已不重复/不静默跳过，锚点被淘汰返回 410，且契约 `errors.md:123-131` 与 `docs/dns-cache.md:24` 允许 record 锚定并在遍历期间变动。真正待修的是上面两条（400/410 与实例绑定）。
+
+### 12.4 P1：组配置写入
+
+- [x] **`check_interval` 被截断为整秒，且每次 patch 回写两个字段**（已修：`groupConfigDiff` 只回写本次变更的字段，只改 tolerance 时保留 `1500ms`）：投影 `int(CheckInterval / time.Second)`（`cmd/nativeapi_groups.go:280-285`）+ 无条件回写 `check_interval` / `check_tolerance`（`cmd/config_groups.go:245-262`），只改 `tolerance` 也会把 `1500ms` 写成 `1s`。修复：投影保留毫秒，或原样带出字面量；只回写本次 patch 的字段。
+
+- [x] **组 patch 只认 `config.d/group.dae`，块匹配不认行尾注释/CRLF**（已修：`groupSource` 按实际声明块定位源文件，正则允许行尾注释与 `\r`；测试 `cmd/config_groups_guard_test.go`）：路径硬编码在 `cmd/config_groups.go:85`；`groupBlockPattern`（`:24`）不匹配 `group { # comment` 与 `\r\n`；而布局校验（`cmd/config_layout.go:56-100`）只要求模块文件齐全与 section 唯一，group 段可以落在别的 `config.d/*.dae` → 能力位说可改、实际 404。修复：按 section 归属定位源文件（merger 的 `MergeWithOrigins` 已有 origin），正则允许注释与 `\r`。
+
+### 12.5 P1：运行时选择与路由 trace
+
+- [x] **pin 可被内核准入回调撤销**（限定 `dial_mode: ip` + `min*` 策略；已修：抽出 `admissionAlive`，alive 回调与发布路径共用 pin 判定；测试 `component/outbound/dialer_group_pin_test.go`）
+  - 发布路径有 pin 豁免（`control/connectivity.go:158-170`），alive 回调直写（`:206-222`）；`DialerGroup.publishAliveChange` 用 alive set 成员数覆盖 `alive`（`component/outbound/dialer_group.go:774-776`），且回调签名不含 group，结构上无法查 pin → 最后健康成员掉线时内核把该组写成 0，流量在用户态之前被丢（`control/kern/tproxy.c:3497-3501`）。
+  - 修复：回调改为接收 `*outbound.DialerGroup`，`!alive` 时做与 `publishOutboundConnectivity` 相同的 `PinsSelection` 判定。
+  - 验证：测试改走 `publishAliveChange(false, nt, false)` 真实链路（现有 `control/connectivity_pin_test.go:36-93` 直调发布函数，覆盖不到回调路径）。
+
+- [x] **trace 在 `must_rules` 处停止，结果与实际出站不符**（已修：`must_rules` 行只记录 matched 并继续求值；测试 `control/routing_trace_must_rules_test.go`）：`control/routing_trace.go:139-152` 命中即 `stopped`；真实匹配器 `control/routing_matcher_userspace.go:308-315` 遇 `OutboundMustRules` 是 `must = true; continue`。修复：`must_rules` 行标记「已 must」并继续求值。
+
+### 12.6 P2：直连观测与构建成本
+
+- [x] **`api.direct_stats: true` 在 `api.enabled: false` 时仍加载观察器**（已修：运行时按 `enabled && direct_stats` 门控，并由 `Api.Warnings()` 提示被忽略；未改为配置硬失败，避免仅切换 enabled 就无法启动）：`cmd/run_controlplane.go:408` 只传 `conf.Api.DirectStats`；`config/api.go:56-62` 在 `!Enabled` 时直接返回，无交叉校验。此时观察器照挂、计数无人可读。修复：运行时传 `conf.Api.Enabled && conf.Api.DirectStats`，并在 `Api.Validate()` 对 `DirectStats && !Enabled` 报配置错误。
+
+- [x] **`rkey` 尾部 3 字节 padding 未清零**（编译对象反汇编确认；已修：lookup 前 memset `rkey`，反汇编显示编译器合并为 1 个覆盖 32..39 的 8 字节 store）：`tuples_key` sizeof 40，`direct_stats_reverse` 只写 0..36 字节（`control/kern/direct_stats.c:220-230`），`key` 有 `__builtin_memset`（`:154`）而 `rkey` 没有（声明 `:297`）→ 40 字节 map key 的哈希含栈垃圾，`conn_state_map` 查询可能漏命中（表现为下载方向漏计）。修复：查表前 memset 或 `= {}`；重新编译确认 lookup 前 40 字节全写。
+
+- [x] **反向索引键缺本地地址与时效；reload 后计数归零但 `counter_since` 不变**（已修：`DIRECT_STATS_REVERSE_MAX_AGE_NS` 300s 过期即删；计数用 `directStatsRetired` 跨代累积，与进程级 `counter_since` 对齐；测试 `control/direct_stats_test.go`。**本地地址未加**：NAT 回包的本地地址是 SNAT 地址，record 时不可知，加上会导致永不匹配，误计改由时效 + LRU 控制）：`direct_reverse_map` 只用 (remote ip, remote port, local port, l4proto)（`direct_stats.c:112-117`、`:235-250`），另一台 LAN 主机复用端口或后续代理流复用五元组会被误计为直连；value 的 `now` 只在命中时刷新，无过期判定。观察器 collection 每代新建且 map 不 pin（`control/direct_stats.go:160` 起），reload 后内核计数从 0 起，而 `direct` 行的 `counter_since` 是进程级（`control/outbound_counters.go:110`）。修复：键补本地地址、命中做过期判定；计数跨 reload 继承（或独立 pin 的 map），并让 `counter_since` 与数值同源。
+
+- [x] **trace matcher 无条件为每代构建**（已修：新增构建选项 `RoutingTraceEnabled`，由 `api.enabled` 驱动，API 关闭时不构建第二套 matcher）：`control/control_plane.go:746-760`、`:830-853` 与 API 开关无关地多建一套 userspace domain/IP matcher，大 `geosite` 规则集下所有用户付费（未量化）。修复：仅在 `api.enabled` 或首次访问 `/trace` 时构建（延迟构建需处理并发与 generation 绑定）。
+
+### 12.7 P3：流程与文档
+
+- [ ] **按能力拆 PR**：只读 API / 组选择 / 配置与节点写入 / 数据面观测。审查方两轮均提出，是当前合并主障碍。
+- [ ] **`api_dev.md` 不随功能进 main**：当前 1500+ 行且 `CHANGELOGS.md:138` 引用它；收尾后删除本文件与 CHANGELOGS 指向，内容由 `docs/{en,zh}/development/api.md` 承载。
+- [x] **文档过期句**（已修：两处已更新为实际行为，并补充未打标签订阅的 `subscription_tag` 说明）：`docs/en/development/api.md:187-188` 与 `docs/zh/development/api.md:152` 仍写「节点管理（`POST`、`DELETE`）返回 `404 capability_not_supported`」，实际已实现（只在闸门关闭时 404）。
+- [x] **误报更正，不需改**：审查称「`hasUI` 的注释挂在 `uiRootDir` 上（`component/nativeapi/ui.go:24`）」不成立——`:24-26` 是 `uiRootDir` 自己的注释，`hasUI` 在 `:47-48` 有独立注释；审查称 `CHANGELOGS.md:72` 写节点管理 404，实际该处描述的是「按 `api.config_write` + 受管布局 gating」，与实现一致。
+
+### 12.8 复现方法（供回归时复用）
+
+- **订阅覆盖**：`httptest` 返回 `bogus://invalid` 或含 `https://` 的登录页，调用真实 `subscription.Resolve`，断言 `CacheFallback` 与缓存内容。
+- **eBPF padding**：按 `go:generate` 同参数 `clang -O2 -target bpfel -I kern/headers -DMAX_MATCH_SET_LEN=1024 -D__TARGET_ARCH_x86` 编译 `control/kern/direct_stats.c`，`llvm-objdump -d` 检查 lookup 前写入是否覆盖 40 字节。
+- **组补丁缩进**：直接调用 `writeGroupConfigOptions`，比对输出；输入含缩进的 `group { sel { ... } }` 与 `check_interval: 1500ms`。
+
+### 12.8a 第三轮审查（PR #1156 review 5768199026）修复摘要
+
+- 订阅：解析结果写入缓存；全部不可解析时保留旧服务器列表；无 tag 订阅沿用展示 tag；失败日志对 URL 脱敏。
+- 直连观测（历史记录，2026-11-06 前的状态）：当时不支持 TCX 会无条件关闭；现在改为回退 classic TC，并由 LAN egress 处理 NAT 回包。
+- reload：所有 reload（信号/CLI/API）在清除 reloading 状态前先执行收尾。
+- API：`POST /probes` 幂等键在受理后提交；请求体拒绝尾随 JSON；`api.enabled=false` 时 DNS 日志不记录；DNS 日志游标绑定 store epoch，环形缓冲下一条被淘汰时返回 410；`network: both` 单次原子写、值未变不增加 revision；订阅健康仅在新代被接受后发布。
+- 未覆盖：eBPF 改动未在 root/netns 下实际加载验证。
+
+### 12.9 doona 面板复核（2026-11-04，demo.daeuniverse.org）
+
+环境限制：本机没有免密提权，`dae run` 需要 root + eBPF，无法启动真实 daemon。改为用真实 `component/nativeapi.Server`（同一套路由、鉴权、CORS、JSON 投影）加契约形状 fixture 起本地 mock（`127.0.0.1:19527`、`allow_origins: https://demo.daeuniverse.org`，并为 Chrome 的 PNA preflight 补 `Access-Control-Allow-Private-Network: true`）。在 demo 面板「设置 → 后端网址」填入后「测试连接」通过（`连接成功，API v1`），保存后所有页面指向本地 mock。
+
+面板侧观察：
+
+- **节点来源**：`inline`（1 节点）与未打标签订阅 `sub_9b87…`（2 节点）是两个独立来源，`subA`（3 节点）以「过期数据」呈现——对应 12.2 的 provider 身份修复。
+- **节点列表**：选中 `sub_9b87…` 时 `dup` / `u1` 归属该来源，行内没有「移除」按钮；`inline` 的节点仍有「移除」。contributor 报的「删订阅节点却改了 `node.dae`」在面板上已无可入口。
+- **策略页**：`proxy`（手动选择）与 `auto`（自动选择）都渲染正常，成员按来源标注；活动页的出站图、节点延迟列表同步。
+- **分流 → 记录**：对 `coverage.kernel_block` 做 A/B 对照——字段存在时显示「6 个范围未完整观测」，人为删掉后变成「5 个」。说明面板确实读这个必填字段（缺失时不崩溃，但覆盖范围少一项）；恢复后一致。
+
+限制：fixture 是手写数据，所以这一轮只验证「契约 / UI 兼容」，不验证后端判断逻辑（刷新失败→操作失败、组补丁 422、游标 400/410）；那些由 12.2–12.4 的单测覆盖。
+
+## 13. 收尾工作（2026-11-04 第三轮审查核验）
+
+对 `issuecomment-6611606984`（Glassyiris，静态对抗审查，针对 `2b57ce1`）逐条核验。该轮比第二轮更深：多为并发所有权、写路径事务性与协议正确性，`2b57ce1..31e98b9` 的 6 个提交只覆盖了其中约四组，其余按下方清单处理。`- [ ]` 表示未修复。
+
+### 13.1 优先级总览
+
+| 优先级 | 项目 | 后果 |
+|---|---|---|
+| P0 | 冷启动 DNS 查询 nil 解引用（13.2） | 接口 500（handler 级 panic） |
+| P0 | 操作受理/重放/结果注册非事务（13.3） | 客户端拿到被拒工作的 202；结果退化成 reload 结果 |
+| P0 | 配置写入与 reload 读盘竞态（13.4） | 被拒的编辑仍可能生效 |
+| P0 | 凭据进日志（13.5） | 订阅 token 泄漏到 `/logs` |
+| P1 | 探针把 DNS-over-TCP 发到 443、不校验回包（13.6） | 探针结果不可信、槽位被占死 |
+| P1 | CORS 缺 PATCH、HEAD 进 SSE 死循环（13.7） | 面板无法 PATCH 组配置；HEAD 占住连接 |
+| P1 | `connection_id` 过滤丢弃全部、summary 缺字段（13.8） | 契约资源不可用 |
+| P1 | 组/规则投影：`Must` 恒 false、`check_interval` 读投影截断（13.9） | 客户端读到错误配置 |
+| P1 | DNS 视图/日志四处投影缺陷（13.10） | 诊断信息缺失或类型错 |
+| P1 | pin 快照缺 revision、flow 发布竞态（13.11） | 新 UDP 端点继承过期 pin；流字段读到空 |
+| P2 | 分页环滚动、SSE 生命周期（13.12） | 静默漏记录；shutdown 后仍收订阅 |
+| P2 | `direct_stats` 反向索引仍缺本地身份（13.13） | 已由 `a045b74` 删除反向索引解决 |
+| P3 | `api_dev.md` 落位、拆 PR（12.7） | 合并阻塞 |
+
+### 13.2 P0：冷启动 DNS 查询 panic
+
+- [x] `control/utils.go` 的 `Route` 无判空解引用 `routingResult.Mac`（已修：nil 时 MAC/pname/dscp 取零值，即「无内核元数据」；DNS 主动查询路径 `dnsRequestSnapshotFromUDPRequest(nil)` 本就是 nil-safe，panic 消除）：`control/dns_api.go:322,331` 传 nil `req` → `DnsRequestSnapshot.routingResultForRoute()` 返 nil（`control/dns_resolve.go:42-45`）→ `control/control_plane.go:2954` 传入 → `control/utils.go:35` `copy(mac16[10:], routingResult.Mac[:])` panic。`net/http` 兜住 handler panic，不会 daemon 级崩溃，但 `/dns/query` 对未命中缓存的目标必然 500。
+
+### 13.3 P0：操作受理、重放、结果注册的事务性
+
+- [x] **重放早于入队**（已修：store 拆三阶段 `Accept`（占键，不发布 replay）/ `CommitReplayKey`（入队成功后发布）/ `ReleaseReplayKey`（释放）；窗口内的同键请求返回 409 而不再是 202；测试 `TestReservedKeyIsNotReplayableUntilQueued`）：`cmd/nativeapi_operations.go:79` 先 `store.Accept`（写 replay 表、返回 202），`:94` 才 `queueReloadRequest`；并发同键请求在窗口内拿到 202，而原请求随后被 `409` 拒绝。
+- [x] **结果 resolver 在入队之后安装**（已修：新增 `StartOperationWithResult(ctx, kind, scope, key, resolve)`，resolver 与入队同一临界区安装，provider 在调用前排好 resolver；`SetResultResolver` 不再由调用方事后调用）：`cmd/nativeapi_nodes_manage.go:38`/`:63`/`:143`、`cmd/nativeapi_groups.go:440` 都在 `StartOperation` 返回后才 `SetResultResolver`；窗口内完成的写操作会退化成 `ReloadResult`。
+- [x] **编辑器 replay 表比操作存储小且 scope 不含内容**（已修：删除编辑器自己的 replay 表，写盘前先经 `OperationStore.Replay` 预检；`PUT /config/sources` 与节点/组写入统一使用包含候选内容哈希的 scope，因此不同内容同键返回 409，且 replay 不会再产生未入队 reload 的落盘副作用）：`cmd/config_editor.go:643`、`component/nativeapi/operation_store.go:144`。
+
+### 13.4 P0：配置写入与 reload 读盘的竞态
+
+- [x] **配置写入与 reload 读盘竞态**（已修：`reloadManager` 新增 `configReadMu`，两条写路径持锁跨「写盘 + 入队 + 回滚」，reload worker 持锁跨 `readConfig`；见 `configEditor.lockConfigRead`）：`guardConfigWrite`（`cmd/config_editor.go:680`）只采样一次 `reloadActive || reloadPending`，随后 `:702` 写盘；`cmd/run_reload_worker.go:120` 的 `readConfig` 无锁，可在"写盘 → 回滚"之间读到候选字节并发布，编辑器收到 409 却已生效。
+- [x] **向非 `api.dae` 源追加 `api {}` 会自锁**（已修：`guardConfigWrite` 拒绝在非监听源声明 api 段，返回 `403 listener_secret_in_content`；测试 `TestDeclaresApiSection`、`TestGuardConfigWriteRejectsSecondApiSection`）：向 `global.dae` 追加空 `api {}` 引入第二个 section origin（`config/config_merger.go:138-144`），下次布局校验判 `layout_unmanaged`（`cmd/config_layout.go:88-98`），此后所有写被 403 永久拒绝。
+  - 仍存余量：若磁盘上已经处于双 origin 状态，API 侧无法自愈（需人工改文件），这点按 P4-D7「不做自动修复」保留。
+
+### 13.5 P0：凭据进日志
+
+- [x] **三处泄漏**（已修：新增 `common.RedactURL` / `common.RedactInlineURLs`；节点链接日志不再带 parser 错误文本，订阅日志与传输错误统一脱敏，`/logs` 投影补 userinfo；测试 `common/redact_test.go`）：`cmd/config_nodes.go:80` 的 parser 错误文本含完整链接；`common/subscription/subscription.go:214/258` 打印订阅 URL；`cmd/nativeapi_observability.go:260-267` 只脱敏 bearer 与 query，`scheme://user:pass@host` 的 userinfo 原样保留。
+
+### 13.6 P1：探针协议与槽位
+
+- [x] **探针把 DNS 发到 443**（已修：新增 `probeDNSAddress`，DNS 探针固定 53 端口，TCP 只是同一端口上的长度前缀分帧；测试 `TestProbeDNSSpeaksDNSOnBothTransports`）：`probeDNS` 在 `transport=tcp` 时经 `probeDialAddress` 得到 `1.1.1.1:443`，再把 DNS-over-TCP 帧（2 字节长度前缀）写到 443（`cmd/nativeapi_probes.go:375,437,464`）。
+- [x] **回包不校验 ID/question**（已修：`parseDNSReply` 比对 transaction ID 与 question，header-only 回包不再算健康；测试 `TestParseDNSReplyRequiresMatchingIDAndQuestion`）：`parseDNSReply`（`:507-516`）只校验 `parser.Start` 与 `header.Response`，任意回包都算健康。
+- [x] **槽位无 watchdog**（已修：新增 `probeConnRegistry`，context 结束时主动 `Close` 探针打开的连接，即使传输层把 deadline 当 no-op，阻塞的读也会被中断以释放槽位；每次探测都登记连接）：`probeMaxActiveJobs = 4`（`component/nativeapi/provider.go:141`），只依赖协作式 ctx 与 `SetDeadline`；对不响应 ctx 的传输，4 个卡死探针可永久占满槽位。
+
+### 13.7 P1：HTTP 边界
+
+- [x] **CORS 缺 PATCH**（已修：预检白名单与 `Access-Control-Allow-Methods` 均含 `PATCH`；`TestCorsAndOriginChecks` 的写入方法循环加入 PATCH）：`component/nativeapi/middleware.go:110` 与 `:129`，而 `PATCH /groups/{id}/config` 是真实路由 → 跨域面板的组配置补丁必然被预检拒绝。
+- [x] **HEAD 进 SSE 死循环**（已修：`/logs` 与 `/events` 只接受 GET，HEAD 返回 405 + `Allow: GET`；测试 `TestStreamEndpointsRejectHead`）：`component/nativeapi/handlers_logs_events.go:95-96,118`，`isReadMethod` 含 HEAD。
+- [ ] lifecycle/DNS/probe 解码器缺完整 bounded-document 校验（超限拒绝 + 尾部多余数据拒绝），完整实现见 `handlers_groups.go:269-292` 的 `decodeLimitedJSON`。
+  - **未做（明确延后）**：需要把三处 decoder 统一到 `decodeLimitedJSON`，属接口收敛而非单点修复；已记入 13.12 之后的待办。
+
+### 13.8 P1：flows 资源
+
+- [x] **`connection_id` 过滤无条件丢弃**（已修：按 `connectionIDOfFlow(entry.ID)` 精确匹配；测试 `TestFlowSummaryCarriesConnectionID`）：`cmd/nativeapi_flows.go:277-279`，任何带该参数的请求都返回空。
+- [x] **summary 不填 `ConnectionID`**（已修：`nativeFlowSummary` 用与 `/connections` 相同的派生规则填 `connection_id`）：`nativeFlowSummary`（`:214-247`）不填 `ConnectionID`，而契约 `flows.yaml:1064` 列为必填。
+
+### 13.9 P1：组与规则投影
+
+- [x] **规则投影不填 `Must`**（已修：`outbound == must_rules` 时置 `Must`，与真实匹配器「设 must 并继续」的语义同源）：`control/routing_rules.go:43-46` 只填 `Expression`/`Outbound`，`/rules` 的 `must` 恒 false。
+- [~] **`check_interval` 读投影截断为整秒**（**纠正：按契约保留，不改**）：契约 `api/nodes-groups.yaml:1088-1091` 把该字段定义为「整秒、最小 1」，`1500ms` 本就无法在契约表示；会造成文件被静默改写的是**写回**，已在 12.4 按 diff 门控修好。读投影 `int(CheckInterval / time.Second)` 符合契约。
+
+### 13.10 P1：DNS 视图与日志
+
+- [x] **`CloneForReload` 丢 `Domain`/`QType`**（已修：clone 字面量补上两个不可变字段）：`control/dns_cache.go:207-214`。
+- [x] **缓存命中不记日志**（已修：`serveFromRespCacheWithRefresh_` 在写出缓存应答后 `recordDnsLog`（`cached: true`，带 rcode/answers/upstream），`/dns/log` 不再只看得见未命中）：`control/dns_controller_handle.go:336-339`。
+- [x] **命名 upstream 被导成 `asis`/`accept`**（已修：请求规则的非关键字 action 导出为 `upstream` 并带上游名，`nativeDnsUpstreamOf` 兼容「名字在 outbound 上」与「名字在参数里」两种写法；测试 `TestNativeDnsActionNamesTheUpstream`、`TestNativeDnsRulesProjectConfiguredForm`）：`cmd/nativeapi_dns.go:363-379`。
+- [x] **源 IP 与 `IP:port` 直接比较**（已修：新增 `dnsLogSrcMatches` 按 host 比较；测试 `TestDnsLogSrcMatchesIPLiteral`）：`cmd/nativeapi_dns.go:271` vs `control/dns_api.go:74`。
+
+### 13.11 P1：运行时选择与流快照
+
+- [x] **pin 快照缓存缺 revision**（已修：`egressBindingKey` 增加 `selection` 字段取 `group.SelectionRevision()`，`SetOverride`/`ClearOverride`/`SetSelection` 都会推进它，新流不会拿到携带旧 pin 的快照）：`control/egress_runtime.go:163-168`。
+- [x] **flow 发布早于字段写入**（已修：`routingResult` 从 `ControlPlane.adoptTCPFlow` → `SessionManager.adoptTCP` 传入，元数据在 `LoadOrStore` 之前写入，快照读到的已发布对象字段恒定）：`control/session_manager.go:536`、`control/tcp.go:305`、`control/session_flows.go:65`。
+- [x] **datapath 快照**（已修：读 `tcHooks` 指针时持 `tcHookMu`；多优先级 hook 组遍历全部 `entries` 并输出，共享 hook 的 program 名附 `@priority` 保持唯一；`:139-143` 只输出一个 program 的问题消除）：`control/datapath_snapshot.go:127`。
+
+### 13.12 P2：分页与 SSE 生命周期
+
+- [~] **分页游标只认锚点存活**（`cmd/cursor.go`）：环 `[3,2,1] → [4,3,2]` 的滚动已由 `pageAfterExpecting` 的 `expectNext`/`oldestKey` 两个守卫覆盖（`dns/log`、`flows`）；`dns/cache` 本轮补上 `expectNext`（`cmd/nativeapi_dns.go`），页边界的后继记录消失时返回 `410` 而不是静默跳过。
+  - **仍有边界**：`dns/cache` 按名字排序、淘汰与排序无关，无法使用 `oldestKey` 守卫；若消失的未读记录不在页边界（而是更深处），仍会静默跳过。彻底解决需要游标携带存储淘汰计数或代次，并定义「淘汰即 410」的语义；单独一轮做。
+- [ ] DNS log 的 `dl_<seq>` 在 store 重建后归零，而游标绑定只有 filters/limit + 进程级 `instance_id`。
+  - **未做（明确延后）**：同上，需要 store 级代次标识参与 bind。
+- [x] **SSE ready checkpoint 立即被拒**（已修：把「最老保留帧的前一帧」识别为合法边界，`stream.ready` 发出的 ID 重连可续传；测试 `TestFrameHubReadyCheckpointResumes`）：`cmd/nativeapi_observability.go:198`。
+- [x] **慢客户端淘汰不中断阻塞写**（已修：`streamFrames` 每帧 `SetWriteDeadline`，写出阻塞会报错退出，释放 handler 与 `max_clients` 槽位；常量 `SSEWriteTimeoutSeconds`）：慢客户端淘汰只关通道，写入仍是同步阻塞的 `w.Write`。
+- [x] **`closeAll` 后仍可注册**（已修：`frameHub` 增加 `closed` 状态，`open` 在关闭后返回 503；测试 `TestFrameHubRefusesStreamsAfterClose`）：`frameHub` 无 `closed` 状态，晚到 handler 的订阅可逃过 shutdown 清扫。
+
+### 13.13 P2：直连观测的刻意偏离
+
+- [x] 已关闭：`direct_reverse_map` 已在 `a045b74` 删除；NAT 下载改由 LAN egress 计数，不再存在“反向索引缺本地身份”的问题。
+
+### 13.14 P3：Revision 语义
+
+- [~] **禁用的 `api` 段不进 `Config.Revision`**（**核查后不改**）：`enabled: false` 时 `api` 段的每个字段都被 `enabled && x` 门控（`direct_stats`、`config_write` 均如此），监听器也不存在，因此该段的改动没有运行时影响，不产生 revision 变化是正确的；若将来 `enabled: false` 下出现有运行时效应的字段，必须同步把该段纳入哈希。
+
+### 13.15 DNS 刷新所有权与 upstream 名解析
+
+- [x] **主动查询丢掉 `needRefresh` 导致条目永久无法刷新**（已修：`dns_api.go` 在返回缓存作答时若 `needRefresh` 则启 `backgroundRefresh`）：`LookupDnsRespCache_` 用 CAS 占住 `refreshing` 标志，只有 `backgroundRefresh` 的 defer 会清除；主动查询丢弃该返回值后，这个条目的 CAS 恒失败，永远不再刷新。
+- [x] **强制 upstream 用渲染后的 URL 比较配置名**（已修：`Dns` 记录每个 upstream 的配置 tag（与 `upstreamName2Id` 同源），`UpstreamByName` 先按名匹配、再回退到 URL 形式；测试 `component/dns/upstream_name_test.go`）：`component/dns/dns.go` 原先只比 `candidate.String()`，而配置名（路由规则里写的名字）根本不等于渲染 URL，`/dns/query` 的 `upstream` 参数永远 422。
+
+### 13.16 仍待做（明确延后，非本轮范围）
+
+- lifecycle / DNS / probe 解码器统一到 `decodeLimitedJSON`（超限拒绝 + 尾部数据拒绝）。
+- 分页在环滚动 / store 重建下的语义：需要游标携带存储淘汰计数或代次，并定义 410 边界。
+- `api_dev.md` 落位与拆 PR（12.7 两条流程项）。
+
+### 13.17 2026-11-08 复核新增代码后的修复
+
+- [x] **Redaction 盲区**（已修：`common.RedactURL` / `RedactInlineURLs` 允许 `/`、`?`、`#` 出现在 userinfo 内，标准 base64 口令含 `/` 时不再原样输出；`redactUserinfo` 增加「RFC authority 内无 `@` 则回退到 token 末尾最后一个 `@`」的兜底；测试 `TestRedactHandlesSeparatorsInsideCredentials`）：`common/redact.go`。
+- [x] **`url_redacted` 未脱敏**（已修：`providers()` 用 `common.RedactURL` 填充；此前直接把订阅原文（含 token/userinfo）交给客户端）：`cmd/nativeapi_providers.go`。
+- [x] **每节点探测槽位表无界增长**（已修：`probeTargetSlot` 加引用计数，最后一个持有/等待者释放时删除 map 条目，`max_concurrent_per_target` 语义不变；测试 `TestAcquireProbeTargetPrunesIdleNodes`）：`cmd/nativeapi_probes.go`。
+- [x] **组成员顺序不确定**（已修：`NewDialerSetFromLinksContext` 对 provider tag 排序后再建 dialer；此前 range map 让 `fixed(n)` / `select(n)` 与 API 的 member 索引在每次启动/重载后指向不同节点；测试 `TestDialerOrderIsDeterministic`）：`component/outbound/filter.go`。
+- [x] **`DELETE /connections` 不校验 `src`**（已修：与 GET 一致要求 IP 字面量，否则 400；此前 `src=拼错` 会以 `closed: 0` 成功返回）：`component/nativeapi/handlers_flows.go`。
+- [x] **`dns/log` 默认 limit 100**（已修：改为契约的 200）：`component/nativeapi/handlers_dns.go`。
+- [x] **chunked 请求体绕过 Content-Type 校验**（已修：`ContentLength != 0`，chunked 的 `-1` 也进入校验）：`component/nativeapi/handlers_dns.go`。
+- [x] **`428` 在 `415` 之后判定**（已修：`PUT /config/sources/{id}` 与 `PATCH /groups/{id}/config` 先判 `If-Match`）：`component/nativeapi/handlers_config.go`、`handlers_groups.go`。
+- [x] **访问日志路由标签大面积 `<unmatched>`**（已修：`fixedRouteTemplates` + `dynamicRouteTemplates` 覆盖全部已实现路由，动态段仍收敛到模板以保证基数有界；测试 `TestRouteTemplateNamesEveryServedRoute`）：`component/nativeapi/logging.go`。
+- [x] **`kernel.ebpf_bytes` 的 `sampled_at` 被刷新**（已修：新增 `ebpfBytesAt` 记录取值时刻，`ebpfAt` 只用于节流重试；测试 `TestCachedEbpfBytesKeepsTheValueTimestamp`）：`control/memory_stats.go`。
+- [x] **ifindex watcher 解引用 nil Link**（已修：与 `handleDirectStatsLinkUpdate` 一致地判空）：`control/control_plane_core.go`。
+
+## 14. 实机验证与 eBPF 热路径优化（2026-11-04）
+
+设备：OpenWrt 25.12.6 / x86_64 / kernel 6.12.112 / Celeron N4000（2 核）；WAN `eth3`(192.168.1.2)，LAN `lan-home`(192.168.12.1/24)，已用 P4 受管布局且 `api.enabled: true`、`config_write: true`、`direct_stats: false`。
+
+### 14.1 基线：`31e98b9` 上的现场复现（部署前）
+
+| 检查 | `31e98b9`（设备原二进制） | 本轮构建 |
+|---|---|---|
+| `POST /dns/query`（冷缓存） | **panic**：`http: panic serving … nil pointer dereference`，栈 `(*ControlPlane).Route` → `control/dns_api.go:331`，curl 得到空回复（`status=000`） | `200`，`upstream=tcp+udp://192.168.1.1:53`、`NOERROR`、9–12 ms |
+| CORS 预检 `PATCH /groups/{id}/config`（Origin=`https://demo.daeuniverse.org`） | `403`（Allow-Methods 无 PATCH） | `204`，`Allow-Methods: …, PATCH, …` |
+| `HEAD /api/v1/events` | 不返回（SSE 循环，3 s 超时） | 立即 `405` + `Allow: GET` |
+| `GET /api/v1/dns/rules`（`qname(geosite: apple) -> china`） | `action: "asis"`、`upstream: null` | `action: "upstream"`、`upstream: "china"` |
+| `GET /api/v1/flows` 的 `connection_id` | 字段缺失，带该参数的过滤恒空 | 字段存在（`c_f_…`），过滤生效 |
+
+结论：13.2 / 13.7 / 13.10 / 13.8 四条在真机上是可复现的缺陷，且修复后在真机上行为正确。
+
+### 14.2 eBPF 热路径：直连观察器（对应审查「不要把 LRU 每包更新」）
+
+改动（`control/kern/direct_stats.c`）：
+
+1. `direct_stats_remember` 改为 **lookup-first**：命中则仅原地 store（≤1 次/秒刷新时间戳），未命中才 `bpf_map_update_elem`。原来每个上传包无条件一次 LRU 更新。
+2. 回包分支删除 `direct_stats_remember(&rkey)`：该调用用「反向元组」当键，而索引只由上传方向写入、只由回包方向读取，因此这一次写是**永远查不到的条目**，同时按每包速度污染 LRU、挤压真正被读的条目。
+
+编译对象层面的差异（`llvm-objdump -d`，同一 clang 参数，部署到设备的那份对象）：
+
+| 程序 | 改前 lookup/update/ktime | 改后 |
+|---|---|---|
+| `direct_stats_wan_ingress_*`（回包方向） | 6 / **1** / 2 | 6 / **0** / 1 |
+| `direct_stats_lan_ingress_*`、`egress_*`（上传方向） | 3 / 1 / 1 | 4 / 1 / 2（update 只在建流时） |
+
+真机验证：
+
+- 历史记录（反向索引已删除）：当时 8 个 `direct_stats_*` 程序全部挂载；当前对象为 10 个程序、2 个 counter key。
+- 计数正确：从 LAN 下载 41,943,040 字节，`down_bytes` 增 42,933,668（+2.4% 链路开销），`down_packets` 6,501（GSO 聚合后约 6.6 KB/skb）；250 MiB 下载时 `down_bytes` 266,396,159。
+- `bpftool map dump id <direct_reverse_map>` 可直接读取索引条目（注意内核把 map 名截断成 15 字节，`bpftool map dump name …` 会静默失败，必须用 id）。
+
+### 14.3 成本测量：`bpf_stats` 逐程序数字
+
+方法：`kernel.bpf_stats_enabled=1`，`bpftool prog show` 的 `run_cnt` / `run_time_ns` 取前后差；同一份 262,144,000 字节直连下载（LAN 客户端 → CN 镜像）。两版二进制只差 `direct_stats.c`。
+
+| 程序 | 旧 ns/次 | 新 ns/次 | 备注 |
+|---|---|---|---|
+| `direct_stats_wan_ingress_l2`（回包） | **2,106** | **959** | **−54%**；同一轮 `tproxy_wan_ingress_l2` 是 1,623 / 2,158 |
+| `direct_stats_lan_ingress_l2`（上传） | 3,084 | 2,641 | 只有 225 / 226 次运行，样本小 |
+| `direct_stats_egress_l2`（本机出站） | 282 | 342 | 早退分支，噪声量级 |
+| `tproxy_wan_ingress_l2`（参照） | 1,623 | 2,158 | 两轮条件不同，自身漂移 +33% |
+
+归一化（除以同轮 tproxy 自身成本）比绝对值更稳：观察器从 **1.30× tproxy** 降到 **0.44× tproxy**。按 1 Gbps / 1500 B 折算（≈83k skb/s）节约约 **95 ms/s ≈ 单个核心的 9.5%**；按实测 GSO 后 8.1k skb/s 折算约 0.9%。
+
+### 14.3.1 UDP 直连：已实现，但本拓扑测不到
+
+- 代码里 UDP 直连是**实现了的**：`udp_state->direct_passthrough = 1`（`control/kern/tproxy.c:3040` 缓存分支、`:3199` 新判定分支）。
+- `/routing/trace`（补上 `domain`/`pname` 后）对 `udp 203.107.6.88:123` 与 `udp 101.6.15.130:443` 都给出 `decision: determinate`, `outbound: direct`——不是被判成 proxy。
+- 但 148,480 个 UDP 包（16 条流，48 B）打过去后：`tproxy_wan_ingress_l2` 跑了 148,052 次、`direct_stats_wan_ingress_l2` 跑了 148,077 次（10.6 ms→714 ns/次），而 `direct_stats` 计数只涨了 66 个上行包 / 17 个下行包；`direct_reverse_map` 里没有对应条目。
+- 关键事实：**上传方向几乎不经过 LAN ingress 钩子**——同一轮 `tproxy_lan_ingress_l2` 只有 **139** 次运行，而 `tproxy_wan_egress_l2` 跑了 148,565 次。TCP 直连下载同样如此（262 MB 只有 225 次 `lan_ingress`，而 `wan_egress` 21,778 次）。被代理的流量（github 走 proxy）却能正常触发 `lan_ingress`（+87 次）。
+
+结论：`direct_stats` 的上行记账 `direct_stats_remember` 在这台设备上没有机会执行，回包侧就只能落到 `direct_stats_known` 且索引为空 → 计数为 0。这不是 `direct_stats` 的代码 bug，也不是 UDP 直连没实现，而是**本机 TC 钩子拓扑与审查方拓扑不同**：`lan-home` 是桥，dae 挂在桥 master 的 `tcx/ingress`，而客户端在桥成员口 `eth2.5` 上，内核直连转发路径上看不到 master 的 ingress 钩子；只有需要重定向（被代理）的流量才会命中。
+
+要在本机复现审查方的 UDP 基准，需要让转发流量真正穿过被 hook 的 ingress：把客户端接到 dae 直接绑定的非桥接口、改用 `dae0` 单臂路径，或把钩子挂到桥成员口。这属于拓扑改造，本轮未做。
+
+### 14.3.2 上一轮的进程级 CPU 测量为何失败
+
+同一份 TCP 下载用 `/proc/<pid>/stat` 计 CPU 时得到 11/13/22/41 ticks（250 MiB）与 25/38/43/55/111 ticks（小包 UDP），噪声 ±50 ticks，且 UDP 直连在本拓扑不成立——两者叠加导致无法分辨 <0.2 µs/包 的差异。`bpf_stats` 的逐程序数字才是可靠口径。
+
+### 14.4 上行记账：把观察器扩到桥成员口（P1 修正版）
+
+#### 14.4.1 需求前提的修正
+
+原始需求是「上行改在 WAN egress 记账」。**这个前提不成立**：WAN egress 的包已经过 SNAT，源地址/源端口被改写，其五元组永远不可能命中以 NAT 前元组为键的 `conn_state_map`；放在那里只会得到恒零。上行必须在**送达 NAT 之前的 ingress** 上观测，而这个 ingress 只能是桥成员口（见 14.3.1 的拓扑结论）。
+
+同理，也不能把 **tproxy** 一并扩到成员口：转发包会先撞成员口钩子、再撞 master 钩子，重定向/打标不是幂等操作，会二次动作。所以只扩**只读的观察器**。
+
+#### 14.4.2 实现
+
+- 新增 `control/bridge_members.go`：`selectBridgePorts`（纯函数，可测）+ `bridgePorts`（netlink 适配，`Type()=="bridge"` 才枚举，按 `MasterIndex` 选成员，按名字排序去重）。
+- `stageDirectStatsHooks` 拆成「按设备挂载」+「bridge 则对成员口用同一角色再挂一遍」（`stageDirectStatsHookForLink`）。角色（`wan`/`dual`）沿用 master 的判定；成员口一律按自己的 `EncapType` 决定 L2/L3（桥成员必为 ethernet）。
+- 成员口在绑定时枚举，并由 netlink link 监听器在运行期增删；`HostVethName`（`dae0`）跳过；`netlink.LinkList` 失败只 Warn 不中断绑定（观测是可选项，不能影响转发）。
+- 单位测试 `control/bridge_members_test.go`：只选 `MasterIndex` 等于桥 index 的设备、排除桥自指、选择稳定可重复。
+
+#### 14.4.3 真机验证（内核 6.12.112）
+
+部署后 8 个 `direct_stats_*` 程序加载，`direct_stats_lan_ingress_l2` 在**成员口 `eth0`** 上开始按包运行（此前 master `lan-home` 上只有 87 次）。
+
+| 场景 | 载荷 | 观测结果 |
+|---|---|---|
+| 直连 TCP 下载（CN 镜像，客户端 `eth0`） | 104,857,600 字节 | `down_bytes` **+107,160,289**（+2.2% 链路开销）、`down_packets` +11,999；`up_bytes` **+914 KB / +10,525 包**（纯 ACK，≈87 B/包）；`direct_stats_lan_ingress_l2` run_cnt +10,647，与 `up_packets` 一致 |
+| 上一轮同场景（成员口未展开） | 262,144,000 字节 | `up_bytes` 恒零 |
+| 经代理下载（Cloudflare 20,000,000 字节） | — | `down_packets` 只 +77（若误计应 +13.8k）、`up_packets` 只 +725 → **代理流量确实被 `direct_passthrough` 排除** |
+| 空转本底（20 s，无主动流量） | — | `up_bytes` +147 KB、`down_bytes` +88 KB（≈7.4 KB/s，家用网内其它设备/keepalive 造成，比较增量时必须扣除） |
+
+三项需求的落点：① 排除 dae 自身代理流量 —— `conn_state.direct_passthrough` 闸门，实测 20 MB 代理下载零计入；② 只处理被 dae 监听的端口 —— 钩子只挂在 dae 已绑定的设备及其桥成员，未绑定的设备不挂；③ WAN 统计保留 —— `direct_stats_wan_ingress_*` 在 WAN 口继续计回包。
+
+#### 14.4.4 开销（`bpf_stats`，同一次 100 MB 直连下载的 run_cnt/run_time_ns 差）
+
+| 程序 | 位置 | ns/次 | 与 tproxy 比 |
+|---|---|---|---|
+| `direct_stats_wan_ingress_l2`（回包） | WAN 口 | **913** | tproxy_wan_ingress 1,918 → **0.48×** |
+| `direct_stats_lan_ingress_l2`（上行） | 桥成员口 `eth0` | **1,790** | 该接口上没有任何 tproxy 钩子在跑，无同轮参照 |
+| `direct_stats_egress_l2`（本机出站） | WAN 口 | 260 | tproxy_wan_egress 343 → 0.76× |
+
+上行侧 1,790 ns/次比回包侧高一倍：它多一次 `conn_state_map` 查表 + `direct_reverse_map` 的 LRU 查表/建条目。按 1 Gbps 纯 ACK 上限（≈2.0 Mpps）算不可忽视，但 ACK 速率实际远低于此（100 MB 下载只 10.6k 包）。
+
+#### 14.4.5 已知边界
+
+- 成员口在绑定时枚举；运行期 `br_add_if`/`br_del_if` 现在由 netlink 监听器增删观察器（2026-11-06 修正）。
+- 桥套桥（bridge 的成员又是 bridge）不递归展开。
+- 历史边界：`direct_reverse_map` 已删除；当前 NAT 下载改由 LAN egress 解决。
+
+### 14.5 设备现场状态（已还原）
+
+- `/usr/bin/dae` 已还原为实验前二进制（`sha256 a57cfe3f…`，`dae version unstable-20261104.r918.31e98b9`）；本轮构建留在 `/usr/bin/dae.bak.31e98b9`→已用作还原源、新构建副本 `/tmp/dae.bridge`（`bc1479c5…`），旧观察器副本 `/tmp/dae.obs-old`（`89ad6b6b…`）/`/tmp/dae.obs-new`（`b4f45400…`）。
+- `/etc/dae/api.dae` `direct_stats` 已改回 `false`；`kernel.bpf_stats_enabled` 已改回 `0`；服务 `running`，观察器程序数 0，客户端经路由器访问外网 200 正常。
+
