@@ -2,7 +2,7 @@
 # skopeo cannot reach registry-1.docker.io from the audit environment, so no
 # digest is recorded here — do not invent one. Replace the tags below with
 # `<repo>@sha256:<digest>` once a registry lookup is available.
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends llvm-15 clang-15 make \
     && rm -rf /var/lib/apt/lists/*
 ENV CLANG=clang-15
