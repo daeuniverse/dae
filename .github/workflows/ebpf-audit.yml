@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -49,10 +49,10 @@ jobs:
           target="${GITHUB_ENV:?GITHUB_ENV is only set inside GitHub Actions}"
           make -s print-goexperiment-env | tee -a "$target"
 
-      - name: Set up Go 1.26
-        uses: actions/setup-go@v6
+      - name: Set up Go 1.27
+        uses: actions/setup-go@v7
         with:
-          go-version: 1.26
+          go-version: 1.27
 
       - name: Install Dependencies
         run: |

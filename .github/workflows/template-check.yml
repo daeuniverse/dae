@@ -1,0 +1,27 @@
+name: template-check
+on:
+  issues:
+    types: [opened, edited, reopened]
+  pull_request_target:
+    types: [opened, edited, reopened]
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+concurrency:
+  group: template-check-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # pull_request_target checks out the trusted base, never PR code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check template and close or reopen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        run: bash .github/scripts/template-check.sh "$NUMBER"
