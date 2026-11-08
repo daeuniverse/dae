@@ -105,3 +105,11 @@ func TestResolveSubscriptionAsSIP008_SS2022KeepsRawPSK(t *testing.T) {
 		t.Fatalf("unexpected decoded userinfo: got %q want %q", got, want)
 	}
 }
+
+func TestResolveSubscriptionAsBase64KeepsNamedLinks(t *testing.T) {
+	payload := []byte("edge:socks5://u:p@127.0.0.1:1080\nplain://x\n")
+	nodes := ResolveSubscriptionAsBase64(logrus.New(), payload)
+	if len(nodes) != 2 || nodes[0] != "edge:socks5://u:p@127.0.0.1:1080" {
+		t.Fatalf("named link was dropped: %#v", nodes)
+	}
+}
