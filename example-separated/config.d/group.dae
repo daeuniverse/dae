@@ -1,0 +1,16 @@
+group {
+    my_group {
+        filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
+        policy: min_moving_avg
+    }
+
+    local_group {
+        filter: name(node1, node2)
+        policy: fixed(0)
+    }
+
+    manual_group {
+        filter: subtag(my_sub)
+        policy: select
+    }
+}
