@@ -644,6 +644,11 @@ func (c *controlPlaneCore) startIfindexWatcher() {
 					return
 				}
 				c.handleDirectStatsLinkUpdate(upd)
+				if upd.Link == nil || upd.Attrs() == nil {
+					// A delete event can arrive without a parsed link; the
+					// observer path above already tolerates it.
+					continue
+				}
 				if upd.Link.Attrs().Name != HostVethName {
 					continue
 				}
