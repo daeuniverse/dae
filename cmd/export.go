@@ -24,7 +24,7 @@ var (
 		Use:   "outline",
 		Short: "To export config structure.",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(config.ExportOutlineJson(Version))
+			fmt.Println(config.ExportOutlineJson(config.Version))
 		},
 	}
 )
