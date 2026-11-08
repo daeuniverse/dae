@@ -477,10 +477,12 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// Start timing the control plane creation
 	log.Infoln("Building control plane and routing rules...")
 	stageStart = time.Now()
-	// The observer is only useful while the API serves its counters. Loading it
-	// with api.enabled=false pays the datapath cost for nobody, so the switch is
-	// the conjunction of both settings.
+	// The DNS log and the per-flow bookkeeping are only useful while the API
+	// can read them, and the direct observer costs datapath time per packet.
+	// With api.enabled=false none of them may cost anything, so they follow
+	// the API switch; the direct observer additionally needs its own opt-in.
 	control.ConfigureDnsLog(conf.Api.Enabled)
+	control.ConfigureFlowStats(conf.Api.Enabled)
 	control.ConfigureDirectStats(control.ResolveDirectStats(log, conf.Api.Enabled && conf.Api.DirectStats))
 	c, err = buildControlPlaneRuntime(
 		ctx,

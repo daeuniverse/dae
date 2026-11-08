@@ -56,13 +56,13 @@ func TestFlowHistoryRetentionAndLookup(t *testing.T) {
 func TestTCPSnapshotCarriesRouteMetadata(t *testing.T) {
 	src := netip.MustParseAddrPort("192.168.1.2:1234")
 	dst := netip.MustParseAddrPort("1.1.1.1:443")
+	startedAt := time.Now()
 	group := &ob.DialerGroup{Name: "proxy"}
 	flow := &FlowRuntime{
-		id:        "f_1",
 		network:   "tcp",
 		src:       src,
 		dst:       dst,
-		startedAt: time.Now(),
+		startedAt: startedAt,
 		binding: TcpFlowBinding{Egress: TcpEgressBinding{
 			Outbound:      group,
 			SniffedDomain: "example.com",
@@ -71,7 +71,10 @@ func TestTCPSnapshotCarriesRouteMetadata(t *testing.T) {
 	flow.uploadBytes.Add(10)
 	flow.downloadBytes.Add(20)
 	snapshot := flow.snapshot()
-	if snapshot.ID != "f_1" || snapshot.Network != "tcp" || snapshot.Domain != "example.com" {
+	if want := flowIDOf("tcp", src, dst, startedAt); snapshot.ID != want {
+		t.Fatalf("snapshot id = %q, want %q", snapshot.ID, want)
+	}
+	if snapshot.Network != "tcp" || snapshot.Domain != "example.com" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 	if snapshot.Outbound != "proxy" || !snapshot.HasBytes || snapshot.UploadBytes != 10 || snapshot.DownloadBytes != 20 {
@@ -87,18 +90,18 @@ func TestTCPSnapshotCarriesRouteMetadata(t *testing.T) {
 // and UDP flows, which carry no counters, are absent.
 func TestFlowByteCountersWalk(t *testing.T) {
 	manager := NewSessionManager(context.Background())
-	flow := &FlowRuntime{id: "f_1", network: "tcp", startedAt: time.Now()}
+	flow := &FlowRuntime{network: "tcp", startedAt: time.Now()}
 	flow.uploadBytes.Add(10)
 	flow.downloadBytes.Add(20)
 	manager.flows.Store(struct{}{}, flow)
-	manager.udpFlows.Store(struct{}{}, &UDPFlowRuntime{id: "u_1", startedAt: time.Now()})
+	manager.udpFlows.Store(struct{}{}, &UDPFlowRuntime{startedAt: time.Now()})
 
 	var counters []FlowByteCounter
 	manager.FlowByteCounters(func(counter FlowByteCounter) { counters = append(counters, counter) })
 	if len(counters) != 1 {
 		t.Fatalf("counters = %#v, want only the TCP flow", counters)
 	}
-	if counters[0].ID != "f_1" || counters[0].UploadBytes != 10 || counters[0].DownloadBytes != 20 {
+	if counters[0].ID != flow.flowID() || counters[0].UploadBytes != 10 || counters[0].DownloadBytes != 20 {
 		t.Fatalf("counter = %#v", counters[0])
 	}
 }
@@ -106,7 +109,6 @@ func TestFlowByteCountersWalk(t *testing.T) {
 func TestActiveFlowSnapshotsIncludeUDP(t *testing.T) {
 	manager := NewSessionManager(context.Background())
 	flow := &UDPFlowRuntime{
-		id:        "u_1",
 		src:       netip.MustParseAddrPort("192.168.1.2:5353"),
 		dst:       netip.MustParseAddrPort("8.8.8.8:53"),
 		startedAt: time.Now(),
@@ -114,7 +116,7 @@ func TestActiveFlowSnapshotsIncludeUDP(t *testing.T) {
 	}
 	manager.udpFlows.Store(struct{}{}, flow)
 	snapshots := manager.ActiveFlowSnapshots()
-	if len(snapshots) != 1 || snapshots[0].ID != "u_1" || snapshots[0].Network != "udp" || snapshots[0].Mark != 7 {
+	if len(snapshots) != 1 || snapshots[0].ID != flow.flowID() || snapshots[0].Network != "udp" || snapshots[0].Mark != 7 {
 		t.Fatalf("snapshots = %#v", snapshots)
 	}
 }

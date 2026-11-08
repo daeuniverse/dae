@@ -1330,27 +1330,25 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	// deadline or close unblocks it. A caller that cancels (or whose earlier
 	// deadline is not representable as a socket deadline) would otherwise keep
 	// this pool slot until DefaultDialTimeout, so close the borrowed conn when
-	// the context ends. The watcher is joined before the deferred put returns
-	// the conn, so a closed socket can never re-enter the pool.
-	watchDone := make(chan struct{})
-	stopWatch := make(chan struct{})
+	// the context ends. context.AfterFunc starts a goroutine only if the
+	// context actually ends, so the ordinary query path - one conn, one
+	// deadline - does not pay a watcher goroutine and two channels per query.
+	// The deferred stop joins any started callback before the deferred put
+	// returns the conn, so a closed socket can never re-enter the pool.
+	var cancelDone chan struct{}
 	if ctx.Done() != nil {
-		go func() {
-			defer close(watchDone)
-			select {
-			case <-ctx.Done():
-				aborted.Store(true)
-				udpPool.discard(conn)
-			case <-stopWatch:
+		cancelDone = make(chan struct{})
+		stopWatch := context.AfterFunc(ctx, func() {
+			aborted.Store(true)
+			udpPool.discard(conn)
+			close(cancelDone)
+		})
+		defer func() {
+			if !stopWatch() {
+				<-cancelDone
 			}
 		}()
-	} else {
-		close(watchDone)
 	}
-	defer func() {
-		close(stopWatch)
-		<-watchDone
-	}()
 
 	// Extract original DNS ID for validation
 	var originalID uint16

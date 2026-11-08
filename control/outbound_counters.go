@@ -156,8 +156,13 @@ func (c *ControlPlane) trafficRecordersFor(counters *ob.Counters) (download func
 }
 
 // trafficRecordersForFlow is trafficRecordersFor plus per-flow byte counters,
-// so /connections can report the bytes of one live flow.
+// so /connections can report the bytes of one live flow. With the API off the
+// recorders are exactly trafficRecordersFor: two atomics per relay record are
+// only worth paying when something can read them.
 func (c *ControlPlane) trafficRecordersForFlow(counters *ob.Counters, flow *FlowRuntime) (download func(int64), upload func(int64)) {
+	if !flowStatsActive() || flow == nil {
+		return c.trafficRecordersFor(counters)
+	}
 	return func(n int64) {
 			c.recordDownloadTrafficFor(counters, n)
 			if n > 0 && flow != nil {

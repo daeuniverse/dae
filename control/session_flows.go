@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"net/netip"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +19,24 @@ const FlowHistoryCapacity = 2048
 
 // FlowHistoryRetention bounds the age of a retained closed flow.
 const FlowHistoryRetention = 15 * time.Minute
+
+// flowStatsEnabled is the process-wide switch for the per-flow bookkeeping that
+// only the API reads: the closed-flow history snapshot and the per-flow byte
+// counters. Taking that snapshot on every close and incrementing the counters
+// on every relay record are costs main never paid, so api.enabled=false must
+// turn both off. The zero value is off, matching a build without the API; the
+// control plane sets it from api.enabled before each build, like
+// ConfigureDnsLog and ConfigureDirectStats.
+var flowStatsEnabled atomic.Bool
+
+// ConfigureFlowStats matches the per-flow bookkeeping to the API switch.
+func ConfigureFlowStats(enabled bool) {
+	flowStatsEnabled.Store(enabled)
+}
+
+func flowStatsActive() bool {
+	return flowStatsEnabled.Load()
+}
 
 // SessionFlowSnapshot is one live or finished userspace flow.
 type SessionFlowSnapshot struct {
@@ -74,17 +93,37 @@ func flowIDOf(network string, src, dst netip.AddrPort, started time.Time) string
 	return string(id[:])
 }
 
+// flowID derives the stable id on demand. The tuple and start time are already
+// stored on the flow, so adoption pays nothing; only a reader of /connections
+// or /flows hashes. Computing it in adoptTCP/adoptUDP made every connection -
+// with the API off too - pay a SHA-256, a hex encode and a string allocation.
+func (f *FlowRuntime) flowID() string {
+	if f == nil {
+		return ""
+	}
+	return flowIDOf("tcp", f.src, f.dst, f.startedAt)
+}
+
+// flowID is flowIDOf for UDP flows, which are never read through /connections'
+// byte counters but do appear in /flows.
+func (f *UDPFlowRuntime) flowID() string {
+	if f == nil {
+		return ""
+	}
+	return flowIDOf("udp", f.src, f.dst, f.startedAt)
+}
+
 func (f *FlowRuntime) snapshot() SessionFlowSnapshot {
 	if f == nil {
 		return SessionFlowSnapshot{}
 	}
 	snapshot := SessionFlowSnapshot{
-		ID:            f.id,
+		ID:            f.flowID(),
 		Network:       f.network,
 		Src:           f.src,
 		Dst:           f.dst,
 		Domain:        f.binding.Egress.SniffedDomain,
-		Pname:         f.pname,
+		Pname:         ProcessName2String(f.pname[:]),
 		Pid:           f.pid,
 		Dscp:          f.dscp,
 		Mark:          f.mark,
@@ -110,7 +149,7 @@ func (f *UDPFlowRuntime) snapshot() SessionFlowSnapshot {
 		return SessionFlowSnapshot{}
 	}
 	snapshot := SessionFlowSnapshot{
-		ID:        f.id,
+		ID:        f.flowID(),
 		Network:   "udp",
 		Src:       f.src,
 		Dst:       f.dst,
@@ -140,7 +179,9 @@ func (f *FlowRuntime) SetFlowRoutingMeta(routingResult *bpfRoutingResult) {
 	if f == nil || routingResult == nil {
 		return
 	}
-	f.pname = ProcessName2String(routingResult.Pname[:])
+	// The kernel field is already the fixed-size array the snapshot formats
+	// lazily; converting here allocated the process name per connection.
+	f.pname = routingResult.Pname
 	f.pid = routingResult.Pid
 	f.dscp = uint32(routingResult.Dscp)
 	f.mark = routingResult.Mark
@@ -160,9 +201,9 @@ func (m *SessionManager) FlowByteCounters(yield func(FlowByteCounter)) {
 		return
 	}
 	m.flows.Range(func(_, value any) bool {
-		if flow, ok := value.(*FlowRuntime); ok && flow != nil && flow.id != "" {
+		if flow, ok := value.(*FlowRuntime); ok && flow != nil {
 			yield(FlowByteCounter{
-				ID:            flow.id,
+				ID:            flow.flowID(),
 				UploadBytes:   flow.uploadBytes.Load(),
 				DownloadBytes: flow.downloadBytes.Load(),
 			})
@@ -199,7 +240,7 @@ func (m *SessionManager) CloseFlowByID(id string) bool {
 	}
 	var target *FlowRuntime
 	m.flows.Range(func(_, value any) bool {
-		if flow, ok := value.(*FlowRuntime); ok && flow.id == id {
+		if flow, ok := value.(*FlowRuntime); ok && flow.flowID() == id {
 			target = flow
 			return false
 		}
@@ -211,7 +252,7 @@ func (m *SessionManager) CloseFlowByID(id string) bool {
 	}
 	var udpTarget *UDPFlowRuntime
 	m.udpFlows.Range(func(_, value any) bool {
-		if flow, ok := value.(*UDPFlowRuntime); ok && flow.id == id {
+		if flow, ok := value.(*UDPFlowRuntime); ok && flow.flowID() == id {
 			udpTarget = flow
 			return false
 		}

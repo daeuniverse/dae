@@ -213,12 +213,14 @@ type FlowRuntime struct {
 	egressLease *egressRuntimeLease
 	// counters is resolved once at adoption so the finish path never looks up
 	// the registry and always decrements the counter it incremented.
-	counters       *ob.Counters
-	id             string
-	network        string
-	src            netip.AddrPort
-	dst            netip.AddrPort
-	pname          string
+	counters *ob.Counters
+	network  string
+	src      netip.AddrPort
+	dst      netip.AddrPort
+	// pname is kept as the kernel's fixed-size field so adoption copies 16
+	// bytes instead of allocating the process name on every connection; only
+	// a snapshot turns it into a string.
+	pname          [16]uint8
 	pid            uint32
 	dscp           uint32
 	mark           uint32
@@ -246,7 +248,6 @@ type UDPFlowRuntime struct {
 
 	egressLease *egressRuntimeLease
 	counters    *ob.Counters
-	id          string
 	src         netip.AddrPort
 	dst         netip.AddrPort
 	startedAt   time.Time
@@ -518,7 +519,6 @@ func (m *SessionManager) adoptTCP(
 		dst:         dst,
 		network:     "tcp",
 		startedAt:   startedAt,
-		id:          flowIDOf("tcp", src, dst, startedAt),
 	}
 	// Record the kernel routing evidence before the flow is reachable from the
 	// API. Writing it after LoadOrStore let a snapshot read the zero values of
@@ -632,7 +632,9 @@ func (m *SessionManager) releaseFlow(flow *FlowRuntime) {
 	m.generationsMu.Unlock()
 	if loaded && current == flow {
 		flow.counters.ConnectionFinished()
-		m.appendFlowHistory(flow.snapshot(), time.Now())
+		if flowStatsActive() {
+			m.appendFlowHistory(flow.snapshot(), time.Now())
+		}
 	}
 
 	if flow.cancel != nil {
@@ -723,7 +725,6 @@ func (m *SessionManager) adoptUDP(endpoint *UdpEndpoint, binding UdpFlowBinding,
 		src:         endpoint.poolKey.Src,
 		dst:         endpoint.poolKey.Dst,
 		startedAt:   startedAt,
-		id:          flowIDOf("udp", endpoint.poolKey.Src, endpoint.poolKey.Dst, startedAt),
 	}
 
 	if m.closed.Load() {
@@ -777,7 +778,9 @@ func (m *SessionManager) releaseUDPFlow(flow *UDPFlowRuntime) {
 	m.generationsMu.Unlock()
 	if loaded && current == flow {
 		flow.counters.ConnectionFinished()
-		m.appendFlowHistory(flow.snapshot(), time.Now())
+		if flowStatsActive() {
+			m.appendFlowHistory(flow.snapshot(), time.Now())
+		}
 	}
 	if flow.cancel != nil {
 		flow.cancel()
