@@ -220,3 +220,31 @@ func TestReadMemorySnapshotUnlimitedLimit(t *testing.T) {
 		t.Fatalf("metrics = %v, want cgroup.limit_bytes advertised for an unlimited cgroup", metrics)
 	}
 }
+
+// TestCachedEbpfBytesKeepsTheValueTimestamp pins the promise in the field doc:
+// a failed re-read must not relabel the retained value with the current time.
+func TestCachedEbpfBytesKeepsTheValueTimestamp(t *testing.T) {
+	readable := t.TempDir()
+	if err := os.Mkdir(filepath.Join(readable, "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newMemoryStats()
+	s.procSelf = readable
+
+	first := time.Unix(1_700_000_000, 0)
+	if _, sampledAt := s.cachedEbpfBytes(first); !sampledAt.Equal(first) {
+		t.Fatalf("first sample time = %v, want %v", sampledAt, first)
+	}
+
+	// The scan now fails, past the retry interval: the value is still known, but
+	// its timestamp must stay the one that produced it.
+	s.procSelf = t.TempDir()
+	later := first.Add(2 * ebpfMemorySampleInterval)
+	bytes, sampledAt := s.cachedEbpfBytes(later)
+	if bytes == nil {
+		t.Fatal("a retained reading must still be reported")
+	}
+	if !sampledAt.Equal(first) {
+		t.Fatalf("sampled time = %v, want the last successful read %v", sampledAt, first)
+	}
+}

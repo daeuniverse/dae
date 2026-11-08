@@ -92,7 +92,11 @@ type memoryStats struct {
 	metrics []string
 
 	ebpfBytes *uint64
-	ebpfAt    time.Time
+	// ebpfAt is when the fdinfo scan last ran, which throttles retries even
+	// after a failure; ebpfBytesAt is when ebpfBytes was read, so a retained
+	// value is never reported as fresher than it is.
+	ebpfAt      time.Time
+	ebpfBytesAt time.Time
 }
 
 func newMemoryStats() *memoryStats {
@@ -453,19 +457,24 @@ func (s *memoryStats) sample() {
 // so the reported sampled_at never claims a cached value is fresher than it is.
 func (s *memoryStats) cachedEbpfBytes(now time.Time) (*uint64, time.Time) {
 	s.mu.Lock()
-	cached, cachedAt := s.ebpfBytes, s.ebpfAt
-	s.mu.Unlock()
-	if !cachedAt.IsZero() && now.Sub(cachedAt) < ebpfMemorySampleInterval {
+	scannedAt := s.ebpfAt
+	if !scannedAt.IsZero() && now.Sub(scannedAt) < ebpfMemorySampleInterval {
+		cached, cachedAt := s.ebpfBytes, s.ebpfBytesAt
+		s.mu.Unlock()
 		if cached == nil {
 			return nil, time.Time{}
 		}
 		return cached, cachedAt
 	}
+	s.mu.Unlock()
+
 	bytes, ok := readEbpfBytes(s.procSelf)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ok {
 		s.ebpfBytes = &bytes
+		// The value's own timestamp advances only when a read succeeded.
+		s.ebpfBytesAt = now
 	}
 	// Throttle retries after a failure too; otherwise a datapath without
 	// reachable fdinfo would rescan /proc on every sample.
@@ -473,7 +482,7 @@ func (s *memoryStats) cachedEbpfBytes(now time.Time) (*uint64, time.Time) {
 	if s.ebpfBytes == nil {
 		return nil, time.Time{}
 	}
-	return s.ebpfBytes, s.ebpfAt
+	return s.ebpfBytes, s.ebpfBytesAt
 }
 
 func (s *memoryStats) learnMetricsLocked(snapshot MemorySnapshot) {
