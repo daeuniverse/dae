@@ -3509,23 +3509,33 @@ static __always_inline bool ab_rate_slot_is_untouched(__u32 key)
  * emit shared one 1s budget across every affected flow, so the normal steady
  * state (what every pre-existing flow does after a restart) produced one
  * warning per second for as long as the flows lived. Its upper bound is 0. */
+/* One established TCP packet through LAN ingress, global for the same reason
+ * as ab_frag_tail_send_one below. */
+__noinline int ab_stateless_tcp_send_one(struct __sk_buff *skb)
+{
+	if (ab_build_ipv4_tcp(skb, IPV4(192, 168, 1, 1), IPV4(5, 5, 5, 5),
+			      33333, 443, 5, TCPH_ACK, 0))
+		return 2;
+	if (do_tproxy_lan_ingress(skb, ETH_HLEN) != TC_ACT_OK)
+		return 3;
+	return 0;
+}
+
 SEC("tc/ab_test/stateless_tcp_passthrough")
 int test_ab_stateless_tcp_passthrough(struct __sk_buff *skb)
 {
 	__u32 key = EVENT_RATE.stateless_tcp_key;
 	__u64 before;
-	int i;
+	int i, ret;
 
 	if (!ab_rate_slot_armed_at_zero(key))
 		return 1;
 
 	before = ab_read_stat(BPF_STATS_STATELESS_TCP_PASSTHROUGH);
 	for (i = 0; i < AB_PASSTHROUGH_BURST_PACKETS; i++) {
-		if (ab_build_ipv4_tcp(skb, IPV4(192, 168, 1, 1),
-				      IPV4(5, 5, 5, 5), 33333, 443, 5, TCPH_ACK, 0))
-			return 2;
-		if (do_tproxy_lan_ingress(skb, ETH_HLEN) != TC_ACT_OK)
-			return 3;
+		ret = ab_stateless_tcp_send_one(skb);
+		if (ret)
+			return ret;
 	}
 	/* Counter exactness: one increment per packet, no more and no less. */
 	if (ab_read_stat(BPF_STATS_STATELESS_TCP_PASSTHROUGH) !=
@@ -3591,24 +3601,36 @@ int test_ab_unsolicited_udp_wan_ingress(struct __sk_buff *skb)
  * no per-event emission: forwarding it is the intended policy, and the tuple
  * such an event could carry has no L4 header to read (the parser returns
  * before L4 parsing), so it reported scratch ports rather than wire data. */
+/* One non-initial fragment through LAN ingress. A global function is verified
+ * once on its own instead of once per burst iteration; with the whole ingress
+ * path in the loop, the clang 16 build exceeded the verifier's 1M instruction
+ * budget. */
+__noinline int ab_frag_tail_send_one(struct __sk_buff *skb)
+{
+	/* Fragment offset 1 (8 bytes): non-initial. */
+	if (ab_build_ipv4_udp(skb, IPV4(192, 168, 2, 1), IPV4(9, 9, 9, 9),
+			      34567, 4500, 1))
+		return 2;
+	if (do_tproxy_lan_ingress(skb, ETH_HLEN) != TC_ACT_OK)
+		return 3;
+	return 0;
+}
+
 SEC("tc/ab_test/frag_tail_passthrough")
 int test_ab_frag_tail_passthrough(struct __sk_buff *skb)
 {
 	__u32 key = EVENT_RATE.frag_tail_key;
 	__u64 before;
-	int i;
+	int i, ret;
 
 	if (!ab_rate_slot_armed_at_zero(key))
 		return 1;
 
 	before = ab_read_stat(BPF_STATS_FRAG_TAIL_PASSED);
 	for (i = 0; i < AB_PASSTHROUGH_BURST_PACKETS; i++) {
-		/* Fragment offset 1 (8 bytes): non-initial. */
-		if (ab_build_ipv4_udp(skb, IPV4(192, 168, 2, 1),
-				      IPV4(9, 9, 9, 9), 34567, 4500, 1))
-			return 2;
-		if (do_tproxy_lan_ingress(skb, ETH_HLEN) != TC_ACT_OK)
-			return 3;
+		ret = ab_frag_tail_send_one(skb);
+		if (ret)
+			return ret;
 	}
 	if (ab_read_stat(BPF_STATS_FRAG_TAIL_PASSED) !=
 	    before + AB_PASSTHROUGH_BURST_PACKETS)
