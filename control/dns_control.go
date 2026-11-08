@@ -193,6 +193,17 @@ type dnsControllerStore struct {
 	// preserves the old lifetime guarantee for in-flight queries.
 	handleClosed   atomic.Bool
 	handleInflight atomic.Int64
+
+	// DNS metrics — on store so they persist across reloads.
+	dnsMetricsInit         sync.Once
+	dnsQueryTotal          atomic.Uint64
+	dnsCacheHitTotal       atomic.Uint64
+	dnsCacheLazyHitTotal   atomic.Uint64
+	dnsConcurrencyInFlight atomic.Int64
+	dnsRejectedTotal       atomic.Uint64
+	dnsRefusedTotal        atomic.Uint64
+	dnsResponseLatency     *dnsLatencyHistogram
+	dnsUpstreamMetrics     sync.Map
 }
 
 // DnsController is a lightweight generation-local facade over a shared
