@@ -81,7 +81,7 @@ func TestPageAfterResumesAfterTheAnchor(t *testing.T) {
 	items := []string{"a", "b", "c", "d", "e"}
 	key := func(item string) string { return item }
 
-	page, next, err := pageAfter(items, key, "", 2, "instance-a", "flows", bind, now)
+	page, next, err := pageAfterExpecting(items, key, "", "", "", 2, "instance-a", "flows", bind, now)
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -92,13 +92,13 @@ func TestPageAfterResumesAfterTheAnchor(t *testing.T) {
 	if err != nil || anchor != "b" {
 		t.Fatalf("next anchor = %q err = %v", anchor, err)
 	}
-	page, _, err = pageAfter(items, key, anchor, 2, "instance-a", "flows", bind, now)
+	page, _, err = pageAfterExpecting(items, key, anchor, "", "", 2, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 2 || page[0] != "c" {
 		t.Fatalf("second page = %v err=%v", page, err)
 	}
 
 	// The last page reports no cursor.
-	page, last, err := pageAfter(items, key, "d", 2, "instance-a", "flows", bind, now)
+	page, last, err := pageAfterExpecting(items, key, "d", "", "", 2, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 1 || page[0] != "e" || last != nil {
 		t.Fatalf("last page = %v next=%v err=%v", page, last, err)
 	}
@@ -112,7 +112,7 @@ func TestPageAfterIsStableWhenRecordsAppearAtTheHead(t *testing.T) {
 	key := func(item string) string { return item }
 
 	first := []string{"c", "b", "a"}
-	page, next, err := pageAfter(first, key, "", 1, "instance-a", "flows", bind, now)
+	page, next, err := pageAfterExpecting(first, key, "", "", "", 1, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 1 || page[0] != "c" {
 		t.Fatalf("first page = %v err=%v", page, err)
 	}
@@ -121,7 +121,7 @@ func TestPageAfterIsStableWhenRecordsAppearAtTheHead(t *testing.T) {
 	// A new record arrives at the head before the client asks for page two. With
 	// an offset this page would repeat "c"; after a key it continues at "b".
 	second := []string{"d", "c", "b", "a"}
-	page, _, err = pageAfter(second, key, anchor, 1, "instance-a", "flows", bind, now)
+	page, _, err = pageAfterExpecting(second, key, anchor, "", "", 1, "instance-a", "flows", bind, now)
 	if err != nil || len(page) != 1 || page[0] != "b" {
 		t.Fatalf("second page = %v err=%v, want [b]", page, err)
 	}
@@ -131,7 +131,7 @@ func TestPageAfterRejectsAnEvictedAnchor(t *testing.T) {
 	now := time.Now()
 	// The anchor's record left the ring: the walk cannot continue on this
 	// snapshot, so the caller reports 410 instead of skipping the gap.
-	if _, _, err := pageAfter([]string{"y", "z"}, func(s string) string { return s }, "x", 2, "instance-a", "flows", "bind", now); err == nil {
+	if _, _, err := pageAfterExpecting([]string{"y", "z"}, func(s string) string { return s }, "x", "", "", 2, "instance-a", "flows", "bind", now); err == nil {
 		t.Fatal("an evicted anchor must expire the cursor")
 	} else if apiErr, ok := err.(*nativeapi.APIError); !ok || apiErr.Status != 410 {
 		t.Fatalf("err = %v, want 410 snapshot_expired", err)

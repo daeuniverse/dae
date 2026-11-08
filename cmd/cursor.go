@@ -106,24 +106,21 @@ func decodePageCursorNext(instance, kind, bind, value string, now time.Time) (st
 	return cursor.After, cursor.Next, cursor.Oldest, nil
 }
 
-// pageAfter returns the items that follow the anchor in a stable, ordered list.
+// pageAfterExpecting returns the items that follow the anchor in a stable,
+// ordered list.
 //
 // The anchor is the key of the last item the client received. Every list this
 // engine paginates is ordered and grows at the head, so resuming after a key
 // keeps a walk consistent while records are added at the front, which an offset
-// window cannot: a new head shifts every later page by one.
+// window cannot: a new head shifts every later page by one. An anchor that is no
+// longer present means the walk cannot be continued on this snapshot - the
+// record was evicted - so the caller reports 410 rather than silently skipping
+// the gap.
 //
-// An anchor that is no longer present means the walk cannot be continued on this
-// snapshot - the record was evicted - so the caller reports 410 rather than
-// silently skipping the gap.
-func pageAfter[T any](items []T, keyOf func(T) string, after string, limit int, instance, kind, bind string, now time.Time) ([]T, *string, error) {
-	return pageAfterExpecting(items, keyOf, after, "", "", limit, instance, kind, bind, now)
-}
-
-// pageAfterExpecting is pageAfter for a ring-backed list. expectNext is the key
-// the previous page promised would come next; if the anchor survives but that
-// record does not, records were evicted in between and the walk would silently
-// skip them, so it reports 410 like a lost anchor.
+// expectNext is the key the previous page promised would come next; if the
+// anchor survives but that record does not, records were evicted in between and
+// the walk would silently skip them, so it reports 410 like a lost anchor.
+// oldestKey is for a ring-backed list, which evicts from the oldest end.
 func pageAfterExpecting[T any](items []T, keyOf func(T) string, after, expectNext, oldestKey string, limit int, instance, kind, bind string, now time.Time) ([]T, *string, error) {
 	if oldestKey != "" {
 		// A ring-backed list evicts from the oldest end. The immediate

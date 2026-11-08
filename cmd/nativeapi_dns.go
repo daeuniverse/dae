@@ -163,17 +163,23 @@ func (p *nativeAPIProvider) DnsCache(ctx context.Context, filter nativeapi.DnsCa
 	// The bind names the filter set and limit, never the cache revision: every
 	// store bumps the revision, so binding it made page 2 unreachable on a busy
 	// resolver (and reported the mismatch as 400 instead of the contract's 410
-	// snapshot_expired). pageAfter's anchor is what notices eviction.
+	// snapshot_expired).
 	bind := pageCursorBind(name, domain, filter.Types, filter.IncludeExpired, filter.Limit)
-	after := ""
+	after, expectNext := "", ""
 	if filter.Cursor != "" {
-		parsed, err := decodePageCursor(instance, "dns_cache", bind, filter.Cursor, now)
+		parsed, next, _, err := decodePageCursorNext(instance, "dns_cache", bind, filter.Cursor, now)
 		if err != nil {
 			return nativeapi.DnsCacheList{}, err
 		}
-		after = parsed
+		after, expectNext = parsed, next
 	}
-	page, next, err := pageAfter(entries, func(entry nativeapi.DnsCacheEntry) string { return entry.EntryID }, after, filter.Limit, instance, "dns_cache", bind, now)
+	// A cache entry can expire or be evicted between two pages, which would
+	// silently skip every unread entry that disappeared. The walk therefore
+	// checks the successor the previous page promised, exactly like the ring
+	// backed lists; there is no oldest-key guard because the cache is ordered by
+	// name, not by eviction order.
+	page, next, err := pageAfterExpecting(entries, func(entry nativeapi.DnsCacheEntry) string { return entry.EntryID },
+		after, expectNext, "", filter.Limit, instance, "dns_cache", bind, now)
 	if err != nil {
 		return nativeapi.DnsCacheList{}, err
 	}
