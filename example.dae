@@ -386,7 +386,10 @@ routing {
     ### Write your rules below.
 
     # Disable h3 because it usually consumes too much cpu/mem resources.
+    # `block` silently drops QUIC; `reject` additionally injects an ICMP
+    # port-unreachable so the client falls back to TCP faster.
     l4proto(udp) && dport(443) -> block
+    # l4proto(udp) && dport(443) -> reject
     dip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
 

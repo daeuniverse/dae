@@ -209,6 +209,8 @@ func phase0QuicActionForOutbound(outbound consts.OutboundIndex) phase0QuicAction
 		return phase0QuicActionDirect
 	case consts.OutboundBlock:
 		return phase0QuicActionBlock
+	case consts.OutboundReject:
+		return phase0QuicActionBlock
 	default:
 		return phase0QuicActionProxy
 	}
