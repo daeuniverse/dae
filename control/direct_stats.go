@@ -370,7 +370,15 @@ func (c *controlPlaneCore) attachDirectStatsBridgePort(link netlink.Link) {
 	}
 	_ = c.addQdisc(link)
 	layer2 := link.Attrs().EncapType == "ether"
-	_ = c.stageDirectStatsHookForLink(link, layer2, role.wan, role.dual, true, !role.wan && !role.dual)
+	if err := c.stageDirectStatsHookForLink(link, layer2, role.wan, role.dual, true, !role.wan && !role.dual); err != nil {
+		// The master fallback staged by the empty-bridge bind is the only
+		// observer this bridge has while the port hook is missing. Removing it
+		// would leave the bridge uncounted until the next reload, so keep it
+		// and surface the failure instead.
+		c.recordDirectStatsError(fmt.Errorf("observe bridge port %v: %w", link.Attrs().Name, err))
+		c.log.WithError(err).Warnf("direct stats observer: cannot install hook on bridge port %v; keeping the master fallback", link.Attrs().Name)
+		return
+	}
 	// The empty-bridge bind installed master ingress/egress as a fallback.
 	// Once the first member is observed, the port is the only place a routed
 	// packet or a DNAT reply crosses; keeping the master hooks would count the

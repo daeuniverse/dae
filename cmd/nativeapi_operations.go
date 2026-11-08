@@ -24,6 +24,13 @@ type nativeAPIOperations struct {
 	events     *nativeAPIProvider
 	probes     *probeGate
 
+	// probeTargetsMu guards probeTargetSlots, the process-wide per-node permit
+	// that makes capabilities.probes.limits.max_concurrent_per_target true
+	// across jobs. A single job already runs up to four rows at once, so
+	// without this four concurrent jobs put sixteen probes on one node.
+	probeTargetsMu   sync.Mutex
+	probeTargetSlots map[string]chan struct{}
+
 	// resultMu guards resultResolvers, which lets a write path say what its
 	// completed operation must report. The contract asks a node_create for the
 	// Node, a node_delete for the deletion count and a provider_refresh for the

@@ -366,8 +366,11 @@ stream does not prove whether the physical tunnel is cold or warm. Work that
 never started (job deadline) is `state: "unknown"` with an error message and is
 not evidence of an unhealthy node. `ip_version` applies to the check
 destination too: a configured host is resolved through the requested family, and
-a literal address of the other family is rejected. Each kind measures what its
-name says:
+a literal address of the other family is rejected. The `http` and `dns` probes
+read `tcp_check_url` / `udp_check_dns` the same way the health checks do: the
+first entry is the destination and the literals after it are address overrides,
+so the probe dials the override that matches `ip_version` instead of letting a
+resolver pick the address. Each kind measures what its name says:
 
 - `tcp_connect` opens a TCP connection to the node's own server address, using
   the direct dialer rather than the node, so it reports whether that server
@@ -378,7 +381,7 @@ name says:
 
 Probes run as userspace dials through the node's own dialer, so they measure the
 same path the proxy takes rather than the host's direct route. Work is bounded: 4 probes
-run at once, 16 wait in the queue (`503 temporarily_unavailable` with
+run at once, at most 4 run against one node at a time across all jobs, 16 wait in the queue (`503 temporarily_unavailable` with
 `Retry-After` when both are full), callers are limited to 120 requests per
 minute (`429 rate_limited`), a job expands at most 256 members into 512 results,
 and a job stops after 30 seconds, so one oversized group cannot hold the queue

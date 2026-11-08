@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -96,6 +97,32 @@ func (g *probeGate) reserve(now time.Time) error {
 	g.windowCount++
 	g.inFlight++
 	return nil
+}
+
+// acquireProbeTarget waits for one of the per-node slots that
+// capabilities.probes.limits.max_concurrent_per_target advertises and returns
+// its release. The permit is held for exactly one probe row, so the limit is
+// per node and independent of which job (or how many jobs) is probing it. The
+// map is keyed by node id and only ever holds ids a probe resolved through
+// probeMembers, so it stays proportional to the probed node set.
+func (o *nativeAPIOperations) acquireProbeTarget(ctx context.Context, nodeID string) (func(), error) {
+	o.probeTargetsMu.Lock()
+	if o.probeTargetSlots == nil {
+		o.probeTargetSlots = make(map[string]chan struct{})
+	}
+	slots := o.probeTargetSlots[nodeID]
+	if slots == nil {
+		slots = make(chan struct{}, probeMaxActiveJobs)
+		o.probeTargetSlots[nodeID] = slots
+	}
+	o.probeTargetsMu.Unlock()
+
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return func() { <-slots }, nil
 }
 
 // run waits for a concurrency slot, runs fn, then frees the queue slot.
@@ -234,6 +261,12 @@ func (o *nativeAPIOperations) executeProbe(request nativeapi.ProbeRequest) (nati
 				result.Results[row.index] = probeUnavailableResult(row.member, request, row.transport, row.ipVersion, "probe job deadline exceeded")
 				return
 			}
+			releaseTarget, err := o.acquireProbeTarget(ctx, row.member.id)
+			if err != nil {
+				result.Results[row.index] = probeUnavailableResult(row.member, request, row.transport, row.ipVersion, "probe job deadline exceeded")
+				return
+			}
+			defer releaseTarget()
 			result.Results[row.index] = runProbeMember(ctx, row.member, request, row.transport, row.ipVersion, soMark, plane.DirectDialer(), targets)
 		}(row)
 	}
@@ -448,18 +481,15 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 		// instead, so a working node answered unavailable whenever the exit
 		// could not reach that address.
 		address, addressErr := probeNodeAddressForFamily(ctx, member.dialer, item.IPVersion)
-		if addressErr != nil {
-			item.State = "unavailable"
-			reason := addressErr.Error()
-			item.Error = &reason
-			return item
-		}
-		if address == "" {
+		switch {
+		case addressErr != nil:
+			err = addressErr
+		case address == "":
 			// A node without a server address (the builtin direct outbound) has
 			// no server to connect to, so fall back to a dial through the node.
 			address = probeDialAddress("tcp", item.IPVersion)
 			elapsed, err = dialAndClose(ctx, conns, member.dialer, soMark, "tcp", address)
-		} else {
+		default:
 			elapsed, err = dialAndClose(ctx, conns, direct, soMark, "tcp", address)
 		}
 	case "http":
@@ -473,6 +503,12 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 		return item
 	}
 	if err != nil {
+		// A row the 30 s job deadline cancels never produced evidence about the
+		// node. The contract reports such work as `unknown`; only a probe that
+		// ran to completion with a failure is `unavailable`.
+		if parent.Err() != nil {
+			return probeUnavailableResult(member, request, transport, ipVersion, "probe job deadline exceeded")
+		}
 		item.State = "unavailable"
 		reason := sanitizeLogMessage(err.Error())
 		item.Error = &reason
@@ -486,11 +522,14 @@ func runProbeMember(parent context.Context, member probeMember, request nativeap
 
 // probeCheckTargets are the administrator-configured destinations for the
 // HTTP and DNS probes. A probe must exercise the same check URL / DNS target
-// the engine uses for health, not a hard-coded public endpoint.
+// the engine uses for health, not a hard-coded public endpoint. The lists keep
+// their full form - first entry is the URL / resolver, the rest are the literal
+// address overrides the health check dials - because dropping the overrides sent
+// the probe's host through the system resolver instead of the configured IP.
 type probeCheckTargets struct {
-	httpURL    string
+	http       []string
 	httpMethod string
-	dnsAddress string
+	dns        []string
 }
 
 func probeTargetsFor(active *runtimeGeneration, plane *control.ControlPlane, request nativeapi.ProbeRequest) probeCheckTargets {
@@ -498,12 +537,8 @@ func probeTargetsFor(active *runtimeGeneration, plane *control.ControlPlane, req
 	targets := probeCheckTargets{}
 	if group != nil {
 		targets.httpMethod = group.TcpCheckHttpMethod
-		if len(group.TcpCheckUrl) > 0 {
-			targets.httpURL = group.TcpCheckUrl[0]
-		}
-		if len(group.UdpCheckDns) > 0 {
-			targets.dnsAddress = probeDNSHostPort(group.UdpCheckDns[0])
-		}
+		targets.http = append([]string(nil), group.TcpCheckUrl...)
+		targets.dns = append([]string(nil), group.UdpCheckDns...)
 	}
 	// A group only carries the values it overrides. The administrator normally
 	// sets tcp_check_url / udp_check_dns / tcp_check_http_method in `global`,
@@ -512,14 +547,14 @@ func probeTargetsFor(active *runtimeGeneration, plane *control.ControlPlane, req
 	// configuration (including the HEAD method) whenever the group had no
 	// override of its own.
 	if active != nil && active.conf != nil {
-		if targets.httpURL == "" && len(active.conf.Global.TcpCheckUrl) > 0 {
-			targets.httpURL = active.conf.Global.TcpCheckUrl[0]
+		if len(targets.http) == 0 && len(active.conf.Global.TcpCheckUrl) > 0 {
+			targets.http = append([]string(nil), active.conf.Global.TcpCheckUrl...)
 		}
 		if targets.httpMethod == "" {
 			targets.httpMethod = active.conf.Global.TcpCheckHttpMethod
 		}
-		if targets.dnsAddress == "" && len(active.conf.Global.UdpCheckDns) > 0 {
-			targets.dnsAddress = probeDNSHostPort(active.conf.Global.UdpCheckDns[0])
+		if len(targets.dns) == 0 && len(active.conf.Global.UdpCheckDns) > 0 {
+			targets.dns = append([]string(nil), active.conf.Global.UdpCheckDns...)
 		}
 	}
 	return targets
@@ -569,6 +604,28 @@ func probeDNSHostPort(raw string) string {
 		return net.JoinHostPort(raw, "53")
 	}
 	return raw
+}
+
+// probeCheckIPOverride returns the literal address the health check would dial
+// for the requested family, or "" when the check list declares no override for
+// it. tcp_check_url and udp_check_dns keep the destination first and the
+// overrides after it (see parseTcpCheckOption / parseCheckDNSOption); the
+// probes have to honour the same entries or a configured IP is replaced by a
+// system-resolver lookup.
+func probeCheckIPOverride(raw []string, ipVersion string) string {
+	for _, value := range raw[1:] {
+		addr, err := netip.ParseAddr(strings.TrimSpace(value))
+		if err != nil {
+			continue
+		}
+		// Match parseIp46FromList: a 4-in-6 literal is an IPv4 override.
+		is4 := addr.Is4() || addr.Is4In6()
+		if is4 == (ipVersion == "ipv6") {
+			continue
+		}
+		return addr.String()
+	}
+	return ""
 }
 
 // probeNodeAddressForFamily is probeNodeAddress with the requested address
@@ -722,7 +779,10 @@ func dialAndClose(ctx context.Context, conns *probeConnRegistry, d netproxy.Dial
 // probeHTTP sends a real request through the node and requires a real response.
 // A bare TCP dial never proved the node forwards traffic.
 func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, soMark uint32, ipVersion string, targets probeCheckTargets) (time.Duration, error) {
-	target := targets.httpURL
+	target := ""
+	if len(targets.http) > 0 {
+		target = strings.TrimSpace(targets.http[0])
+	}
 	if target == "" {
 		host := "1.1.1.1"
 		if ipVersion == "ipv6" {
@@ -736,7 +796,17 @@ func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, 
 	if method == "" {
 		method = http.MethodGet
 	}
+	// The request keeps the configured host - Host and TLS SNI must stay the
+	// administrator's name - while the dial uses the health check's literal
+	// override when one is configured for the family.
+	checkHost := ""
 	dialContext := func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, splitErr := net.SplitHostPort(address)
+		if splitErr == nil && strings.EqualFold(host, checkHost) {
+			if ip := probeCheckIPOverride(targets.http, ipVersion); ip != "" {
+				address = net.JoinHostPort(ip, port)
+			}
+		}
 		address, err := probeAddressForFamily(ctx, address, ipVersion)
 		if err != nil {
 			return nil, err
@@ -757,6 +827,7 @@ func probeHTTP(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, 
 	if err != nil {
 		return 0, err
 	}
+	checkHost = req.URL.Hostname()
 	req.Header.Set("User-Agent", "dae-probe/1.0")
 	started := time.Now()
 	resp, err := client.Do(req)
@@ -778,7 +849,20 @@ func probeDNS(ctx context.Context, conns *probeConnRegistry, d *dialer.Dialer, s
 	if transport == "tcp" {
 		network = "tcp"
 	}
-	address := targets.dnsAddress
+	// udp_check_dns lists the resolver first and literal overrides after it.
+	// The override is what the health check dials, so send the query there
+	// instead of resolving the configured host through the system resolver.
+	address := ""
+	if len(targets.dns) > 0 {
+		address = probeDNSHostPort(targets.dns[0])
+	}
+	if ip := probeCheckIPOverride(targets.dns, ipVersion); ip != "" {
+		port := "53"
+		if _, configuredPort, splitErr := net.SplitHostPort(address); splitErr == nil {
+			port = configuredPort
+		}
+		address = net.JoinHostPort(ip, port)
+	}
 	if address == "" {
 		address = probeDNSAddress(ipVersion)
 	}

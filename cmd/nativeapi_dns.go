@@ -243,15 +243,16 @@ func (p *nativeAPIProvider) FlushDnsCache(ctx context.Context) (nativeapi.Delete
 	return nativeapi.DeleteMatchingCount{Matched: uint64(matched), Deleted: uint64(deleted)}, nil
 }
 
-// dnsLogNameMatches applies the contract's substring name filter. A canonical
-// name and filter both end in a dot, so name=example still matches
-// www.example.com, myexample.net and example.com; matching only the exact name
-// or a dot-suffix lost records the caller asked for.
+// dnsLogNameMatches applies the contract's substring name filter. The filter is
+// matched literally against the canonical question name, lower-cased because DNS
+// names are case-insensitive: canonicalising the filter too appended a dot, so
+// name=exam became exam. and never matched example.com. Substring means
+// substring, not a suffix match.
 func dnsLogNameMatches(questionName, name string) bool {
 	if name == "" {
 		return true
 	}
-	return strings.Contains(dnsmessage.CanonicalName(questionName), name)
+	return strings.Contains(dnsmessage.CanonicalName(questionName), strings.ToLower(name))
 }
 
 // DnsLog serves the bounded DNS query log.
@@ -269,10 +270,10 @@ func (p *nativeAPIProvider) DnsLog(ctx context.Context, filter nativeapi.DnsLogF
 	if err != nil {
 		return nativeapi.DnsLogList{}, err
 	}
-	name := ""
-	if filter.Name != "" {
-		name = dnsmessage.CanonicalName(filter.Name)
-	}
+	// The name filter is a substring of the canonical question name, so pass
+	// it through untouched: canonicalising it appended a trailing dot and
+	// turned name=exam into a filter that could never match example.com.
+	name := filter.Name
 	matched := make([]nativeapi.DnsLogRecord, 0, len(records))
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]

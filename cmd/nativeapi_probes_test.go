@@ -28,6 +28,32 @@ func apiErrorOf(t *testing.T, err error) *nativeapi.APIError {
 	return apiErr
 }
 
+// TestAcquireProbeTargetBoundsConcurrencyPerNode pins the advertised
+// max_concurrent_per_target: a single job already runs several rows at once, so
+// the limit must be enforced process-wide per node rather than per job.
+func TestAcquireProbeTargetBoundsConcurrencyPerNode(t *testing.T) {
+	o := &nativeAPIOperations{}
+	ctx := context.Background()
+	for i := 0; i < probeMaxActiveJobs; i++ {
+		release, err := o.acquireProbeTarget(ctx, "n_shared")
+		if err != nil {
+			t.Fatalf("acquire %d: %v", i, err)
+		}
+		defer release()
+	}
+	blocked, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := o.acquireProbeTarget(blocked, "n_shared"); err == nil {
+		t.Fatal("a node must not exceed max_concurrent_per_target")
+	}
+	// A different node has its own slots.
+	release, err := o.acquireProbeTarget(ctx, "n_other")
+	if err != nil {
+		t.Fatalf("acquire on another node: %v", err)
+	}
+	release()
+}
+
 func TestProbeGateBoundsQueue(t *testing.T) {
 	gate := newProbeGate()
 	now := time.Now()
@@ -235,6 +261,22 @@ func TestProbeDeadlineRowIsUnknownNotUnavailable(t *testing.T) {
 	}
 }
 
+func TestProbeRowCancelledByJobDeadlineIsUnknown(t *testing.T) {
+	// A row that started but was cut by the 30 s job deadline never produced
+	// evidence about the node; the contract says unknown, not unavailable.
+	option := &dialer.GlobalOption{Log: logrus.New(), CheckInterval: 15 * time.Second}
+	d := newNamedDialer(option, &dialer.Property{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	item := runProbeMember(ctx, probeMember{id: "n", dialer: d}, nativeapi.ProbeRequest{Kind: "http"}, "tcp", "ipv4", 0, nil, probeCheckTargets{})
+	if item.State != "unknown" {
+		t.Fatalf("state = %q, want unknown for a row cut by the job deadline", item.State)
+	}
+	if item.Error == nil {
+		t.Fatal("a deadline row must carry an error message")
+	}
+}
+
 func TestProbeDoesNotClaimColdWhenTunnelWarmthIsUnknown(t *testing.T) {
 	item := runProbeMember(context.Background(), probeMember{id: "n", dialer: nil}, nativeapi.ProbeRequest{Kind: "http"}, "tcp", "ipv4", 0, nil, probeCheckTargets{})
 	if item.Warmth != "unknown" {
@@ -264,13 +306,29 @@ func TestProbeTargetsFallBackToGlobalChecks(t *testing.T) {
 	targets := probeTargetsFor(active, nil, nativeapi.ProbeRequest{
 		Target: nativeapi.ProbeTarget{Type: "node", NodeID: "n_missing"},
 	})
-	if targets.httpURL != "http://check.example/generate_204" {
-		t.Fatalf("http url = %q", targets.httpURL)
+	if len(targets.http) == 0 || targets.http[0] != "http://check.example/generate_204" {
+		t.Fatalf("http targets = %#v", targets.http)
 	}
 	if targets.httpMethod != "HEAD" {
 		t.Fatalf("http method = %q, want HEAD from global config", targets.httpMethod)
 	}
-	if targets.dnsAddress != "one.one.one.one:53" {
-		t.Fatalf("dns address = %q", targets.dnsAddress)
+	if len(targets.dns) == 0 || targets.dns[0] != "one.one.one.one:53" {
+		t.Fatalf("dns targets = %#v", targets.dns)
+	}
+}
+
+func TestProbeCheckIPOverrideFollowsTheConfiguredFamily(t *testing.T) {
+	// tcp_check_url / udp_check_dns keep the destination first and the literal
+	// overrides after it; the health check dials those instead of resolving the
+	// host, and a probe that ignored them went through the system resolver.
+	raw := []string{"http://check.example/generate_204", "198.51.100.7", "2001:db8::7"}
+	if got := probeCheckIPOverride(raw, "ipv4"); got != "198.51.100.7" {
+		t.Fatalf("ipv4 override = %q", got)
+	}
+	if got := probeCheckIPOverride(raw, "ipv6"); got != "2001:db8::7" {
+		t.Fatalf("ipv6 override = %q", got)
+	}
+	if got := probeCheckIPOverride(raw[:1], "ipv4"); got != "" {
+		t.Fatalf("override without a literal = %q, want none", got)
 	}
 }

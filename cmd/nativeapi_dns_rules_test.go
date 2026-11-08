@@ -10,7 +10,6 @@ import (
 
 	"github.com/daeuniverse/dae/component/nativeapi"
 	"github.com/daeuniverse/dae/control"
-	dnsmessage "github.com/miekg/dns"
 )
 
 func TestNativeDnsActionNamesTheUpstream(t *testing.T) {
@@ -104,11 +103,15 @@ func TestDnsLogNameFilterMatchesSubstrings(t *testing.T) {
 		{"www.example.com.", "example.", true},
 		{"myexample.net.", "example.", true},
 		{"example.com.", "example.", true},
+		// The contract says substring, not canonical suffix: an unqualified
+		// fragment must still match, and DNS names stay case-insensitive.
+		{"example.com.", "exam", true},
+		{"example.com.", "EXAMPLE", true},
 		{"unrelated.test.", "example.", false},
 		{"anything.test.", "", true},
 	}
 	for _, tc := range cases {
-		if got := dnsLogNameMatches(tc.question, dnsmessage.CanonicalName(tc.filter)); got != tc.want {
+		if got := dnsLogNameMatches(tc.question, tc.filter); got != tc.want {
 			t.Errorf("dnsLogNameMatches(%q, %q) = %v, want %v", tc.question, tc.filter, got, tc.want)
 		}
 	}
