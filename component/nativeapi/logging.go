@@ -64,29 +64,87 @@ func recordErrorCode(w http.ResponseWriter, code string) {
 	}
 }
 
-// routeTemplate maps a request path onto the route it belongs to, so probing
-// random paths cannot grow unbounded log cardinality.
+// fixedRouteTemplates are the exact paths the server routes. A log entry names
+// the route so per-route alerting works, and naming it from a fixed table is
+// what keeps probing random paths from growing log cardinality.
+var fixedRouteTemplates = map[string]string{
+	"/api":                            "/api",
+	"/api/v1/version":                 "/api/v1/version",
+	"/api/v1/capabilities":            "/api/v1/capabilities",
+	"/api/v1/runtime":                 "/api/v1/runtime",
+	"/api/v1/runtime/traffic/history": "/api/v1/runtime/traffic/history",
+	"/api/v1/runtime/outbounds":       "/api/v1/runtime/outbounds",
+	"/api/v1/runtime/memory":          "/api/v1/runtime/memory",
+	"/api/v1/runtime/memory/history":  "/api/v1/runtime/memory/history",
+	"/api/v1/runtime/direct-stats":    "/api/v1/runtime/direct-stats",
+	"/api/v1/datapath":                "/api/v1/datapath",
+	"/api/v1/rules":                   "/api/v1/rules",
+	"/api/v1/routing/trace":           "/api/v1/routing/trace",
+	"/api/v1/providers":               "/api/v1/providers",
+	"/api/v1/geodata":                 "/api/v1/geodata",
+	"/api/v1/dns/cache":               "/api/v1/dns/cache",
+	"/api/v1/dns/cache/flush":         "/api/v1/dns/cache/flush",
+	"/api/v1/dns/log":                 "/api/v1/dns/log",
+	"/api/v1/dns/rules":               "/api/v1/dns/rules",
+	"/api/v1/dns/query":               "/api/v1/dns/query",
+	"/api/v1/connections":             "/api/v1/connections",
+	"/api/v1/flows":                   "/api/v1/flows",
+	"/api/v1/logs":                    "/api/v1/logs",
+	"/api/v1/events":                  "/api/v1/events",
+	"/api/v1/probes":                  "/api/v1/probes",
+	"/api/v1/groups":                  "/api/v1/groups",
+	"/api/v1/nodes":                   "/api/v1/nodes",
+	"/api/v1/operations/reload":       "/api/v1/operations/reload",
+	"/api/v1/operations/suspend":      "/api/v1/operations/suspend",
+	"/api/v1/operations/resume":       "/api/v1/operations/resume",
+	"/api/v1/config":                  "/api/v1/config",
+	"/api/v1/config/validate":         "/api/v1/config/validate",
+	"/api/v1/config/sources":          "/api/v1/config/sources",
+	"/":                               "/",
+	"/ui":                             "/ui",
+	UIBasePath:                        UIBasePath,
+}
+
+// dynamicRouteTemplates maps a routed collection path onto a bounded template.
+// subs lists the fixed subresource names that are worth keeping distinct; any
+// other suffix collapses into the collection template, so a client cannot grow
+// log cardinality with arbitrary path segments.
+var dynamicRouteTemplates = []struct {
+	prefix   string
+	template string
+	subs     []string
+}{
+	{"/api/v1/groups/", "/api/v1/groups/{group_id}", []string{"config", "selection"}},
+	{"/api/v1/nodes/", "/api/v1/nodes/{node_id}", nil},
+	{"/api/v1/operations/", "/api/v1/operations/{operation_id}", nil},
+	{"/api/v1/providers/", "/api/v1/providers/{provider_id}", nil},
+	{"/api/v1/dns/cache/", "/api/v1/dns/cache/{entry_id}", nil},
+	{"/api/v1/connections/", "/api/v1/connections/{connection_id}", nil},
+	{"/api/v1/flows/", "/api/v1/flows/{flow_id}", nil},
+	{"/api/v1/config/sources/", "/api/v1/config/sources/{source_id}", nil},
+}
+
+// routeTemplate maps a request path onto the route it belongs to.
 func routeTemplate(path string) string {
-	switch path {
-	case "/api", "/api/v1/version", "/api/v1/capabilities", "/api/v1/runtime",
-		"/api/v1/runtime/traffic/history",
-		"/api/v1/groups",
-		"/api/v1/nodes",
-		"/api/v1/operations/reload", "/api/v1/operations/suspend", "/api/v1/operations/resume":
-		return path
-	case "/", "/ui", UIBasePath:
-		return path
+	if template, ok := fixedRouteTemplates[path]; ok {
+		return template
 	}
 	if strings.HasPrefix(path, UIBasePath) {
 		return "/ui/*"
 	}
-	switch {
-	case strings.HasPrefix(path, "/api/v1/groups/"):
-		return "/api/v1/groups/{group_id}"
-	case strings.HasPrefix(path, "/api/v1/nodes/"):
-		return "/api/v1/nodes/{node_id}"
-	case strings.HasPrefix(path, "/api/v1/operations/"):
-		return "/api/v1/operations/{operation_id}"
+	for _, route := range dynamicRouteTemplates {
+		if !strings.HasPrefix(path, route.prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(path, route.prefix)
+		if id, sub, found := strings.Cut(rest, "/"); found && id != "" {
+			for _, candidate := range route.subs {
+				if sub == candidate {
+					return route.template + "/" + candidate
+				}
+			}
+		}
+		return route.template
 	}
 	for _, prefix := range unavailablePrefixes {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {

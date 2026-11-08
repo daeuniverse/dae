@@ -856,3 +856,36 @@ func TestStreamEndpointsRejectHead(t *testing.T) {
 		}
 	}
 }
+
+// TestRouteTemplateNamesEveryServedRoute pins the access-log route labels: a
+// route that logs as <unmatched> cannot be alerted on, and arbitrary client
+// paths must still collapse so the label set stays bounded.
+func TestRouteTemplateNamesEveryServedRoute(t *testing.T) {
+	cases := map[string]string{
+		"/api/v1/connections":                "/api/v1/connections",
+		"/api/v1/connections/conn-1":         "/api/v1/connections/{connection_id}",
+		"/api/v1/flows":                      "/api/v1/flows",
+		"/api/v1/rules":                      "/api/v1/rules",
+		"/api/v1/dns/cache":                  "/api/v1/dns/cache",
+		"/api/v1/dns/cache/de_abc":           "/api/v1/dns/cache/{entry_id}",
+		"/api/v1/dns/cache/flush":            "/api/v1/dns/cache/flush",
+		"/api/v1/logs":                       "/api/v1/logs",
+		"/api/v1/events":                     "/api/v1/events",
+		"/api/v1/config":                     "/api/v1/config",
+		"/api/v1/config/sources/src_a":       "/api/v1/config/sources/{source_id}",
+		"/api/v1/runtime/outbounds":          "/api/v1/runtime/outbounds",
+		"/api/v1/providers/sub_a":            "/api/v1/providers/{provider_id}",
+		"/api/v1/groups/team-hk":             "/api/v1/groups/{group_id}",
+		"/api/v1/groups/team-hk/config":      "/api/v1/groups/{group_id}/config",
+		"/api/v1/groups/team-hk/selection":   "/api/v1/groups/{group_id}/selection",
+		"/api/v1/groups/team-hk/unknown":     "/api/v1/groups/{group_id}",
+		"/api/v1/operations/op-1/extra/deep": "/api/v1/operations/{operation_id}",
+		"/api/v1/nodes/a/b/c":                "/api/v1/nodes/{node_id}",
+		"/random/probe/path":                 "<unmatched>",
+	}
+	for path, want := range cases {
+		if got := routeTemplate(path); got != want {
+			t.Fatalf("routeTemplate(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
