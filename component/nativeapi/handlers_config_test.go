@@ -296,3 +296,25 @@ func TestCapabilitiesAdvertiseConfigLayout(t *testing.T) {
 		t.Fatalf("config_validate = %v", validate)
 	}
 }
+
+// TestReplaceConfigSourcePreconditionPrecedesMediaType pins the contract's
+// request-boundary order: 428 is decided before 415, so a client that forgot the
+// precondition is told about that rather than about its content type.
+func TestReplaceConfigSourcePreconditionPrecedesMediaType(t *testing.T) {
+	provider := &fakeConfigProvider{caps: writableCaps()}
+	server := newConfigServer(t, provider)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/config/sources/src_abc", strings.NewReader("not json"))
+	req.Host = "127.0.0.1:9527"
+	req.RemoteAddr = "127.0.0.1:50000"
+	req.Header.Set("Content-Type", "text/plain")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusPreconditionRequired {
+		t.Fatalf("status = %d body=%s, want 428 before the media type check", recorder.Code, recorder.Body.String())
+	}
+	if len(provider.replaceReqs) != 0 {
+		t.Fatal("a request without If-Match must not reach the provider")
+	}
+}

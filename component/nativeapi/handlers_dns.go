@@ -106,7 +106,9 @@ func (s *Server) handleDnsCacheFlush(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, requestID, "POST")
 		return
 	}
-	if !isJSONContentType(r.Header.Get("Content-Type")) && r.ContentLength > 0 {
+	// ContentLength is -1 for a chunked body, which a `> 0` test treated as "no
+	// body present" and so let a non-JSON body through.
+	if !isJSONContentType(r.Header.Get("Content-Type")) && r.ContentLength != 0 {
 		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
@@ -129,7 +131,8 @@ func (s *Server) handleDnsLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	limit, ok := parseBoundedPositiveInt(query.Get("limit"), 100)
+	// dns/log defaults to 200, unlike the other lists' 100.
+	limit, ok := parseBoundedPositiveInt(query.Get("limit"), 200)
 	if !ok || limit > DnsLogMaxPageSize {
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest,
 			"limit must be an integer in 1.."+strconv.Itoa(DnsLogMaxPageSize))

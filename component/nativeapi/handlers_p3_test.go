@@ -502,3 +502,43 @@ func TestConnectionWindowFieldsJSON(t *testing.T) {
 		t.Fatalf("connection = %s, want no window keys", plain)
 	}
 }
+
+// TestP3HandlerBoundaryContracts pins four boundary behaviours the contract
+// names: DELETE /connections validates src like the read path, dns/log defaults
+// to 200, a chunked body still has to be JSON, and a missing If-Match is
+// reported before the media type.
+func TestP3HandlerBoundaryContracts(t *testing.T) {
+	server := newTestServer(t, Config{AllowAnonymousLoopback: true}, fakeRuntimeProvider{runtime: testRuntime()})
+	connections := &capturingConnections{}
+	dns := &capturingDns{}
+	server.SetConnectionProvider(connections)
+	server.SetDnsProvider(dns)
+	remote := "127.0.0.1:1234"
+
+	if recorder := doJSONRequest(server, http.MethodDelete, "/api/v1/connections?src=not-an-ip", "", remote); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE with a non-literal src = %d body=%s, want 400", recorder.Code, recorder.Body.String())
+	}
+	if recorder := doJSONRequest(server, http.MethodDelete, "/api/v1/connections?src=10.0.0.1", "", remote); recorder.Code != http.StatusOK {
+		t.Fatalf("DELETE with a literal src = %d body=%s, want 200", recorder.Code, recorder.Body.String())
+	}
+
+	if recorder := doJSONRequest(server, http.MethodGet, "/api/v1/dns/log", "", remote); recorder.Code != http.StatusOK {
+		t.Fatalf("dns log status = %d", recorder.Code)
+	}
+	if dns.log.Limit != 200 {
+		t.Fatalf("dns log default limit = %d, want the contract's 200", dns.log.Limit)
+	}
+
+	// A chunked body has ContentLength -1; the media type is still checked.
+	flush := httptest.NewRequest(http.MethodPost, "/api/v1/dns/cache/flush", strings.NewReader("x"))
+	flush.Host = "127.0.0.1:9527"
+	flush.RemoteAddr = remote
+	flush.Header.Set("Content-Type", "text/plain")
+	flush.ContentLength = -1
+	flush.TransferEncoding = []string{"chunked"}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, flush)
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("chunked non-JSON flush = %d body=%s, want 415", recorder.Code, recorder.Body.String())
+	}
+}

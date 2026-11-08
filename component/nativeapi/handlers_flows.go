@@ -72,6 +72,12 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 				"type must be tcp or udp; pass all=true to close every connection")
 			return
 		}
+		// The read path rejects a non-literal src; without the same check here a
+		// typo matches nothing and the call reports a successful close of 0.
+		if filter.Src != "" && net.ParseIP(filter.Src) == nil {
+			writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, "src must be an IP literal")
+			return
+		}
 		if !all && filter.Type == "" && filter.Src == "" {
 			writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest,
 				"Supply type=tcp, type=udp, or src, or explicitly pass all=true.")

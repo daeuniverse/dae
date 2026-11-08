@@ -99,13 +99,15 @@ func (s *Server) handleReplaceConfigSource(w http.ResponseWriter, r *http.Reques
 		writeError(w, requestID, http.StatusForbidden, codePermissionDenied, "configuration writes are disabled")
 		return
 	}
-	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json")
-		return
-	}
+	// The request-boundary order is 428 before 415: a missing precondition is
+	// reported whatever the body looks like.
 	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
 	if ifMatch == "" {
 		writeError(w, requestID, http.StatusPreconditionRequired, codePreconditionRequired, "If-Match is required")
+		return
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
 	var body struct {

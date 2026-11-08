@@ -112,6 +112,12 @@ func (s *Server) handlePatchGroupConfig(w http.ResponseWriter, r *http.Request, 
 		writeError(w, requestID, http.StatusNotFound, codeCapabilityNotSupported, "group configuration patch is not supported by this engine")
 		return
 	}
+	// The request-boundary order is 428 before 415/400/413: a missing
+	// precondition is reported whatever the body looks like.
+	if strings.TrimSpace(r.Header.Get("If-Match")) == "" {
+		writeError(w, requestID, http.StatusPreconditionRequired, "precondition_required", "If-Match is required")
+		return
+	}
 	if !isJSONPatchContentType(r.Header.Get("Content-Type")) {
 		writeError(w, requestID, http.StatusUnsupportedMediaType, codeUnsupportedMediaType, "Content-Type must be application/json-patch+json")
 		return
@@ -127,10 +133,6 @@ func (s *Server) handlePatchGroupConfig(w http.ResponseWriter, r *http.Request, 
 	}
 	if len(operations) == 0 || len(operations) > MaxGroupPatchOperations {
 		writeError(w, requestID, http.StatusBadRequest, codeInvalidRequest, fmt.Sprintf("patch must contain between 1 and %d operations", MaxGroupPatchOperations))
-		return
-	}
-	if strings.TrimSpace(r.Header.Get("If-Match")) == "" {
-		writeError(w, requestID, http.StatusPreconditionRequired, "precondition_required", "If-Match is required")
 		return
 	}
 	document, revision, accepted, err := s.groups.PatchGroupConfig(r.Context(), groupID, GroupConfigPatchRequest{
