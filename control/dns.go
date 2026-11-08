@@ -1309,9 +1309,10 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	}
 
 	// Track if connection is bad to avoid returning it to pool
+	var aborted atomic.Bool
 	badConn := false
 	defer func() {
-		if !badConn {
+		if !badConn && !aborted.Load() {
 			udpPool.put(conn)
 		}
 		// If badConn is true, conn.Close() was already called
@@ -1324,6 +1325,30 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	// SetDeadline may fail on connection types that don't support deadlines;
 	// context cancellation still provides timeout control.
 	_ = conn.SetDeadline(deadline)
+
+	// ReadUDPConnFrom does not return on context cancellation: only a socket
+	// deadline or close unblocks it. A caller that cancels (or whose earlier
+	// deadline is not representable as a socket deadline) would otherwise keep
+	// this pool slot until DefaultDialTimeout, so close the borrowed conn when
+	// the context ends. context.AfterFunc starts a goroutine only if the
+	// context actually ends, so the ordinary query path - one conn, one
+	// deadline - does not pay a watcher goroutine and two channels per query.
+	// The deferred stop joins any started callback before the deferred put
+	// returns the conn, so a closed socket can never re-enter the pool.
+	var cancelDone chan struct{}
+	if ctx.Done() != nil {
+		cancelDone = make(chan struct{})
+		stopWatch := context.AfterFunc(ctx, func() {
+			aborted.Store(true)
+			udpPool.discard(conn)
+			close(cancelDone)
+		})
+		defer func() {
+			if !stopWatch() {
+				<-cancelDone
+			}
+		}()
+	}
 
 	// Extract original DNS ID for validation
 	var originalID uint16

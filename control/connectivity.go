@@ -8,6 +8,7 @@ package control
 import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/sirupsen/logrus"
 )
@@ -140,21 +141,66 @@ func (c *ControlPlane) resumeOutboundConnectivityUpdates(publish func(uint8, boo
 			if group == nil {
 				continue
 			}
-			// Match ordinary callback publication. Random policies and non-IP
-			// modes keep kernel admission open for userspace selection/fallback.
-			policy := group.GetSelectionPolicy()
-			publishHealth := c.dialMode == consts.DialMode_Ip &&
-				policy != consts.DialerSelectionPolicy_Random && policy != consts.DialerSelectionPolicy_Fixed
-			for _, healthKey := range dialer.StandardHealthKeys() {
-				networkType := healthKey.NetworkType()
-				alive := true
-				if publishHealth {
-					if set := group.MustGetAliveDialerSet(networkType); set != nil {
-						alive = set.Len() > 0
-					}
-				}
-				publish(uint8(outboundID), alive, networkType)
+			c.publishOutboundConnectivity(outboundID, group, publish)
+		}
+	})
+}
+
+// publishOutboundConnectivity writes one outbound's kernel admission flags.
+//
+// Random, Fixed and Select policies keep admission open for userspace
+// selection. For the automatic `min*` policies health decides admission, but a
+// runtime pin overrides that decision: the user chose a member, userspace will
+// dial it, and the kernel must not drop the flow because probe health says the
+// group is empty.
+func (c *ControlPlane) publishOutboundConnectivity(outboundID int, group *outbound.DialerGroup, publish func(uint8, bool, *dialer.NetworkType)) {
+	policy := group.GetSelectionPolicy()
+	publishHealth := c.dialMode == consts.DialMode_Ip &&
+		policy != consts.DialerSelectionPolicy_Random &&
+		!policy.IgnoresDialerHealth()
+	for _, healthKey := range dialer.StandardHealthKeys() {
+		networkType := healthKey.NetworkType()
+		alive := true
+		if publishHealth {
+			if set := group.MustGetAliveDialerSet(networkType); set != nil {
+				alive = set.Len() > 0
 			}
+			if !alive && group.PinsSelection(selectionNetworkForL4(networkType.L4Proto)) {
+				alive = true
+			}
+		}
+		publish(uint8(outboundID), alive, networkType)
+	}
+}
+
+// selectionNetworkForL4 maps a transport to the pin slot the user switches.
+func selectionNetworkForL4(proto consts.L4ProtoStr) outbound.SelectionNetwork {
+	if proto == consts.L4ProtoStr_UDP {
+		return outbound.SelectionNetworkUDP
+	}
+	return outbound.SelectionNetworkTCP
+}
+
+// RepublishOutboundConnectivity re-writes one outbound's kernel admission flags.
+// A runtime pin changes the admission decision without changing probe health, so
+// nothing else would republish these slots and the kernel could keep dropping
+// traffic for a group the user just pinned.
+func (c *ControlPlane) RepublishOutboundConnectivity(group *outbound.DialerGroup) {
+	if c == nil || c.core == nil || group == nil {
+		return
+	}
+	group.WithAlivePublishLock(func() {
+		for outboundID, candidate := range c.outbounds {
+			if candidate != group {
+				continue
+			}
+			c.core.outboundConnectivityMu.Lock()
+			defer c.core.outboundConnectivityMu.Unlock()
+			if c.core.retired.Load() || c.core.outboundConnectivityPaused {
+				return
+			}
+			c.publishOutboundConnectivity(outboundID, group, c.core.writeOutboundConnectivityLocked)
+			return
 		}
 	})
 }

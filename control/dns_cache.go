@@ -39,6 +39,10 @@ type dnsPackedResponse struct {
 }
 
 type DnsCache struct {
+	// Domain/QType identify the cache entry for the control-plane API. The
+	// sync.Map key is an internal encoding that also carries an upstream scope.
+	Domain               string
+	QType                uint16
 	RouteOwnerKey        string
 	RouteProjectionEpoch uint64
 	DomainBitmap         []uint32
@@ -203,11 +207,16 @@ func (c *DnsCache) CloneForReload() *DnsCache {
 	newCache := &DnsCache{
 		RouteOwnerKey:        c.RouteOwnerKey,
 		RouteProjectionEpoch: c.RouteProjectionEpoch,
-		Answer:               c.Answer,
-		NS:                   c.NS,
-		Extra:                c.Extra,
-		Deadline:             c.Deadline,
-		OriginalDeadline:     c.OriginalDeadline,
+		// Domain and QType are the entry's identity for the control-plane API.
+		// They are immutable, so the clone carries them; dropping them made every
+		// reloaded entry project an empty name and query type.
+		Domain:           c.Domain,
+		QType:            c.QType,
+		Answer:           c.Answer,
+		NS:               c.NS,
+		Extra:            c.Extra,
+		Deadline:         c.Deadline,
+		OriginalDeadline: c.OriginalDeadline,
 	}
 
 	if packed := c.packedResponse.Load(); packed != nil && packed.wire != nil {

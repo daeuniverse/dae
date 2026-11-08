@@ -138,7 +138,8 @@ func shouldRejectNewUdpDialSelection(res *proxyDialResult) bool {
 	if networkType == nil || networkType.L4Proto != consts.L4ProtoStr_UDP {
 		return false
 	}
-	if res.Outbound != nil && res.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
+	if res.Outbound != nil && (res.Outbound.GetSelectionPolicy().IgnoresDialerHealth() ||
+		res.Outbound.PinsSelection(ob.SelectionNetworkUDP)) {
 		return false
 	}
 	return !res.Dialer.MustGetAlive(networkType)
@@ -148,7 +149,8 @@ func (c *ControlPlane) checkUdpEndpointHealth(ue *UdpEndpoint, isFastPath bool) 
 	if ue == nil || ue.Dialer == nil || ue.IsDead() {
 		return false
 	}
-	if ue.Outbound != nil && ue.Outbound.GetSelectionPolicy() == consts.DialerSelectionPolicy_Fixed {
+	if ue.Outbound != nil && (ue.Outbound.GetSelectionPolicy().IgnoresDialerHealth() ||
+		ue.Outbound.PinsSelection(ob.SelectionNetworkUDP)) {
 		return true
 	}
 	if ue.survivesDialerHealthInvalidation() {
@@ -453,6 +455,19 @@ func sendPktWithResponseConnSlot(log *logrus.Logger, data []byte, from netip.Add
 // storms), but the drop rate is otherwise invisible to operators.
 var udpReplyReinjectionDrops atomic.Uint64
 
+// downloadRecord returns this endpoint's plane-bound download recorder. It is
+// built once because the reply path runs per datagram.
+func (ue *UdpEndpoint) downloadRecord(c *ControlPlane) func(int64) {
+	if ue == nil {
+		return nil
+	}
+	ue.replyDownloadOnce.Do(func() {
+		counters := ue.Outbound.Counters()
+		ue.replyDownload = func(n int64) { c.recordDownloadTrafficFor(counters, n) }
+	})
+	return ue.replyDownload
+}
+
 func forwardUdpEndpointReplyToClient(log *logrus.Logger, ue *UdpEndpoint, data []byte, from netip.AddrPort, clientAddr netip.AddrPort, send udpEndpointReplySender, recordDownload func(int64)) error {
 	recordDownload = normalizeTrafficRecord(recordDownload)
 	var cacheSlot udpEndpointResponseConnSlot
@@ -536,9 +551,14 @@ func (c *ControlPlane) handleRetainedUDPEndpoint(data []byte, src, realDst netip
 	// meter it through the plane-bound recorder like every other egress
 	// write: the global recorder would attribute bytes of a retiring
 	// generation to whichever store is published mid-reload.
-	c.recordUploadTraffic(int64(len(data)))
-	if lifecycle, lifecycleOK := newUdpSessionLifecycleContext(ue, ""); lifecycleOK {
-		lifecycle.reportTrafficSuccess()
+	// A batched endpoint lets the aggregator own upload accounting; it alone
+	// knows how many datagrams a flush really sent. The same gate the batch
+	// main loop uses applies here.
+	if ue.sentReporter == nil {
+		c.recordUploadTrafficFor(ue.Outbound.Counters(), int64(len(data)))
+		if lifecycle, lifecycleOK := newUdpSessionLifecycleContext(ue, ""); lifecycleOK {
+			lifecycle.reportTrafficSuccess()
+		}
 	}
 	return true
 }
@@ -759,9 +779,11 @@ func (c *ControlPlane) handlePktOwned(data []byte, src, realDst netip.AddrPort, 
 				ue.TrackUdpConnStateTuplePair(realSrc, realDst)
 				_, err = ue.WriteTo(data, dialTarget)
 				if err == nil {
-					c.recordUploadTraffic(int64(len(data)))
-					if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
-						lifecycle.reportTrafficSuccess()
+					if ue.sentReporter == nil {
+						c.recordUploadTrafficFor(ue.Outbound.Counters(), int64(len(data)))
+						if lifecycle, ok := newUdpSessionLifecycleContext(ue, ""); ok {
+							lifecycle.reportTrafficSuccess()
+						}
 					}
 					return nil
 				}
@@ -1036,7 +1058,7 @@ getNew:
 			Ctx: c.ctx,
 			// Handler handles response packets and send it to the client.
 			Handler: func(ue *UdpEndpoint, data []byte, from netip.AddrPort) (err error) {
-				return forwardUdpEndpointReplyToClient(replyLog, ue, data, from, realSrc, nil, RecordDownloadTraffic)
+				return forwardUdpEndpointReplyToClient(replyLog, ue, data, from, realSrc, nil, ue.downloadRecord(c))
 			},
 			NatTimeout:     natTimeout,
 			ConnStateOwner: connStateOwner,
@@ -1052,7 +1074,7 @@ getNew:
 			// (non-batched) path keeps the inline accounting below.
 			SentReporter: func(sent *UdpEndpoint, datagrams, bytes int) {
 				if bytes > 0 {
-					c.recordUploadTraffic(int64(bytes))
+					c.recordUploadTrafficFor(sent.Outbound.Counters(), int64(bytes))
 				}
 				if datagrams <= 0 {
 					return
@@ -1078,6 +1100,11 @@ getNew:
 
 				res, err := c.chooseProxyDialer(dialParam)
 				if err != nil {
+					if res != nil {
+						c.noteOutboundDialError(res)
+					} else if dialParam.Outbound != consts.OutboundBlock {
+						c.outboundCountersForIndex(dialParam.Outbound).AddError()
+					}
 					if res != nil && res.Outbound != nil && stderrors.Is(err, ob.ErrNoAliveDialer) {
 						res.Outbound.HandleNoAliveDialer(
 							res.OrigNetworkType,
@@ -1193,7 +1220,7 @@ getNew:
 			goto getNew
 		}
 		if !batchOwnsAccounting {
-			c.recordUploadTraffic(int64(len(payloads[packetIndex])))
+			c.recordUploadTrafficFor(ue.Outbound.Counters(), int64(len(payloads[packetIndex])))
 		}
 		packetIndex++
 	}
