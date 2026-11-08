@@ -91,3 +91,24 @@ func TestRedactInlineURLsHandlesQuotedAuthorities(t *testing.T) {
 		}
 	}
 }
+
+// A standard-base64 credential contains '/', which is illegal in a conformant
+// userinfo. Stopping the authority at the first '/' left the whole credential in
+// the log, so both helpers have to keep looking for the '@'.
+func TestRedactHandlesSeparatorsInsideCredentials(t *testing.T) {
+	if got, want := RedactURL("ss://YWJjL2RlZg==@203.0.113.9:8388"), "ss://[redacted]@203.0.113.9:8388"; got != want {
+		t.Fatalf("RedactURL with a '/' in the userinfo = %q, want %q", got, want)
+	}
+	if got, want := RedactURL("ss://abc?def@203.0.113.9:8388"), "ss://[redacted]@203.0.113.9:8388"; got != want {
+		t.Fatalf("RedactURL with a '?' in the userinfo = %q, want %q", got, want)
+	}
+
+	in := `Get "ss://YWJjL2RlZg==@203.0.113.9:8388": i/o timeout`
+	got := RedactInlineURLs(in)
+	if strings.Contains(got, "YWJjL2RlZg==") {
+		t.Fatalf("RedactInlineURLs leaked the credential: %q", got)
+	}
+	if !strings.Contains(got, "203.0.113.9") {
+		t.Fatalf("RedactInlineURLs dropped the host, which the log line needs: %q", got)
+	}
+}

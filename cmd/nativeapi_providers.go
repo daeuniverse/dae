@@ -188,7 +188,10 @@ func (p *nativeAPIProvider) providers(active *nativeActiveGeneration) ([]nativea
 			}
 		}
 		if definition.url != "" {
-			url := definition.url
+			// The field is what a client may display: the userinfo and query of
+			// a subscription URL carry its token, so they must not survive here
+			// even though the API is authenticated.
+			url := common.RedactURL(definition.url)
 			provider.URLRedacted = &url
 		}
 		providers = append(providers, provider)

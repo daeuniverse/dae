@@ -19,7 +19,13 @@ const redactedPlaceholder = "[redacted]"
 // authority: parser errors often print a %q-quoted link, and a password may
 // itself contain a quote. Excluding those characters left the credential in
 // the log whenever the text was quoted or escaped.
-var inlineUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)(?:[^\s/?#@]|\\.)+@`)
+//
+// `/`, `?` and `#` are allowed inside the matched authority even though
+// RFC 3986 forbids them in a userinfo: a standard-base64 credential routinely
+// contains `/`, and stopping at the first one left the password in the log.
+// Over-redacting a path that happens to contain `@` is harmless; leaking a
+// credential into the log is not.
+var inlineUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s]+@`)
 
 // inlineQueryPattern matches a query string inside free text.
 var inlineQueryPattern = regexp.MustCompile(`\?[^\s"'<>]+`)
@@ -63,13 +69,28 @@ func redactUserinfo(raw string) string {
 		return raw
 	}
 	authorityStart := schemeEnd + 3
+	// RFC 3986 ends the authority at the first '/', '?' or '#'; whitespace ends
+	// the URL itself. Quotes stay part of it: an escaped password may contain
+	// one, and quoting the link must not hide the credential.
 	authorityEnd := len(raw)
-	if index := strings.IndexAny(raw[authorityStart:], "/?#"); index >= 0 {
+	if index := strings.IndexAny(raw[authorityStart:], "/?# \t\r\n"); index >= 0 {
 		authorityEnd = authorityStart + index
 	}
 	at := strings.LastIndex(raw[authorityStart:authorityEnd], "@")
 	if at < 0 {
-		return raw
+		// A malformed link can carry '/', '?' or '#' inside its credential
+		// (standard base64 does), so the RFC authority cut misses the '@' and
+		// the credential would be returned verbatim. Fall back to the last '@'
+		// before the token ends: redacting too much is harmless, leaking a
+		// password is not.
+		end := len(raw)
+		if index := strings.IndexAny(raw[authorityStart:], " \t\r\n"); index >= 0 {
+			end = authorityStart + index
+		}
+		at = strings.LastIndex(raw[authorityStart:end], "@")
+		if at < 0 {
+			return raw
+		}
 	}
 	userinfoStart := authorityStart
 	userinfoEnd := authorityStart + at
