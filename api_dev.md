@@ -1657,8 +1657,8 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 
 ### 13.12 P2：分页与 SSE 生命周期
 
-- [ ] `pageAfter` 只看锚点存活（`cmd/cursor.go:112`），环滚动 `[3,2,1] → [4,3,2]` 时静默跳过已淘汰的未读记录。
-  - **未做（明确延后）**：需要在游标 bind 里带存储的淘汰计数或代次，并定义「淘汰即 410」的语义；会影响现有游标兼容性，单独一轮做。
+- [~] **分页游标只认锚点存活**（`cmd/cursor.go`）：环 `[3,2,1] → [4,3,2]` 的滚动已由 `pageAfterExpecting` 的 `expectNext`/`oldestKey` 两个守卫覆盖（`dns/log`、`flows`）；`dns/cache` 本轮补上 `expectNext`（`cmd/nativeapi_dns.go`），页边界的后继记录消失时返回 `410` 而不是静默跳过。
+  - **仍有边界**：`dns/cache` 按名字排序、淘汰与排序无关，无法使用 `oldestKey` 守卫；若消失的未读记录不在页边界（而是更深处），仍会静默跳过。彻底解决需要游标携带存储淘汰计数或代次，并定义「淘汰即 410」的语义；单独一轮做。
 - [ ] DNS log 的 `dl_<seq>` 在 store 重建后归零，而游标绑定只有 filters/limit + 进程级 `instance_id`。
   - **未做（明确延后）**：同上，需要 store 级代次标识参与 bind。
 - [x] **SSE ready checkpoint 立即被拒**（已修：把「最老保留帧的前一帧」识别为合法边界，`stream.ready` 发出的 ID 重连可续传；测试 `TestFrameHubReadyCheckpointResumes`）：`cmd/nativeapi_observability.go:198`。
@@ -1683,6 +1683,20 @@ capabilities.runtime_memory.metrics = [process.rss_bytes, cgroup.current_bytes,
 - lifecycle / DNS / probe 解码器统一到 `decodeLimitedJSON`（超限拒绝 + 尾部数据拒绝）。
 - 分页在环滚动 / store 重建下的语义：需要游标携带存储淘汰计数或代次，并定义 410 边界。
 - `api_dev.md` 落位与拆 PR（12.7 两条流程项）。
+
+### 13.17 2026-11-08 复核新增代码后的修复
+
+- [x] **Redaction 盲区**（已修：`common.RedactURL` / `RedactInlineURLs` 允许 `/`、`?`、`#` 出现在 userinfo 内，标准 base64 口令含 `/` 时不再原样输出；`redactUserinfo` 增加「RFC authority 内无 `@` 则回退到 token 末尾最后一个 `@`」的兜底；测试 `TestRedactHandlesSeparatorsInsideCredentials`）：`common/redact.go`。
+- [x] **`url_redacted` 未脱敏**（已修：`providers()` 用 `common.RedactURL` 填充；此前直接把订阅原文（含 token/userinfo）交给客户端）：`cmd/nativeapi_providers.go`。
+- [x] **每节点探测槽位表无界增长**（已修：`probeTargetSlot` 加引用计数，最后一个持有/等待者释放时删除 map 条目，`max_concurrent_per_target` 语义不变；测试 `TestAcquireProbeTargetPrunesIdleNodes`）：`cmd/nativeapi_probes.go`。
+- [x] **组成员顺序不确定**（已修：`NewDialerSetFromLinksContext` 对 provider tag 排序后再建 dialer；此前 range map 让 `fixed(n)` / `select(n)` 与 API 的 member 索引在每次启动/重载后指向不同节点；测试 `TestDialerOrderIsDeterministic`）：`component/outbound/filter.go`。
+- [x] **`DELETE /connections` 不校验 `src`**（已修：与 GET 一致要求 IP 字面量，否则 400；此前 `src=拼错` 会以 `closed: 0` 成功返回）：`component/nativeapi/handlers_flows.go`。
+- [x] **`dns/log` 默认 limit 100**（已修：改为契约的 200）：`component/nativeapi/handlers_dns.go`。
+- [x] **chunked 请求体绕过 Content-Type 校验**（已修：`ContentLength != 0`，chunked 的 `-1` 也进入校验）：`component/nativeapi/handlers_dns.go`。
+- [x] **`428` 在 `415` 之后判定**（已修：`PUT /config/sources/{id}` 与 `PATCH /groups/{id}/config` 先判 `If-Match`）：`component/nativeapi/handlers_config.go`、`handlers_groups.go`。
+- [x] **访问日志路由标签大面积 `<unmatched>`**（已修：`fixedRouteTemplates` + `dynamicRouteTemplates` 覆盖全部已实现路由，动态段仍收敛到模板以保证基数有界；测试 `TestRouteTemplateNamesEveryServedRoute`）：`component/nativeapi/logging.go`。
+- [x] **`kernel.ebpf_bytes` 的 `sampled_at` 被刷新**（已修：新增 `ebpfBytesAt` 记录取值时刻，`ebpfAt` 只用于节流重试；测试 `TestCachedEbpfBytesKeepsTheValueTimestamp`）：`control/memory_stats.go`。
+- [x] **ifindex watcher 解引用 nil Link**（已修：与 `handleDirectStatsLinkUpdate` 一致地判空）：`control/control_plane_core.go`。
 
 ## 14. 实机验证与 eBPF 热路径优化（2026-11-04）
 
