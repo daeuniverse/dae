@@ -223,6 +223,9 @@ changed. Review them before upgrading:
   `unsupported parameter key "bogus_param"` and names the accepted form. The
   documented short form (`pname(NetworkManager)`, `port(443)`,
   `dip(geoip:cn)`, `domain(geosite:cn, suffix:quay.io)`) is unaffected.
+- A reversed port range such as `dport(8080-80)` or `sport(2-1)` is now
+  rejected with `bad port range`. It used to pass `dae validate` and `dae run`
+  and compile into a rule that matches no port.
 
   This one does not merely change a default: a config that used a parameter
   name on these functions stops starting until the name is removed. That is the
