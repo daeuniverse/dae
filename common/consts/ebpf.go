@@ -91,6 +91,8 @@ var (
 	HelperBpfGetFuncIpVersionFeatureVersion   = internal.Version{5, 15, 0}
 	BpfLoopFeatureVersion                     = internal.Version{5, 17, 0}
 	NetkitFeatureVersion                      = internal.Version{6, 7, 0}
+	// TCXFeatureVersion is the first mainline kernel with TCX links.
+	TCXFeatureVersion = internal.Version{6, 6, 0}
 	// RedirectPeerSafeVersion is the mainline kernel version that fixed
 	// CVE-2025-37959 ("bpf: Scrub packet on bpf_redirect_peer"): stale skb
 	// metadata could be exposed when bpf_redirect_peer() crossed a netns

@@ -317,6 +317,23 @@ type loadBpfOptions struct {
 	DatapathGeneration         uint16
 }
 
+// daeParam mirrors `struct dae_param` in kern/tproxy.c. Field order and padding
+// are the contract: cilium/ebpf writes this into .rodata and the kernel reads the
+// same offsets. TestDaeParamLayout pins the offsets so an edit on either side
+// fails here instead of at the first BPF load.
+type daeParam struct {
+	tproxyPort           uint32
+	controlPlanePid      uint32
+	dae0Ifindex          uint32
+	daeNetnsId           uint32
+	dae0peerMac          [6]byte
+	paddingAfterMac      [2]uint8
+	useRedirectPeer      uint8
+	hasBpfGetCurrentTask uint8
+	datapathGeneration   uint16
+	daeSocketMark        uint32
+}
+
 const (
 	defaultConnStateMapMaxEntries = 65536 * 4
 	// defaultRedirectTrackMapMaxEntries mirrors MAX_REDIRECT_TRACK_NUM in
@@ -655,18 +672,7 @@ retryLoadBpf:
 	}
 
 	constants := map[string]any{
-		"PARAM": struct {
-			tproxyPort           uint32
-			controlPlanePid      uint32
-			dae0Ifindex          uint32
-			daeNetnsId           uint32
-			dae0peerMac          [6]byte
-			paddingAfterMac      [2]uint8
-			useRedirectPeer      uint8
-			hasBpfGetCurrentTask uint8
-			datapathGeneration   uint16
-			daeSocketMark        uint32
-		}{
+		"PARAM": daeParam{
 			tproxyPort:           opts.BigEndianTproxyPort,
 			controlPlanePid:      uint32(os.Getpid()),
 			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),

@@ -258,13 +258,26 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	ingressPriority := uint16(2)
 	egressProgram := bpf.TproxyLanEgressL3
 	egressName := consts.AppName + "_lan_egress_l3"
+	egressPriority := uint16(1)
+	// When the direct-stats observer is on it owns priority 1. The LAN egress
+	// observer watches forwarded replies, so tproxy's LAN egress hook must move
+	// to 2 as well; otherwise both programs would share the same hook key and
+	// the observer would replace tproxy instead of running beside it. The
+	// dual-role hooks already share one priority and move together. With the
+	// observer off the historical order is untouched.
+	dualPriority := uint16(1)
+	if directStatsEnabled.Load() {
+		dualPriority = 2
+		egressPriority = 2
+	}
 	if c.isDualRoleTCInterface(ifname) {
 		programs := selectDualRoleTCHookPrograms(bpf, linkHdrLen > 0)
 		ingressProgram = programs.ingress
 		ingressName = programs.ingressName
-		ingressPriority = 1
+		ingressPriority = dualPriority
 		egressProgram = programs.egress
 		egressName = programs.egressName
+		egressPriority = dualPriority
 	} else if linkHdrLen > 0 {
 		ingressProgram = bpf.TproxyLanIngressL2
 		ingressName = consts.AppName + "_lan_ingress_l2"
@@ -274,8 +287,11 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, ingressPriority, 0x2023, ingressProgram, ingressName, nil)); err != nil {
 		return fmt.Errorf("install LAN ingress hook: %w", err)
 	}
-	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookEgress, 1, 0x2023, egressProgram, egressName, nil)); err != nil {
+	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookEgress, egressPriority, 0x2023, egressProgram, egressName, nil)); err != nil {
 		return fmt.Errorf("install LAN egress hook: %w", err)
+	}
+	if err := c.stageDirectStatsHooks(link, linkHdrLen > 0, false, c.isDualRoleTCInterface(ifname)); err != nil {
+		return err
 	}
 
 	return nil
@@ -577,13 +593,22 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	egressPriority := uint16(2)
 	ingressProgram := bpf.TproxyWanIngressL3
 	ingressName := consts.AppName + "_wan_ingress_l3"
+	ingressPriority := uint16(1)
+	// See _bindLan: the observer takes priority 1 only when it is on, and both
+	// binds must agree at the shared dual-role hook.
+	dualPriority := uint16(1)
+	if directStatsEnabled.Load() {
+		dualPriority = 2
+		ingressPriority = 2
+	}
 	if c.isDualRoleTCInterface(ifname) {
 		programs := selectDualRoleTCHookPrograms(bpf, linkHdrLen > 0)
 		egressProgram = programs.egress
 		egressName = programs.egressName
-		egressPriority = 1
+		egressPriority = dualPriority
 		ingressProgram = programs.ingress
 		ingressName = programs.ingressName
+		ingressPriority = dualPriority
 	} else if linkHdrLen > 0 {
 		egressProgram = bpf.TproxyWanEgressL2
 		egressName = consts.AppName + "_wan_egress_l2"
@@ -593,8 +618,11 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookEgress, egressPriority, 0x2023, egressProgram, egressName, nil)); err != nil {
 		return fmt.Errorf("install WAN egress hook: %w", err)
 	}
-	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, 1, 0x2023, ingressProgram, ingressName, nil)); err != nil {
+	if err := c.stageTCHook(makeTCHookSpec(tcHookScopeHost, link, tcHookIngress, ingressPriority, 0x2023, ingressProgram, ingressName, nil)); err != nil {
 		return fmt.Errorf("install WAN ingress hook: %w", err)
+	}
+	if err := c.stageDirectStatsHooks(link, linkHdrLen > 0, true, c.isDualRoleTCInterface(ifname)); err != nil {
+		return err
 	}
 
 	return nil

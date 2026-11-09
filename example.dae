@@ -392,3 +392,91 @@ routing {
 
     fallback: my_group
 }
+
+# Native HTTP control-plane API, compatible with the api-standardize contract.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/api.md for full examples
+# and https://github.com/daeuniverse/dae/blob/main/docs/en/development/api.md for endpoints.
+#
+# Authentication modes, pick one:
+# 1. Token mode: set a non-empty secret. Every request except GET /api (discovery) must send
+#    "Authorization: Bearer <secret>". GET /api stays public, but /api/v1/version and
+#    /api/v1/capabilities also require the token.
+# 2. Anonymous loopback: leave secret empty, set allow_anonymous_loopback: true and listen on a
+#    loopback address. A listener on a non-loopback address always requires secret, and an
+#    enabled listener with neither mode fails validation.
+#
+# dae serves plain HTTP and never terminates TLS. When listening on a non-loopback address,
+# terminate TLS at a trusted reverse proxy and never expose the listener directly to an
+# untrusted network.
+#
+# Every field below is restart-required: a reload that changes them is rejected or keeps the
+# previous listener and logs a warning, so the listener is never partially recreated.
+api {
+    ##### Listener.
+
+    # Start the native listener. Disabled by default.
+    enabled: false
+
+    # Numeric IP and port to listen on. Hostnames and the ":port" shorthand are rejected.
+    # Wildcard binds (0.0.0.0 or ::) count as non-loopback and therefore require secret.
+    listen: '127.0.0.1:9527'
+
+    # Static bearer token. A non-empty value selects token mode.
+    # Must be visible ASCII without whitespace or commas; use at least 16 unpredictable bytes.
+    # Secrets are never returned by the API or written to logs.
+    #secret: 'replace-with-a-long-random-token'
+
+    # Permit credential-free requests, but only when secret is empty and the listener is
+    # actually bound to a loopback address.
+    #allow_anonymous_loopback: true
+
+    ##### Browser access.
+
+    # Exact HTTP(S) origins allowed for cross-origin browser access, split by ",".
+    # Empty disables cross-origin access. Wildcards and paths are not allowed.
+    #allow_origins: 'https://board.zash.run.place,https://demo.daeuniverse.org'
+
+    # Additional Host authorities accepted by the listener, split by ",". Use it behind a
+    # reverse proxy; an omitted port means 80 and IPv6 hosts must be bracketed.
+    # Without it the Host header must name the listening authority (loopback listeners also
+    # accept localhost, 127.0.0.1 and [::1] at the listening port), and a wildcard bind accepts
+    # IP literals and localhost only, so DNS names need this list.
+    # Forwarded headers are not trusted as authorization.
+    #allowed_hosts: 'panel.example,panel.example:443'
+
+    ##### Self-hosted UI.
+
+    # Absolute path to a directory holding a built frontend (with index.html). It is served at
+    # /ui/ without credentials, while API calls still require the token and the Host/Origin
+    # checks above still apply. Other paths redirect there, directory listings are disabled,
+    # extensionless misses fall back to index.html and a missing asset is a real 404.
+    # A missing or unusable directory only logs a warning and answers 404; it never stops dae.
+    # Empty disables UI hosting.
+    #ui: '/usr/share/doona'
+
+    ##### Configuration writes.
+
+    # Allow control callers to replace editable configuration sources over the API.
+    # Requires secret, and the configuration directory must be split into config.dae (exactly
+    # one include block), api.dae and config.d/{global,subscription,node,group,routing,dns}.dae.
+    # api.dae is hidden from the API (and answers 404), and a replacement may not change the
+    # api block; changing listen, port or secret stays a manual edit plus a restart.
+    # A candidate is validated with the same chain as "dae validate -c": a rejected one answers
+    # 422 with line numbers and nothing is written, so no partial replacement is possible.
+    #config_write: true
+
+    ##### Traffic accounting.
+
+    # Stop reporting cumulative bytes per connection (upload_bytes and download_bytes).
+    # Only the TCP flows dae forwards in userspace carry those counters, so a total
+    # aggregated from them covers a fraction of the traffic; the two fields stay null instead.
+    #disable_connection_bytes: true
+
+    # Count traffic dae routes directly, with a read-only eBPF observer on the WAN/LAN
+    # interfaces dae already binds. Off by default; it never changes forwarding or marks.
+    # Figures are link bytes and a lower bound: the first packet of every flow and flows that
+    # predate a restart are not counted, and non-TCP/UDP traffic is skipped. Every packet on
+    # those interfaces then pays for a map lookup or two, so keep it off unless
+    # GET /api/v1/runtime/direct-stats is needed.
+    #direct_stats: false
+}

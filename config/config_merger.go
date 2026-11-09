@@ -25,6 +25,19 @@ type Merger struct {
 	entry             string
 	entryDir          string
 	entryToSectionMap map[string]map[string][]*config_parser.Item
+	// overrides maps absolute cleaned paths to replacement bytes. An override
+	// only replaces the bytes read for a file that already exists on disk.
+	overrides map[string][]byte
+	// origins records, per section name, every file-level occurrence parsed
+	// during Merge. It is used by the managed-layout gate.
+	origins map[string][]SectionOrigin
+}
+
+// SectionOrigin is one occurrence of a section in a parsed file.
+type SectionOrigin struct {
+	File      string
+	StartLine int
+	EndLine   int
 }
 
 func NewMerger(entry string) *Merger {
@@ -32,7 +45,30 @@ func NewMerger(entry string) *Merger {
 		entry:             entry,
 		entryDir:          filepath.Dir(entry),
 		entryToSectionMap: map[string]map[string][]*config_parser.Item{},
+		origins:           map[string][]SectionOrigin{},
 	}
+}
+
+// NewMergerWithOverrides behaves like NewMerger, but reads the files whose
+// paths appear in overrides from the given bytes instead of disk. Resolution,
+// the permission check and parsing are unchanged.
+func NewMergerWithOverrides(entry string, overrides map[string][]byte) *Merger {
+	m := NewMerger(entry)
+	if len(overrides) > 0 {
+		m.overrides = make(map[string][]byte, len(overrides))
+		for p, b := range overrides {
+			m.overrides[absCleanPath(p)] = b
+		}
+	}
+	return m
+}
+
+func absCleanPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	return abs
 }
 
 func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, err error) {
@@ -45,6 +81,16 @@ func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, e
 		return nil, nil, err
 	}
 	return m.convertMapToSections(m.entryToSectionMap[m.entry]), entries, nil
+}
+
+// MergeWithOrigins behaves like Merge and additionally returns, per section
+// name, the files and line ranges the section was parsed from.
+func (m *Merger) MergeWithOrigins() (sections []*config_parser.Section, origins map[string][]SectionOrigin, err error) {
+	sections, _, err = m.Merge()
+	if err != nil {
+		return nil, nil, err
+	}
+	return sections, m.origins, nil
 }
 
 func (m *Merger) readEntry(entry string) (err error) {
@@ -79,15 +125,24 @@ func (m *Merger) readEntry(entry string) (err error) {
 		return fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, entry)
 	}
 	// Read and parse.
-	b, err := io.ReadAll(f)
-	if err != nil {
-		return err
+	b, overridden := m.overrides[absCleanPath(entry)]
+	if !overridden {
+		if b, err = io.ReadAll(f); err != nil {
+			return err
+		}
 	}
 	entrySections, err := config_parser.Parse(string(b))
 	if err != nil {
 		return fmt.Errorf("failed to parse config file %v:\n%w", entry, err)
 	}
 	m.entryToSectionMap[entry] = m.convertSectionsToMap(entrySections)
+	for _, sec := range entrySections {
+		m.origins[sec.Name] = append(m.origins[sec.Name], SectionOrigin{
+			File:      entry,
+			StartLine: sec.StartLine,
+			EndLine:   sec.EndLine,
+		})
+	}
 	return nil
 }
 
