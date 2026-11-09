@@ -21,11 +21,33 @@ type CompactBitList struct {
 	unitNum     int
 }
 
+// bitListMinWords is the smallest unit buffer a CompactBitList allocates. It
+// keeps tiny lists from paying for a grow on their first Append.
+const bitListMinWords = 8
+
 func NewCompactBitList(unitBitSize int) *CompactBitList {
+	return NewCompactBitListCap(unitBitSize, 0)
+}
+
+// NewCompactBitListCap returns a CompactBitList with room for units units, so
+// callers that know the final size build it in a single allocation. The
+// growable path doubles repeatedly and then needs a second full copy in
+// Tighten, which costs up to three times the final size while a matcher is
+// being built.
+//
+// A unit occupies unitBitSize bits and units are packed into uint16 words, so
+// the buffer needs ceil(units*unitBitSize/16) words.
+func NewCompactBitListCap(unitBitSize, units int) *CompactBitList {
+	words := bitListMinWords
+	if unitBitSize > 0 && units > 0 {
+		if need := (units*unitBitSize + 15) / 16; need > words {
+			words = need
+		}
+	}
 	return &CompactBitList{
 		unitBitSize: unitBitSize,
 		size:        0,
-		b:           anybuffer.NewBuffer[uint16](8),
+		b:           anybuffer.NewBuffer[uint16](words),
 	}
 }
 
@@ -131,8 +153,16 @@ func (m *CompactBitList) growByUnitIndex(i int) {
 	}
 }
 
+// Tighten drops the spare capacity of the unit buffer so a retained list does
+// not pin memory it can never index. A buffer that is already exact is left
+// alone: the previous unconditional copy doubled the memory held by this list
+// for the duration of the call.
 func (m *CompactBitList) Tighten() {
-	a := make([]uint16, m.b.Len())
-	copy(a, m.b.Slice())
+	used := m.b.Slice()
+	if cap(used) == len(used) {
+		return
+	}
+	a := make([]uint16, len(used))
+	copy(a, used)
 	m.b = anybuffer.NewBufferFrom(a)
 }

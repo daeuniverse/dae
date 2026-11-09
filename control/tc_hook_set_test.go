@@ -57,6 +57,7 @@ type fakeTCHookBackend struct {
 	classicFiltersPresent   bool
 	classicFilterInspectErr error
 	attachErr               error
+	failAttachProgram       *ebpf.Program
 	updateErr               error
 	failUpdateProgram       *ebpf.Program
 	applyUpdateBeforeError  bool
@@ -78,6 +79,9 @@ func (b *fakeTCHookBackend) moduleBackend() tcHookBackend {
 		attachTCX: func(spec tcHookSpec, position tcxHookPosition) (tcxHookAttachment, error) {
 			if b.attachErr != nil {
 				return nil, b.attachErr
+			}
+			if b.failAttachProgram != nil && spec.Program == b.failAttachProgram {
+				return nil, stderrors.New("injected optional attach failure")
 			}
 			hook := &fakeTCXHook{backend: b, program: spec.Program}
 			b.attachments = append(b.attachments, fakeTCXAttach{spec: spec, position: position, hook: hook})
@@ -552,5 +556,114 @@ func TestDualRoleTCHookProgramsUseOneCompositePerDirection(t *testing.T) {
 	layer3 := selectDualRoleTCHookPrograms(objects, false)
 	if layer3.ingress != l3Ingress || layer3.egress != l3Egress {
 		t.Fatal("layer-3 dual-role hooks did not select composite programs")
+	}
+}
+
+func namedTCHookSpec(priority uint16, name string, program *ebpf.Program) tcHookSpec {
+	spec := testTCHookSpec(priority, program)
+	spec.Name = name
+	return spec
+}
+
+func TestTCHookSetRemoveHooksWithPrefixLeavesOtherHooks(t *testing.T) {
+	backend := &fakeTCHookBackend{}
+	set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+	direct := new(ebpf.Program)
+	tproxy := new(ebpf.Program)
+
+	if err := set.beginReplace(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(namedTCHookSpec(1, "dae_direct_stats_lan_ingress_l3", direct)); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(namedTCHookSpec(2, "dae_lan_ingress_l3", tproxy)); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.commit(); err != nil {
+		t.Fatal(err)
+	}
+	set.finalize()
+
+	if got := set.countHooksWithPrefix("dae_direct_stats_"); got != 1 {
+		t.Fatalf("direct hooks before removal = %d, want 1", got)
+	}
+	if err := set.removeHooksWithPrefix(tcHookScopeHost, 7, "dae_direct_stats_"); err != nil {
+		t.Fatal(err)
+	}
+	if got := set.countHooksWithPrefix("dae_direct_stats_"); got != 0 {
+		t.Fatalf("direct hooks after removal = %d, want 0", got)
+	}
+	if got := set.countHooksWithPrefix("dae_lan_"); got != 1 {
+		t.Fatalf("tproxy hooks after removal = %d, want 1", got)
+	}
+	if backend.closed == 0 {
+		t.Fatal("removing a direct-stats hook did not close its attachment")
+	}
+}
+
+func TestOptionalTCHookFailureDoesNotAbortMandatoryHooks(t *testing.T) {
+	backend := &fakeTCHookBackend{}
+	set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+	mandatory := new(ebpf.Program)
+	optional := new(ebpf.Program)
+	backend.failAttachProgram = optional
+
+	if err := set.beginReplace(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(testTCHookSpec(1, mandatory)); err != nil {
+		t.Fatal(err)
+	}
+	optionalSpec := testTCHookSpec(2, optional)
+	optionalSpec.Optional = true
+	reported := false
+	optionalSpec.OnError = func(error) { reported = true }
+	if err := set.stage(optionalSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.commit(); err != nil {
+		t.Fatalf("optional attach failure aborted the transaction: %v", err)
+	}
+	if !reported {
+		t.Fatal("optional attach failure was not reported")
+	}
+	if len(backend.attachments) != 1 || backend.attachments[0].spec.Program != mandatory {
+		t.Fatalf("attachments = %#v, want only the mandatory hook", backend.attachments)
+	}
+}
+
+// A failed optional attach in classic mode records the requested state before
+// returning the ACK error. That model entry must be undone: counting it made
+// DirectStatsStatus report Attached:true for a hook the kernel never installed.
+func TestOptionalClassicAttachFailureLeavesNoHook(t *testing.T) {
+	backend := &fakeTCHookBackend{classicFiltersPresent: true}
+	set := newTCHookSetWithBackend(logrus.New(), backend.moduleBackend())
+	optional := new(ebpf.Program)
+	backend.failReplaceProgram = optional
+	backend.replaceErr = stderrors.New("injected optional classic failure")
+
+	optionalSpec := namedTCHookSpec(2, "dae_direct_stats_ingress_l3", optional)
+	optionalSpec.Optional = true
+	reported := false
+	optionalSpec.OnError = func(error) { reported = true }
+	if err := set.beginReplace(); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.stage(optionalSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.commit(); err != nil {
+		t.Fatalf("optional classic failure aborted the transaction: %v", err)
+	}
+	set.finalize()
+	if !reported {
+		t.Fatal("optional classic failure was not reported")
+	}
+	if got := set.countHooksWithPrefix("dae_direct_stats_"); got != 0 {
+		t.Fatalf("counted %d hooks after a failed optional attach, want 0", got)
+	}
+	if len(backend.classicDeletes) != 1 {
+		t.Fatalf("phantom classic filter was not cleaned up: deletes=%d", len(backend.classicDeletes))
 	}
 }

@@ -22,6 +22,14 @@ import (
 // currently being served from it, and evicting it would turn a refresh miss
 // into a resolution failure for every subsequent query.
 func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream) {
+	c.backgroundRefreshAt(cacheKey, dnsMessage, req, upstreamIndex, upstream, c.cacheEpochSnapshot())
+}
+
+// backgroundRefreshAt runs one optimistic refresh against the invalidation
+// epoch captured by the caller before the refresh was spawned. Capturing it
+// inside the goroutine let a delete/flush that landed first be erased by the
+// refresh's own snapshot of the already-advanced epoch.
+func (c *DnsController) backgroundRefreshAt(cacheKey string, dnsMessage *dnsmessage.Msg, req *udpRequest, upstreamIndex consts.DnsRequestOutboundIndex, upstream *dns.Upstream, refreshEpoch uint64) {
 	defer func() {
 		if recovered := recover(); recovered != nil && c.log != nil {
 			c.log.Errorf("panic in background DNS refresh: %v", recovered)
@@ -61,7 +69,7 @@ func (c *DnsController) backgroundRefresh(cacheKey string, dnsMessage *dnsmessag
 	// refresh continues the triggering request). The caller always passes a
 	// query, never a response, so no response-owned records reach this path.
 
-	if err := c.refreshDnsRespCache(ctx, refresh, req, upstream, cacheKey); err != nil &&
+	if err := c.refreshDnsRespCache(ctx, refresh, req, upstream, cacheKey, refreshEpoch); err != nil &&
 		c.log != nil && c.log.IsLevelEnabled(logrus.DebugLevel) {
 		c.log.WithFields(logrus.Fields{
 			"cacheKey": cacheKey,
@@ -123,7 +131,7 @@ func (c *DnsController) evictSupersededExpiredPositive(cacheKey string) {
 
 // refreshDnsRespCache resolves request upstream and replaces the cached
 // response under cacheKey. It never deletes the existing entry on failure.
-func (c *DnsController) refreshDnsRespCache(ctx context.Context, request *dnsmessage.Msg, req *udpRequest, upstream *dns.Upstream, cacheKey string) error {
+func (c *DnsController) refreshDnsRespCache(ctx context.Context, request *dnsmessage.Msg, req *udpRequest, upstream *dns.Upstream, cacheKey string, refreshEpoch uint64) error {
 	data, err := request.Pack()
 	if err != nil {
 		return fmt.Errorf("pack DNS packet: %w", err)
@@ -145,11 +153,42 @@ func (c *DnsController) refreshDnsRespCache(ctx context.Context, request *dnsmes
 		// NOERROR/NXDOMAIN as refreshed). SOA-carrying NODATA replaces the
 		// entry through the normal negative-cache path (RFC 2308); other
 		// negatives remove the superseded expired entry.
-		if err := c.NormalizeAndCacheDnsResp_(response, cacheKey); err != nil {
+		if err := c.storeRefreshedResponse(response, cacheKey, refreshEpoch); err != nil {
 			return err
 		}
 		c.evictSupersededExpiredPositive(cacheKey)
 		return nil
 	}
+	return c.storeRefreshedResponse(response, cacheKey, refreshEpoch)
+}
+
+// cacheEpochSnapshot captures the current cache-invalidation epoch. Callers
+// take it before starting an upstream exchange so a delete or flush that lands
+// while the exchange is in flight is not overwritten by the answer.
+func (c *DnsController) cacheEpochSnapshot() uint64 {
+	if c == nil || c.dnsControllerStore == nil {
+		return 0
+	}
+	c.cacheMutationMu.Lock()
+	defer c.cacheMutationMu.Unlock()
+	return c.cacheEpoch
+}
+
+// storeResolvedResponse publishes an upstream answer only if no delete or flush
+// invalidated the cache while the exchange was in flight. The check and the
+// store share cacheMutationMu, so a delete cannot land between them and then be
+// overwritten by this resolution.
+func (c *DnsController) storeResolvedResponse(response *dnsmessage.Msg, cacheKey string, resolutionEpoch uint64) error {
+	c.cacheMutationMu.Lock()
+	defer c.cacheMutationMu.Unlock()
+	if resolutionEpoch != c.cacheEpoch {
+		return nil
+	}
 	return c.NormalizeAndCacheDnsResp_(response, cacheKey)
+}
+
+// storeRefreshedResponse is storeResolvedResponse for the background-refresh
+// path, which already carries the epoch it captured before resolving.
+func (c *DnsController) storeRefreshedResponse(response *dnsmessage.Msg, cacheKey string, refreshEpoch uint64) error {
+	return c.storeResolvedResponse(response, cacheKey, refreshEpoch)
 }

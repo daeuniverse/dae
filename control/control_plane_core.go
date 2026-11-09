@@ -16,6 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/component"
+	"github.com/daeuniverse/dae/component/outbound"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -116,7 +117,27 @@ type controlPlaneCore struct {
 	tcHookStage         *tcHookSet
 	tcHookStageDeferred bool
 	preparedTCHooks     *preparedTCHookHandoff
-	bpf                 atomic.Pointer[bpfObjects]
+	// directStats is the opt-in direct-traffic observer object. It is loaded
+	// lazily on the first WAN/LAN bind while api.direct_stats is on.
+	directStatsMu       sync.Mutex
+	directStats         *directStatsObserver
+	directStatsBridgeMu sync.RWMutex
+	directStatsBridges  map[int]directStatsBridgeRole
+	// directStatsPorts maps an observed bridge port ifindex to the bridge
+	// ifindex and role it was observed under. It lets a port that leaves the
+	// bridge (or whose bridge disappears) lose its observer instead of counting
+	// traffic on an interface dae no longer owns, and it lets a role change drop
+	// an obsolete LAN egress hook.
+	directStatsPorts map[int]directStatsPortRole
+	// directStatsStatusMu guards the most recent observer load/attach error.
+	directStatsStatusMu  sync.Mutex
+	directStatsStatusErr string
+	// nodeParseReport is how many links each subscription supplied and how
+	// many of them became dialers. It is written once during construction and
+	// read by the reload caller to decide whether a fetched payload may
+	// replace its cached copy.
+	nodeParseReport map[string]outbound.NodeParseCount
+	bpf             atomic.Pointer[bpfObjects]
 	// outboundId2Name is populated during NewControlPlane before the control
 	// plane is published and is read-only afterwards, so concurrent readers
 	// (health callbacks, logging) need no lock.
@@ -582,9 +603,9 @@ func (c *controlPlaneCore) PeekBpf() *bpfObjects {
 	return c.bpf.Load()
 }
 
-// startIfindexWatcher subscribes to netlink RTM_NEWLINK events and hot-updates
-// the dae_ifindex_map when dae0 is recreated with a new ifindex by the kernel.
-// This avoids silent packet loss that would otherwise require a full BPF reload.
+// startIfindexWatcher follows link changes that can be handled without a BPF
+// reload: it updates dae_ifindex_map for a recreated dae0 and attaches the
+// direct-stats observer to ports added to a bound bridge.
 func (c *controlPlaneCore) startIfindexWatcher() {
 	ch := make(chan netlink.LinkUpdate)
 	done := make(chan struct{})
@@ -621,6 +642,12 @@ func (c *controlPlaneCore) startIfindexWatcher() {
 			case upd, ok := <-ch:
 				if !ok {
 					return
+				}
+				c.handleDirectStatsLinkUpdate(upd)
+				if upd.Link == nil || upd.Attrs() == nil {
+					// A delete event can arrive without a parsed link; the
+					// observer path above already tolerates it.
+					continue
 				}
 				if upd.Link.Attrs().Name != HostVethName {
 					continue

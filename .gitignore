@@ -4,6 +4,8 @@
 *.tmp
 bpf*_bpfeb*.go
 bpf*_bpfel*.go
+directstats_bpfeb*.go
+directstats_bpfel*.go
 bpf*_*_bpfeb*.go
 bpf*_*_bpfel*.go
 dae
