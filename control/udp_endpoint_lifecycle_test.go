@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	daeerrors "github.com/daeuniverse/dae/common/errors"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/olicesx/quic-go"
 )
@@ -182,139 +181,38 @@ func TestUdpEndpointWriteToRetiresOnClosedConn(t *testing.T) {
 	}
 }
 
-// A session that was established (hasReply) but whose client has been silent
-// for udpEndpointSendStaleTimeout must be rebuilt on the next write: the pause
-// means a new round is starting and the remote (e.g. a game server) may have
-// reaped the old session. Retiring now lets the next GetOrCreate dial a fresh
-// hy2 session with a new forwarding source port.
-func TestUdpEndpointWriteToRebuildsStaleSession(t *testing.T) {
-	mock := &mockPacketConn{}
-	ue := newTestEndpoint(mock)
-	ue.hasReply.Store(true)
-	ue.lastSendNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-	ue.lastReplyNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-
-	_, err := ue.WriteTo([]byte("hello world"), "1.2.3.4:53")
-	if !stderrors.Is(err, daeerrors.ErrClosedConnection) {
-		t.Fatalf("expected ErrClosedConnection on stale session, got: %v", err)
-	}
-	if !ue.dead.Load() {
-		t.Fatal("endpoint must be retired when the client session is stale")
-	}
-}
-
-// An established session whose client sent recently must NOT be rebuilt: this
-// keeps normal gameplay (sub-second heartbeats) on the same hy2 session. After
-// a successful write the lastSendNano is refreshed.
-func TestUdpEndpointWriteToKeepsFreshSession(t *testing.T) {
-	mock := &mockPacketConn{}
-	ue := newTestEndpoint(mock)
-	ue.hasReply.Store(true)
-	ue.lastSendNano.Store(time.Now().UnixNano())
-	ue.lastReplyNano.Store(time.Now().UnixNano())
-
-	n, err := ue.WriteTo([]byte("hello world"), "1.2.3.4:53")
-	if err != nil {
-		t.Fatalf("expected success on fresh session, got: %v", err)
-	}
-	if n != len("hello world") {
-		t.Fatalf("expected %d bytes written, got %d", len("hello world"), n)
-	}
-	if ue.dead.Load() {
-		t.Fatal("fresh session must not be retired")
-	}
-	if ue.lastSendNano.Load() < time.Now().Add(-time.Second).UnixNano() {
-		t.Fatal("lastSendNano must be refreshed after a successful write")
+// Idle gaps below the NAT lifetime must not change a live flow's forwarding
+// address, including WireGuard keepalives and sniffed QUIC traffic.
+func TestUdpEndpointWriteToPreservesIdleSession(t *testing.T) {
+	for _, sniffed := range []string{"", "video.example.com"} {
+		for _, idle := range []time.Duration{5*time.Second + time.Millisecond, 10 * time.Second, 31 * time.Second} {
+			t.Run(sniffed+"/"+idle.String(), func(t *testing.T) {
+				writes := 0
+				mock := &mockPacketConn{writeToFn: func(p []byte, _ string) (int, error) {
+					writes++
+					return len(p), nil
+				}}
+				ue := newTestEndpoint(mock)
+				ue.SniffedDomain = sniffed
+				ue.hasReply.Store(true)
+				ue.hasSent.Store(true)
+				ue.UpdateNatTimeout(5 * time.Minute)
+				ue.lastSendNano.Store(time.Now().Add(-idle).UnixNano())
+				ue.lastReplyNano.Store(time.Now().Add(-idle).UnixNano())
+				payload := make([]byte, 32)
+				n, err := ue.WriteTo(payload, "162.159.193.5:2408")
+				if err != nil || n != len(payload) {
+					t.Fatalf("write after idle gap: n=%d err=%v", n, err)
+				}
+				if ue.dead.Load() || ue.conn != mock || writes != 1 {
+					t.Fatalf("live session was replaced or not used: dead=%v writes=%d", ue.dead.Load(), writes)
+				}
+			})
+		}
 	}
 }
 
-// A client that paused briefly but whose server is still replying must NOT be
-// rebuilt: the session is mid-round and only the client side is silent. This
-// is what keeps a live game from being kicked when the player hits a loading
-// or idle stretch.
-func TestUdpEndpointWriteToKeepsSessionWhileServerReplyFresh(t *testing.T) {
-	mock := &mockPacketConn{}
-	ue := newTestEndpoint(mock)
-	ue.hasReply.Store(true)
-	ue.lastSendNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-	ue.lastReplyNano.Store(time.Now().UnixNano())
-
-	n, err := ue.WriteTo([]byte("hello world"), "1.2.3.4:53")
-	if err != nil {
-		t.Fatalf("expected success while upstream still replies, got: %v", err)
-	}
-	if n != len("hello world") {
-		t.Fatalf("expected %d bytes written, got %d", len("hello world"), n)
-	}
-	if ue.dead.Load() {
-		t.Fatal("endpoint must not be retired while the upstream is still replying")
-	}
-}
-
-// Game UDP over a QUIC-backed transport (hy2/tuic, empty SniffedDomain)
-// still rebuilds after 5s of bidirectional silence: that is the inter-round
-// signal, independent of the transport.
-func TestUdpEndpointWriteToRebuildsGameSessionOnQuicTransport(t *testing.T) {
-	done := make(chan struct{})
-	mock := &deadlineRecordingPacketConn{transportDone: done}
-	ue := newTestEndpoint(mock)
-	ue.hasReply.Store(true)
-	ue.lastSendNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-	ue.lastReplyNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-
-	_, err := ue.WriteTo([]byte("hello world"), "1.2.3.4:53")
-	if !stderrors.Is(err, daeerrors.ErrClosedConnection) {
-		t.Fatalf("expected ErrClosedConnection on stale game session, got: %v", err)
-	}
-	if !ue.dead.Load() {
-		t.Fatal("game UDP over hy2/tuic must still rebuild after 5s of silence")
-	}
-}
-
-// A sniffed long-lived session (H3/DASH/HLS video) silent for the game 5s
-// window must NOT be rebuilt: segment gaps of 6-15s are normal and would
-// otherwise look like a new round.
-func TestUdpEndpointWriteToKeepsSniffedSessionAcrossGameStaleWindow(t *testing.T) {
-	mock := &mockPacketConn{}
-	ue := newTestEndpoint(mock)
-	ue.SniffedDomain = "video.example.com"
-	ue.hasReply.Store(true)
-	ue.lastSendNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-	ue.lastReplyNano.Store(time.Now().Add(-2 * udpEndpointSendStaleTimeout).UnixNano())
-
-	n, err := ue.WriteTo([]byte("hello world"), "1.2.3.4:53")
-	if err != nil {
-		t.Fatalf("expected success across the 5s game window on a sniffed session, got: %v", err)
-	}
-	if n != len("hello world") {
-		t.Fatalf("expected %d bytes written, got %d", len("hello world"), n)
-	}
-	if ue.dead.Load() {
-		t.Fatal("sniffed session must not rebuild after 5s of silence")
-	}
-}
-
-// Past the 30s QUIC/H3 window, a sniffed session is still rebuilt so a
-// peer that actually reaped the session gets a fresh forwarding port.
-func TestUdpEndpointWriteToRebuildsSniffedSessionAfterQuicStaleWindow(t *testing.T) {
-	mock := &mockPacketConn{}
-	ue := newTestEndpoint(mock)
-	ue.SniffedDomain = "video.example.com"
-	ue.hasReply.Store(true)
-	ue.lastSendNano.Store(time.Now().Add(-2 * udpEndpointQuicSendStaleTimeout).UnixNano())
-	ue.lastReplyNano.Store(time.Now().Add(-2 * udpEndpointQuicSendStaleTimeout).UnixNano())
-
-	_, err := ue.WriteTo([]byte("hello world"), "1.2.3.4:53")
-	if !stderrors.Is(err, daeerrors.ErrClosedConnection) {
-		t.Fatalf("expected ErrClosedConnection on QUIC-stale sniffed session, got: %v", err)
-	}
-	if !ue.dead.Load() {
-		t.Fatal("sniffed endpoint must be retired after the 30s silence window")
-	}
-}
-
-// A probing endpoint (never replied) is not subject to stale-session rebuild:
-// the reply guard is only meaningful once the session has been established.
+// Initial writes must also preserve a probing endpoint.
 func TestUdpEndpointWriteToProbingNotRebuilt(t *testing.T) {
 	mock := &mockPacketConn{}
 	ue := newTestEndpoint(mock)
