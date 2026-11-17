@@ -1,0 +1,14 @@
+global {
+    tproxy_port: 12345
+    log_level: warn
+    tcp_check_url: 'http://cp.cloudflare.com'
+    udp_check_dns: 'dns.google:53'
+    check_interval: 600s
+    check_tolerance: 50ms
+    wan_interface: eth0
+    allow_insecure: false
+    dial_mode: domain
+    disable_waiting_network: false
+    auto_config_kernel_parameter: true
+    sniffing_timeout: 30ms
+}

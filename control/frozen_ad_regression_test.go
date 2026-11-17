@@ -318,6 +318,7 @@ func TestAdoptTCPFlowFailureClosesPendingEgressOnce(t *testing.T) {
 		context.Background(), lease, ingress, pending, TcpFlowBinding{},
 		netip.MustParseAddrPort("127.0.0.1:10000"),
 		netip.MustParseAddrPort("127.0.0.1:20000"),
+		nil,
 	)
 	if !errors.Is(err, ErrSessionManagerClosed) {
 		t.Fatalf("adoptTCPFlow error = %v, want ErrSessionManagerClosed", err)
@@ -359,6 +360,7 @@ func TestAdoptTCPFlowFailureDoesNotCloseAbortOwnedEgress(t *testing.T) {
 		context.Background(), lease, ingress, pending, TcpFlowBinding{},
 		netip.MustParseAddrPort("127.0.0.1:10001"),
 		netip.MustParseAddrPort("127.0.0.1:20001"),
+		nil,
 	)
 	if !errors.Is(err, ErrSessionManagerClosed) {
 		t.Fatalf("adoptTCPFlow error = %v, want ErrSessionManagerClosed", err)
@@ -379,7 +381,7 @@ func TestHandleConnDoesNotDoubleCloseFailedAdoption(t *testing.T) {
 		t.Fatalf("read tcp.go: %v", err)
 	}
 	text := string(src)
-	marker := "flow, err := c.adoptTCPFlow(ctx, ownership, ingressConn, rConn, binding, src, dst)"
+	marker := "flow, err := c.adoptTCPFlow(ctx, ownership, ingressConn, rConn, binding, src, dst, routingResult)"
 	idx := strings.Index(text, marker)
 	if idx < 0 {
 		t.Fatal("handleConn adoptTCPFlow call missing")

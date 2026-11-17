@@ -115,6 +115,18 @@ func (c *ControlPlane) unregisterRoutingEpochExecutionOwner() {
 // generation as active.
 func (c *ControlPlane) PublishActiveDebugState() {
 	c.publishActiveControlPlane()
+	if c != nil && c.onPublished != nil {
+		c.onPublishedOnce.Do(c.onPublished)
+	}
+}
+
+// SetOnPublished registers work to run when this generation becomes active. It
+// is set before the generation is published and never runs for a candidate that
+// is rolled back.
+func (c *ControlPlane) SetOnPublished(f func()) {
+	if c != nil {
+		c.onPublished = f
+	}
 }
 
 func (c *ControlPlane) unpublishActiveControlPlane() {

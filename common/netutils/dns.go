@@ -303,6 +303,23 @@ func decodeResolvedAnswer(payload []byte, expectedID uint16) dnsResolveResult {
 		return dnsResolveResult{err: fmt.Errorf("id mismatch: expect %v, got %v", expectedID, msg.Id)}
 	}
 
+	// A non-Success Rcode is a resolution failure, not an empty answer. Only
+	// NXDOMAIN is a definitive "no such name": it keeps err == nil so callers
+	// can treat it as a negative answer and cache it. Every other Rcode is
+	// transient (SERVFAIL, REFUSED, FORMERR, NOTIMP) and must surface as an
+	// error, otherwise the caller cannot tell it apart from NODATA, the cause
+	// is lost before it can be logged, and failover to another resolver is
+	// decided on a value that carries no information.
+	switch msg.Rcode {
+	case dnsmessage.RcodeSuccess, dnsmessage.RcodeNameError:
+	default:
+		rcodeText, ok := dnsmessage.RcodeToString[msg.Rcode]
+		if !ok {
+			rcodeText = "unknown"
+		}
+		return dnsResolveResult{err: fmt.Errorf("dns rcode %s (%d)", rcodeText, msg.Rcode)}
+	}
+
 	// Copy RRs before returning so callers don't retain pooled memory indirectly.
 	var ans []dnsmessage.RR
 	if len(msg.Answer) > 0 {
