@@ -86,6 +86,13 @@ global {
     #udp_check_dns: 'dns.google:53'
     udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
 
+    # Additionally check whether udp_check_dns' host answers DNS over TCP. The result is advisory only: it is logged and
+    # shown per node, and never affects node selection.
+    # Turn it off to save the two extra probes per check_interval if dns.upstream uses https (DoH) or udp, where the
+    # legs cannot observe the real upstream anyway.
+    #check_dns_tcp: false
+    check_dns_tcp: true
+
     check_interval: 30s
 
     # Group will switch node only when new_latency <= old_latency - tolerance.
