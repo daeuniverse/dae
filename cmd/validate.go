@@ -36,6 +36,10 @@ var (
 				fmt.Println(err)
 				os.Exit(1)
 			}
+			if err := conf.Api.Validate(); err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
 			// Dry-run the rule validation the run path performs, so an illegal
 			// rule set fails here (non-zero) instead of at daemon startup.
 			log := logrus.New()

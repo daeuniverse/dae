@@ -160,6 +160,33 @@ type Config struct {
 	Group        []Group         `mapstructure:"group" desc:"GroupDesc"`
 	Routing      Routing         `mapstructure:"routing" required:""`
 	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
+	Api          Api             `mapstructure:"api" desc:"ApiDesc"`
+}
+
+// Api configures the native HTTP control-plane API.
+//
+// It is a top-level section on purpose: enabling and securing the listener is
+// an engine concern, not part of global datapath tuning.
+type Api struct {
+	Enabled                bool     `mapstructure:"enabled" default:"false"`
+	Listen                 string   `mapstructure:"listen" default:"127.0.0.1:9527"`
+	Secret                 string   `mapstructure:"secret"`
+	AllowAnonymousLoopback bool     `mapstructure:"allow_anonymous_loopback" default:"false"`
+	AllowOrigins           []string `mapstructure:"allow_origins"`
+	AllowedHosts           []string `mapstructure:"allowed_hosts"`
+	UI                     string   `mapstructure:"ui"`
+	// ConfigWrite permits control callers to replace editable config sources
+	// over the native API. It requires a listener secret.
+	ConfigWrite bool `mapstructure:"config_write" default:"false"`
+	// DisableConnectionBytes stops the control API from reporting cumulative
+	// bytes per connection. Only userspace flows carry those counters, so a
+	// figure aggregated from them covers a fraction of the traffic; an operator
+	// who does not want that number reported can drop it here.
+	DisableConnectionBytes bool `mapstructure:"disable_connection_bytes" default:"false"`
+	// DirectStats attaches a read-only observer to the WAN/LAN hooks that
+	// counts traffic dae routes directly, the part the userspace relay cannot
+	// see. It is off by default and never changes forwarding.
+	DirectStats bool `mapstructure:"direct_stats" default:"false"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {

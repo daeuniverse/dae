@@ -180,6 +180,10 @@ func loadBpfObjects(_ any, _ *ebpf.CollectionOptions) error {
 	return errBpfObjectsUnavailable
 }
 
+func loadDirectstats() (*ebpf.CollectionSpec, error) {
+	return nil, errBpfObjectsUnavailable
+}
+
 type bpfSpecs struct {
 	bpfProgramSpecs
 	bpfMapSpecs

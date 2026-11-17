@@ -472,7 +472,22 @@ group {
     #filter: name(keyword: HK, keyword: SG)
     policy: min_moving_avg
   }
+  # Keep one member switchable at runtime through the native API.
+  # select(n) starts at the n-th member; a reload returns to this index.
+  #manual {
+  #  policy: select
+  #}
 }
+
+# Optional: native HTTP control-plane API. Disabled by default.
+# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/api.md
+#api {
+#  enabled: true
+#  listen: '127.0.0.1:9527'
+#  secret: 'replace-with-a-long-random-token'
+#  # Optional: serve a built frontend (for example doona) at <listen>/ui/.
+#  #ui: '/usr/share/doona'
+#}
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {

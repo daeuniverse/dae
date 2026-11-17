@@ -1305,6 +1305,8 @@ func (c *DnsController) updateDnsCacheDeadline(cacheKey string, host string, dns
 			return err
 		}
 		newCache.RouteProjectionEpoch = rt.routeProjectionEpoch
+		newCache.Domain = fqdn
+		newCache.QType = dnsTyp
 
 		// Pre-pack before publication so cache readers only observe a complete
 		// entry. The cache/runtime locks below make the entry, its projection,
