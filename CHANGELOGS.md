@@ -166,6 +166,11 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 See `api_dev.md` section 10 for the per-issue evidence and verification.
 
+- Keep proxied UDP flows on the proxy after both directions stay silent for
+  the stale timeout (5 s). Rebuilding the endpoint deleted the flow's
+  conn-state, the proxied reply recreated it as an inbound flow, and later
+  client packets went direct, for example a game's next round (#1137).
+
 #### Build and release
 
 - Add a 20:00 UTC+8 nightly build for days with new commits, publishing only to `nightly`.

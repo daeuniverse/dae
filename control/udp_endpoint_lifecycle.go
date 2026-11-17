@@ -154,6 +154,69 @@ func (ue *UdpEndpoint) TrackUdpConnStateTuplePair(src, dst netip.AddrPort) {
 	}
 }
 
+// pinTrackedUdpConnStatePair pins the endpoint's current tuple pair and
+// returns the unpin function, or nil when nothing is tracked.
+func (ue *UdpEndpoint) pinTrackedUdpConnStatePair() func() {
+	if ue == nil {
+		return nil
+	}
+	ue.udpConnStateMu.Lock()
+	owner := ue.udpConnStateOwner
+	pair := ue.udpConnStateLastPair.Load()
+	closed := ue.udpConnStateClosed
+	ue.udpConnStateMu.Unlock()
+	if closed || owner == nil || pair == nil {
+		return nil
+	}
+	keys := []bpfTuplesKey{
+		bpfTuplesKeyFromAddrPorts(pair.src, pair.dst, uint8(syscall.IPPROTO_UDP)),
+		bpfTuplesKeyFromAddrPorts(pair.dst, pair.src, uint8(syscall.IPPROTO_UDP)),
+	}
+	owner.RetainUdpConnStateTuples(keys)
+	log := ue.log
+	return func() {
+		if err := owner.ReleaseUdpConnStateTuples(keys); err != nil &&
+			log != nil && log.IsLevelEnabled(logrus.DebugLevel) {
+			log.WithError(err).Debug("[UdpEndpoint] Failed to release pinned UDP conn-state tuples")
+		}
+	}
+}
+
+// udpEndpointRebuildError is returned by WriteTo after it retires a stale
+// endpoint. The caller drops its pin once the replacement tracks the flow.
+type udpEndpointRebuildError struct {
+	err     error
+	release func()
+}
+
+func (e *udpEndpointRebuildError) Error() string { return e.err.Error() }
+func (e *udpEndpointRebuildError) Unwrap() error { return e.err }
+
+// takeUdpEndpointRebuildPin returns the pin carried by err once, or nil.
+func takeUdpEndpointRebuildPin(err error) func() {
+	var rebuild *udpEndpointRebuildError
+	if !stderrors.As(err, &rebuild) {
+		return nil
+	}
+	release := rebuild.release
+	rebuild.release = nil
+	return release
+}
+
+// chainUdpConnStatePins runs both unpin functions; either may be nil.
+func chainUdpConnStatePins(first, second func()) func() {
+	switch {
+	case first == nil:
+		return second
+	case second == nil:
+		return first
+	}
+	return func() {
+		second()
+		first()
+	}
+}
+
 func (ue *UdpEndpoint) releaseTrackedUdpConnState() {
 	if ue == nil {
 		return
@@ -610,11 +673,18 @@ func (ue *UdpEndpoint) WriteTo(b []byte, addr string) (int, error) {
 		if last != 0 {
 			staleTimeout := ue.sendStaleTimeout()
 			if now.UnixNano()-last >= int64(staleTimeout) {
+				// Without this pin the retirement deletes the conn-state the
+				// kernel used for this packet, and the proxied reply recreates
+				// it as inbound, so later packets go direct (#1137).
+				pin := ue.pinTrackedUdpConnStatePair()
 				ue.retire()
 				// ErrClosedConnection is classified as a normal UDP endpoint
 				// closure, so the retry removes the stale endpoint and dials a
 				// fresh hy2 session without penalizing the underlying dialer.
-				return 0, fmt.Errorf("%w: both directions silent for %s, rebuilding session", errors.ErrClosedConnection, staleTimeout)
+				return 0, &udpEndpointRebuildError{
+					err:     fmt.Errorf("%w: both directions silent for %s, rebuilding session", errors.ErrClosedConnection, staleTimeout),
+					release: pin,
+				}
 			}
 		}
 	}
