@@ -39,7 +39,7 @@ func TestSkippedSubscriptionNodesWarnOnceThenAggregate(t *testing.T) {
 	set := NewDialerSetFromLinksContext(context.Background(), option, map[string][]string{
 		"sub-a": {"q4-unknown-scheme://one", "q4-unknown-scheme://two"},
 		"sub-b": {"q4-unknown-scheme://three"},
-	})
+	}, nil)
 	t.Cleanup(func() { _ = set.Close() })
 
 	entries := hook.AllEntries()
@@ -86,7 +86,7 @@ func TestValidSubscriptionNodesAreSilent(t *testing.T) {
 	option := &dialer.GlobalOption{Log: logger, CheckInterval: time.Minute}
 	set := NewDialerSetFromLinksContext(context.Background(), option, map[string][]string{
 		"sub-ok": {"socks5://user:pass@203.0.113.10:1080"},
-	})
+	}, nil)
 	t.Cleanup(func() { _ = set.Close() })
 
 	if got := len(hook.AllEntries()); got != 0 {
@@ -109,7 +109,7 @@ func TestSkippedNodeDetailStaysAvailableAtDebug(t *testing.T) {
 	option := &dialer.GlobalOption{Log: logger, CheckInterval: time.Minute}
 	set := NewDialerSetFromLinksContext(context.Background(), option, map[string][]string{
 		"sub-a": {"q4-unknown-scheme://one", "q4-unknown-scheme://two"},
-	})
+	}, nil)
 	t.Cleanup(func() { _ = set.Close() })
 
 	detailed := 0

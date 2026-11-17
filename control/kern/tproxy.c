@@ -523,7 +523,24 @@ struct conn_state {
 	__u32 pid;                 // Process ID (for WAN egress; 0 for LAN)
 	// 0 is unknown; active routing slots 0 and 1 are encoded as 1 and 2.
 	__u8 routing_epoch_slot;
-	__u8 padding_after_pid;
+	// Set by whichever hook decided this flow is forwarded by the kernel
+	// without userspace: the LAN-ingress direct branch, or the WAN-egress
+	// direct branch for a local socket.
+	//
+	// Reserved: userspace does not read it any more. It used to drive the
+	// pass-through byte accounting, which now lives in userspace only (see the
+	// note where the accounting maps used to be), so the flag is kept as a
+	// debugging aid and to preserve the conn_state layout.
+	//
+	// The download side at WAN ingress cannot recover this from the routing
+	// shape. Three cases must be told apart and only the first is a
+	// pass-through: a LAN flow routed to direct stores outbound=DIRECT with
+	// the rule's mark (which may be non-zero); a local socket with a non-zero
+	// direct mark is dialed by userspace and already counted by the relay; and
+	// an entry whose routing has not been published yet looks exactly like a
+	// pass-through. Occupies the alignment slot that used to be padding, so
+	// the entry size is unchanged.
+	__u8 direct_passthrough;
 	__u16 datapath_generation;
 };
 
@@ -584,8 +601,13 @@ enum bpf_stats_key {
 // pressure mode. Keys are a userspace-visible contract: mirror any change in
 // control/event_rate_contract.go (guarded by
 // TestBpfStatsKeysParityWithKernelSource).
+//
+// PERCPU: several keys are incremented per packet (stateless TCP passthrough,
+// unsolicited UDP). A shared ARRAY would make every CPU contend for one
+// cacheline on exactly the paths that already cost the most; a per-CPU value
+// needs no arbitration. Userspace sums the per-CPU copies.
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
 	__type(value, __u64);
 	__uint(max_entries, BPF_STATS_MAX);
@@ -601,6 +623,17 @@ static __always_inline void bump_stat(__u32 key)
 	if (counter)
 		__sync_fetch_and_add(counter, 1);
 }
+
+/* Pass-through accounting lives in userspace only.
+ *
+ * The datapath used to keep two maps here (a PERCPU byte counter and an LRU
+ * index of pass-through flows) so /runtime could report kernel-forwarded bytes.
+ * Both were paid for by every installation, including the ones that never enable
+ * the API: the index cost about 12 MiB of memlock and one map update per packet
+ * on the direct path. The figure is now scoped to visible traffic - the relay
+ * counts payload bytes, and traffic the kernel forwards is not reported - which
+ * keeps the datapath free of observation state. See docs/.../api.md.
+ */
 
 // Event rate-limit constants are owned by userspace and injected through the
 // .rodata datasec at load time (same mechanism as struct dae_param). The
@@ -2795,6 +2828,11 @@ static __always_inline bool is_new_tcp_connection(const struct tcphdr *tcph)
 
 // Reverse-direction conntrack refresh shared by standalone and combined LAN
 // egress roles after a single packet parse.
+//
+// Only the diagnostic counters live here. A bridged LAN forwards through its
+// member ports instead of the bridge device, so this hook sees the host's own
+// traffic and hardly any forwarded reply packets; the download side of a
+// pass-through flow is counted on the WAN ingress instead.
 static __always_inline int
 tproxy_lan_egress_refresh(struct tuples *tuples, const struct tcphdr *tcph,
 			  const struct udphdr *udph, __u8 l4proto)
@@ -2971,8 +3009,7 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		 */
 		if (!tcp_state->meta.data.has_routing) {
 			/* No cache: keep historical direct-pass semantics (e.g.
-			 * single-arm / reply-path traffic).
-			 */
+			 * single-arm / reply-path traffic). */
 			return TC_ACT_OK;
 		}
 
@@ -2982,6 +3019,7 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 
 		if (outbound == OUTBOUND_DIRECT) {
 			skb->mark = mark;
+			tcp_state->direct_passthrough = 1;
 			return TC_ACT_OK;
 		}
 		if (unlikely(outbound == OUTBOUND_BLOCK))
@@ -3027,6 +3065,7 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 
 				if (outbound == OUTBOUND_DIRECT) {
 					skb->mark = mark;
+					udp_state->direct_passthrough = 1;
 					goto direct;
 				} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 					goto block;
@@ -3179,6 +3218,13 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 
 	if (outbound == OUTBOUND_DIRECT) {
 		skb->mark = mark;
+		/* Record the decision on the flow, not on the routing shape: a
+		 * direct(mark: N) LAN flow is still a kernel pass-through, while the
+		 * same shape on a local socket is dialed by userspace. */
+		if (tcp_state)
+			tcp_state->direct_passthrough = 1;
+		if (udp_state)
+			udp_state->direct_passthrough = 1;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND DIRECT");
 #endif
@@ -3214,6 +3260,8 @@ tproxy_lan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		routing_epoch_slot);
 
 direct:
+	/* Every UDP pass-through and the TCP-SYN pass-throughs (including the
+	 * map-full fallback) reach this label. */
 	return TC_ACT_OK;
 
 block:
@@ -3324,7 +3372,8 @@ tproxy_wan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		copy_reversed_tuples(&pkt->tuples.five, &reversed_tuples_key);
 		mark_tcp_seen(&reversed_tuples_key, &pkt->tcph, true,
 			      NULL, NULL, NULL, NULL,
-			      0, NULL, 0, ROUTING_EPOCH_SLOT_UNKNOWN);
+			      0, NULL, 0,
+			      ROUTING_EPOCH_SLOT_UNKNOWN);
 	} else if (pkt->l4proto == IPPROTO_UDP) {
 		struct tuples_key reversed_tuples_key;
 		__u8 state_status = UDP_CONN_STATE_STATUS_UNAVAILABLE;
@@ -3342,9 +3391,10 @@ tproxy_wan_ingress_role(struct __sk_buff *skb, __u32 link_h_len,
 		 * services), so this is counted, not enforced. See fix-plan.md
 		 * decision A20. */
 		mark_udp_seen_with_status(&reversed_tuples_key, true,
-					  NULL, NULL, NULL, NULL,
-					  0, NULL, 0,
-					  ROUTING_EPOCH_SLOT_UNKNOWN, &state_status);
+					  NULL, NULL, NULL,
+					  NULL, 0, NULL, 0,
+					  ROUTING_EPOCH_SLOT_UNKNOWN,
+					  &state_status);
 		if (state_status != UDP_CONN_STATE_STATUS_EXISTING &&
 		    state_status != UDP_CONN_STATE_STATUS_UNAVAILABLE)
 			bump_stat(BPF_STATS_UNSOLICITED_UDP_SEEN);
@@ -3569,10 +3619,20 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			routing_epoch_slot);
 
 		if (!tcp_conn) {
-			if (outbound == OUTBOUND_DIRECT && mark == 0)
+			if (outbound == OUTBOUND_DIRECT && mark == 0) {
+				/* conn_state_map is full; the flow is still forwarded by
+				 * the kernel. */
 				return DAE_TC_CONTINUE;
+			}
 			return TC_ACT_SHOT;
 		}
+
+		/* Record the pass-through decision on the flow so the WAN-ingress role
+		 * can account its download side. Only the branches that actually bypass
+		 * userspace qualify, which is exactly what
+		 * wan_egress_needs_control_plane answers. */
+		if (!wan_egress_needs_control_plane(outbound, mark))
+			tcp_conn->direct_passthrough = 1;
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		__u32 pid = pid_pname ? pid_pname->pid : 0;
@@ -3601,12 +3661,22 @@ do_tproxy_wan_egress_tcp(struct __sk_buff *skb, __u32 link_h_len,
 			bump_stat(BPF_STATS_STATELESS_TCP_PASSTHROUGH);
 			return DAE_TC_CONTINUE;
 		}
-		if (!tcp_conn->meta.data.has_routing)
+		if (!tcp_conn->meta.data.has_routing) {
+			/* A WAN-egress entry without a routing decision is a local
+			 * socket's pass-through flow: the direct branch above
+			 * deliberately publishes none, and a proxied flow always does. */
+			tcp_conn->direct_passthrough = 1;
 			return DAE_TC_CONTINUE;
+		}
 
 		outbound = tcp_conn->meta.data.outbound;
 		mark = tcp_conn->meta.data.mark;
 		must = tcp_conn->meta.data.must;
+		/* must_direct and any other DIRECT shape that still publishes a
+		 * routing decision reaches the shared pass-through site below, so
+		 * it needs the flow flag here as well. */
+		if (!wan_egress_needs_control_plane(outbound, mark))
+			tcp_conn->direct_passthrough = 1;
 		__builtin_memcpy(handoff_mac, tcp_conn->mac, 6);
 		__builtin_memcpy(scratch->mac, tcp_conn->mac, 6);
 		handoff_pname = (const char *)tcp_conn->pname;
@@ -3777,10 +3847,13 @@ fast_path_skip_routing:
 		   tuples->five.dip.u6_addr32, bpf_ntohs(tuples->five.dport));
 #endif
 
-	if (!wan_egress_needs_control_plane(outbound, mark))
+	if (!wan_egress_needs_control_plane(outbound, mark)) {
+		if (udp_conn_state)
+			udp_conn_state->direct_passthrough = 1;
 		return DAE_TC_CONTINUE;
-	else if (unlikely(outbound == OUTBOUND_BLOCK))
+	} else if (unlikely(outbound == OUTBOUND_BLOCK)) {
 		return TC_ACT_SHOT;
+	}
 
 	if (!cached_routing &&
 	    !wan_outbound_is_alive(skb, outbound, IPPROTO_UDP,

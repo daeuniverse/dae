@@ -1,0 +1,4 @@
+include {
+    config.d/*.dae
+    api.dae
+}

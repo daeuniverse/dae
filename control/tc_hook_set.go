@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -54,6 +55,11 @@ type tcHookSpec struct {
 	Name      string
 	Program   *ebpf.Program
 	Run       func(func() error) error
+	// Optional marks a best-effort hook (the direct-traffic observer). An
+	// attach/update/detach failure is reported to OnError and skipped; it must
+	// not fail the transaction that carries the mandatory forwarding hooks.
+	Optional bool
+	OnError  func(error)
 }
 
 func (s tcHookSpec) key() tcHookKey {
@@ -448,6 +454,56 @@ func (s *tcHookSet) upsert(spec tcHookSpec) error {
 	return nil
 }
 
+// countHooksWithPrefix counts committed entries whose program name starts with
+// prefix. It is used to distinguish "observation is on" from "a hook actually
+// reached the datapath" without adding another piece of mutable state.
+func (s *tcHookSet) countHooksWithPrefix(prefix string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, group := range s.groups {
+		for _, entry := range group.entries {
+			if entry != nil && strings.HasPrefix(entry.spec.Name, prefix) {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// removeHooksWithPrefix removes only the entries matching prefix on one
+// device. Unlike removeInterface it leaves every other hook (notably tproxy)
+// on that ifindex alone, so bridge-port lifecycle handling cannot unbalance the
+// forwarding path.
+func (s *tcHookSet) removeHooksWithPrefix(scope tcHookScope, ifindex int, prefix string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	if s.txn != nil {
+		return fmt.Errorf("TC HookSet transaction is active")
+	}
+	before := s.currentSpecsLocked()
+	desired := cloneTCHookSpecs(before)
+	removed := false
+	for key, spec := range desired {
+		if key.group.scope == scope && key.group.ifindex == ifindex &&
+			strings.HasPrefix(spec.Name, prefix) {
+			delete(desired, key)
+			removed = true
+		}
+	}
+	if !removed {
+		return nil
+	}
+	if err := s.applyDesiredLocked(desired); err != nil {
+		return stderrors.Join(err, s.applyDesiredLocked(before))
+	}
+	s.pruneEmptyGroupsLocked()
+	return nil
+}
+
 func (s *tcHookSet) removeInterface(scope tcHookScope, ifindex int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -537,6 +593,17 @@ func (s *tcHookSet) restoreModesLocked(modes map[tcHookGroupKey]tcHookMode) {
 	}
 }
 
+// reportOptionalError surfaces a best-effort hook failure without aborting the
+// transaction. The observer caller stores it in DirectStatsStatus.last_error.
+func (s *tcHookSet) reportOptionalError(spec tcHookSpec, err error) {
+	if spec.OnError != nil {
+		spec.OnError(err)
+	}
+	if s.log != nil {
+		s.log.WithError(err).Warnf("optional TC hook %s on %s failed; continuing with the mandatory hooks", spec.Name, spec.Ifname)
+	}
+}
+
 func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 	for _, key := range sortedTCHookKeys(desired, false) {
 		spec := desired[key]
@@ -548,6 +615,21 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 		entry := group.entries[key.priority]
 		if entry == nil {
 			if err := s.attachLocked(group, spec); err != nil {
+				if spec.Optional {
+					// A classic replace records the requested state before it
+					// reports an ACK/read failure. Leaving that entry behind
+					// would count a hook that never reached the datapath, so
+					// remove the model entry and undo the partial attach.
+					if failed, ok := group.entries[key.priority]; ok {
+						if detachErr := s.detachLocked(group, failed); detachErr != nil {
+							err = stderrors.Join(err, detachErr)
+						}
+						delete(group.entries, key.priority)
+					}
+					s.pruneEmptyGroupsLocked()
+					s.reportOptionalError(spec, err)
+					continue
+				}
 				return fmt.Errorf("attach TC hook %s on %s: %w", spec.Name, spec.Ifname, err)
 			}
 			continue
@@ -557,6 +639,10 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 			continue
 		}
 		if err := s.updateLocked(group, entry, spec); err != nil {
+			if spec.Optional {
+				s.reportOptionalError(spec, err)
+				continue
+			}
 			return fmt.Errorf("update TC hook %s on %s: %w", spec.Name, spec.Ifname, err)
 		}
 	}
@@ -574,6 +660,10 @@ func (s *tcHookSet) applyDesiredLocked(desired map[tcHookKey]tcHookSpec) error {
 		// transaction rollback reattaches/replaces the snapshot unconditionally.
 		delete(group.entries, key.priority)
 		if err != nil {
+			if entry.spec.Optional {
+				s.reportOptionalError(entry.spec, err)
+				continue
+			}
 			return fmt.Errorf("detach TC hook %s on %s: %w", entry.spec.Name, entry.spec.Ifname, err)
 		}
 	}

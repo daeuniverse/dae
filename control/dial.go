@@ -248,6 +248,11 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 	for attempt := range 2 {
 		res, err := c.chooseProxyDialer(p)
 		if err != nil {
+			if res != nil {
+				c.noteOutboundDialError(res)
+			} else if p.Outbound != consts.OutboundBlock {
+				c.outboundCountersForIndex(p.Outbound).AddError()
+			}
 			return nil, res, err
 		}
 		lastRes = res
@@ -265,6 +270,7 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 				l4proto = res.SelectionNetworkTypeObj.L4Proto
 			}
 			notifyProxyDialerHealthCheck(res.Dialer, l4proto, err)
+			c.noteOutboundDialError(res)
 			return nil, res, err
 		}
 		if res.SelectionNetworkTypeObj != nil {
@@ -274,5 +280,17 @@ func (c *ControlPlane) routeDial(ctx context.Context, p *proxyDialParam) (netpro
 			)
 		}
 	}
+	if lastRes != nil {
+		c.noteOutboundDialError(lastRes)
+	}
 	return nil, lastRes, lastErr
+}
+
+// noteOutboundDialError counts a failed dial against the selected outbound.
+// A block outbound is policy, not failure, so it is excluded.
+func (c *ControlPlane) noteOutboundDialError(res *proxyDialResult) {
+	if c == nil || res == nil || res.OutboundIndex == consts.OutboundBlock {
+		return
+	}
+	c.outboundCountersForIndex(res.OutboundIndex).AddError()
 }

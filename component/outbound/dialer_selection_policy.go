@@ -53,6 +53,29 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 			FixedIndex: index,
 		}, nil
 
+	case consts.DialerSelectionPolicy_Select:
+		if f.Not {
+			return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)
+		}
+		switch {
+		case len(f.Params) == 0:
+			return &DialerSelectionPolicy{
+				Policy:     fName,
+				FixedIndex: 0,
+			}, nil
+		case len(f.Params) == 1 && f.Params[0].Key == "":
+			index, err := strconv.Atoi(f.Params[0].Val)
+			if err != nil {
+				return nil, fmt.Errorf(`invalid "%v" param format: %w`, f.Name, err)
+			}
+			return &DialerSelectionPolicy{
+				Policy:     fName,
+				FixedIndex: index,
+			}, nil
+		default:
+			return nil, fmt.Errorf(`invalid "%v" param format`, f.Name)
+		}
+
 	default:
 		return nil, fmt.Errorf("unexpected policy: %v", f.Name)
 	}

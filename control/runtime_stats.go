@@ -6,7 +6,6 @@
 package control
 
 import (
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +19,9 @@ const (
 	runtimeRateWindow        = time.Second
 )
 
+// RuntimeSampleInterval is the recorder interval of traffic history samples.
+const RuntimeSampleInterval = runtimeBucketDuration
+
 // RuntimeTrafficSample contains one upload/download rate point.
 type RuntimeTrafficSample struct {
 	Timestamp    time.Time
@@ -29,11 +31,13 @@ type RuntimeTrafficSample struct {
 
 // RuntimeStatsSnapshot preserves the traffic-latency branch's exported API.
 type RuntimeStatsSnapshot struct {
-	UpdatedAt         time.Time
-	UploadRate        uint64
-	DownloadRate      uint64
-	UploadTotal       uint64
-	DownloadTotal     uint64
+	UpdatedAt     time.Time
+	UploadRate    uint64
+	DownloadRate  uint64
+	UploadTotal   uint64
+	DownloadTotal uint64
+	// The totals are userspace payload bytes only: the datapath no longer
+	// counts the flows it forwards without the relay, so there is one plane.
 	ActiveConnections int
 	UDPSessions       int
 	Samples           []RuntimeTrafficSample
@@ -55,15 +59,31 @@ type runtimeStats struct {
 
 	uploadTotal   atomic.Uint64
 	downloadTotal atomic.Uint64
-	history       []runtimeBucket
-	historyStart  int
-	historyLen    int
+
+	history      []runtimeBucket
+	historyStart int
+	historyLen   int
 }
 
 var (
+	// globalRuntimeStats is the single, process-lifetime store. Traffic history
+	// and lifetime totals are process facts, not generation facts: flows that
+	// survive a reload keep their recorders and must keep landing in the store
+	// the dashboard reads. A per-generation store made those flows write into an
+	// orphaned store, so `/runtime` froze at the handoff value and the rate read
+	// zero until the old flows closed.
 	globalRuntimeStats = newRuntimeStats()
 	activeRuntimeStats atomic.Pointer[runtimeStats]
+	// lastPublishedRuntimeStats keeps the previous generation's store reachable
+	// for the totals handoff even while no store is active (a reload gap).
+	lastPublishedRuntimeStats atomic.Pointer[runtimeStats]
 )
+
+// processRuntimeStatsStore returns the process-lifetime store every generation
+// records into.
+func processRuntimeStatsStore() *runtimeStats {
+	return globalRuntimeStats
+}
 
 func newRuntimeStats() *runtimeStats {
 	return &runtimeStats{}
@@ -84,7 +104,26 @@ func publishRuntimeStatsStore(s *runtimeStats) {
 	if s == nil {
 		return
 	}
+	if prev := lastPublishedRuntimeStats.Load(); prev != nil {
+		s.inheritTotalsFrom(prev)
+	}
 	activeRuntimeStats.Store(s)
+	lastPublishedRuntimeStats.Store(s)
+}
+
+// inheritTotalsFrom carries the process-lifetime byte totals across a
+// generation handoff.
+//
+// A reload builds a fresh generation-local store. Without this the reported
+// totals dropped to zero on every reload while runtime/outbounds kept counting
+// in its process-level registry, so the two resources disagreed by the whole
+// process history - which reads as "the API numbers are wrong".
+func (s *runtimeStats) inheritTotalsFrom(prev *runtimeStats) {
+	if s == nil || prev == nil || s == prev {
+		return
+	}
+	s.uploadTotal.Add(prev.uploadTotal.Load())
+	s.downloadTotal.Add(prev.downloadTotal.Load())
 }
 
 func unpublishRuntimeStatsStore(s *runtimeStats) {
@@ -128,10 +167,16 @@ func (c *ControlPlane) unpublishRuntimeStats() {
 	unpublishRuntimeStatsStore(c.runtimeStats)
 }
 
+// record is the single writer of the bucket and the lifetime totals, so the two
+// can never drift apart.
 func (s *runtimeStats) record(upload uint64, download uint64) {
-	if s == nil {
+	if s == nil || (upload == 0 && download == 0) {
 		return
 	}
+	// No clock read here. A dedicated sampler rotates the in-flight bucket on a
+	// fixed cadence, so the forwarding path pays one atomic add per record
+	// instead of a time.Now() (and a possible lock) on every relay write. The
+	// sampler is the reason rotation no longer has to ride a dashboard poll.
 	if upload > 0 {
 		s.currentUploadBytes.Add(upload)
 		s.uploadTotal.Add(upload)
@@ -142,10 +187,47 @@ func (s *runtimeStats) record(upload uint64, download uint64) {
 	}
 }
 
-// startRoller was removed: rollLocked is fully lazy. The bucket window only
-// advances when traffic is recorded or a snapshot is requested, so no
-// periodic goroutine is needed. An empty-window ticker previously woke up
-// ~4x/second on idle just to perform a no-op rotation.
+// startRuntimeStatsSampler rotates the in-flight bucket on a fixed cadence for
+// the process-lifetime store. It runs at most once per process and only rotates:
+// it adds no traffic, so an idle daemon does one atomic load per tick.
+//
+// Rotation has to be time-driven rather than poll-driven: a dashboard polls at
+// its own cadence, and bytes recorded between two polls would otherwise land in
+// the first finished bucket, which scales the one-second rate by that bucket's
+// share of the window and under-reports it. Snapshot still rotates as a guard
+// for the case where the sampler has not started yet.
+func startRuntimeStatsSampler(store *runtimeStats) {
+	if store == nil {
+		return
+	}
+	runtimeStatsSamplerOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(RuntimeSampleInterval)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				store.advanceBucket(now)
+			}
+		}()
+	})
+}
+
+var runtimeStatsSamplerOnce sync.Once
+
+// advanceBucket rotates the in-flight bucket once its boundary has passed.
+// The common case is one atomic load and compare; only a crossing takes the
+// lock, so the burst path never contends with a reader.
+func (s *runtimeStats) advanceBucket(now time.Time) {
+	if s == nil {
+		return
+	}
+	start := timeFromUnixNano(s.currentBucketStartUnixNano.Load())
+	if !start.IsZero() && !bucketStart(now).After(start) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rollLocked(now)
+}
 
 func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSec int, maxPoints int, now time.Time) RuntimeStatsSnapshot {
 	if s == nil {
@@ -177,17 +259,25 @@ func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSe
 		}
 	}
 
+	// Include the in-flight bucket when it has actually spanned time. A
+	// zero-length bucket would otherwise be counted as a full interval in the
+	// rate denominator and in the sample series, dragging both down (or
+	// fabricating a zero sample) whenever a snapshot lands exactly on a
+	// boundary.
+	// History carries only completed intervals: the in-flight bucket's rate is
+	// an instantaneous reading whose span shrinks to nothing near a boundary,
+	// which would show up as a spike at the end of every chart.
+	completedBuckets := len(buckets)
+
 	currentBucketStart := s.currentBucketStartLocked()
-	currentDuration := now.Sub(currentBucketStart)
-	if currentDuration <= 0 {
-		currentDuration = runtimeBucketDuration
+	if currentDuration := now.Sub(currentBucketStart); currentDuration > 0 {
+		buckets = append(buckets, runtimeBucket{
+			Timestamp:     now,
+			UploadBytes:   s.currentUploadBytes.Load(),
+			DownloadBytes: s.currentDownloadBytes.Load(),
+			Duration:      currentDuration,
+		})
 	}
-	buckets = append(buckets, runtimeBucket{
-		Timestamp:     now,
-		UploadBytes:   s.currentUploadBytes.Load(),
-		DownloadBytes: s.currentDownloadBytes.Load(),
-		Duration:      currentDuration,
-	})
 
 	uploadRate, downloadRate := ratesFromBuckets(buckets, now, runtimeRateWindow)
 
@@ -199,7 +289,7 @@ func (s *runtimeStats) snapshot(activeConnections int, udpSessions int, windowSe
 		DownloadTotal:     s.downloadTotal.Load(),
 		ActiveConnections: activeConnections,
 		UDPSessions:       udpSessions,
-		Samples:           bucketizeRuntimeSamples(samplesFromBuckets(buckets), maxPoints),
+		Samples:           thinRuntimeSamples(samplesFromBuckets(buckets[:completedBuckets]), maxPoints),
 	}
 }
 
@@ -223,6 +313,12 @@ func (s *runtimeStats) rollLocked(now time.Time) {
 	if uploadBytes == 0 && downloadBytes == 0 && s.historyLen == 0 {
 		s.currentBucketStartUnixNano.Store(targetBucketStart.UnixNano())
 		return
+	}
+	// An idle gap longer than the retention ring cannot be materialized bucket
+	// by bucket; jump to the oldest bucket that can still be retained so the
+	// rotation stays bounded after a long pause.
+	if gap := targetBucketStart.Sub(currentBucketStart); gap > time.Duration(maxRuntimeHistoryBuckets())*runtimeBucketDuration {
+		currentBucketStart = targetBucketStart.Add(-time.Duration(maxRuntimeHistoryBuckets()) * runtimeBucketDuration)
 	}
 	for nextBucketStart := currentBucketStart.Add(runtimeBucketDuration); !nextBucketStart.After(targetBucketStart); nextBucketStart = nextBucketStart.Add(runtimeBucketDuration) {
 		s.pushHistoryBucket(runtimeBucket{
@@ -301,37 +397,23 @@ func (c *ControlPlane) SnapshotRuntimeStats(windowSec int, maxPoints int) Runtim
 	return c.runtimeStatsStore().snapshot(activeConnections, udpSessions, windowSec, maxPoints, time.Now())
 }
 
-func bucketizeRuntimeSamples(samples []RuntimeTrafficSample, maxPoints int) []RuntimeTrafficSample {
-	if len(samples) <= maxPoints {
+// thinRuntimeSamples selects every Nth stored sample backwards from the newest
+// so at most maxPoints are returned. The contract asks for decimation with the
+// original timestamps and rates preserved: aggregating a bucket (for example
+// with its maximum) would fabricate spikes the recorder never measured.
+func thinRuntimeSamples(samples []RuntimeTrafficSample, maxPoints int) []RuntimeTrafficSample {
+	if maxPoints <= 0 || len(samples) <= maxPoints {
 		return samples
 	}
+	stride := (len(samples) + maxPoints - 1) / maxPoints
 
-	bucketSize := int(math.Ceil(float64(len(samples)) / float64(maxPoints)))
 	result := make([]RuntimeTrafficSample, 0, maxPoints)
-
-	for start := 0; start < len(samples); start += bucketSize {
-		end := min(start+bucketSize, len(samples))
-		bucket := samples[start:end]
-		last := bucket[len(bucket)-1]
-
-		maxUpload := last.UploadRate
-		maxDownload := last.DownloadRate
-		for _, sample := range bucket[:len(bucket)-1] {
-			if sample.UploadRate > maxUpload {
-				maxUpload = sample.UploadRate
-			}
-			if sample.DownloadRate > maxDownload {
-				maxDownload = sample.DownloadRate
-			}
-		}
-
-		result = append(result, RuntimeTrafficSample{
-			Timestamp:    last.Timestamp,
-			UploadRate:   maxUpload,
-			DownloadRate: maxDownload,
-		})
+	for i := len(samples) - 1; i >= 0; i -= stride {
+		result = append(result, samples[i])
 	}
-
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
 	return result
 }
 

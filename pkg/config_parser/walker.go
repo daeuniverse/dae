@@ -9,9 +9,10 @@ package config_parser
 
 import (
 	"fmt"
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"strconv"
 	"strings"
+
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 	"github.com/sirupsen/logrus"
@@ -317,8 +318,10 @@ func (w *Walker) parseExpression(exp dae_config.IExpressionContext) *Section {
 	list := children[2].(dae_config.IRoutingRuleOrDeclarationOrLiteralOrExpressionListContext)
 	items := w.parseRoutingRuleOrDeclarationOrLiteralOrExpressionListContext(list)
 	return &Section{
-		Name:  name,
-		Items: items,
+		Name:      name,
+		Items:     items,
+		StartLine: exp.GetStart().GetLine(),
+		EndLine:   exp.GetStop().GetLine(),
 	}
 }
 
