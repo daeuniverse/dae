@@ -9,6 +9,7 @@ import (
 	"context"
 	stderrors "errors"
 	"sync"
+	"time"
 
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -32,8 +33,28 @@ type runtimeGeneration struct {
 	cancel       context.CancelFunc
 	conf         *config.Config
 
+	id             string
+	configRevision string
+	activatedAt    time.Time
+
 	cleanupOnce sync.Once
 	cleanupErr  error
+}
+
+// newRuntimeGeneration builds a generation with a fresh runtime identity.
+func newRuntimeGeneration(controlPlane *control.ControlPlane, listener *control.Listener, cancel context.CancelFunc, conf *config.Config) *runtimeGeneration {
+	g := &runtimeGeneration{
+		controlPlane: controlPlane,
+		listener:     listener,
+		cancel:       cancel,
+		conf:         conf,
+		id:           newGenerationID(),
+		activatedAt:  time.Now(),
+	}
+	if conf != nil {
+		g.configRevision = conf.Revision()
+	}
+	return g
 }
 
 // cleanup releases a generation's owned resources exactly once. Rollback
@@ -211,6 +232,21 @@ func (s *runtimeSupervisor) ownsRetiring(retiring *runtimeGeneration) bool {
 	defer s.mu.Unlock()
 
 	return !s.closed && s.retiring == retiring
+}
+
+// activeSnapshot returns the currently active generation for read-only
+// observation. The returned generation and its configuration are immutable;
+// callers must not retain it across an unbounded wait.
+func (s *runtimeSupervisor) activeSnapshot() *runtimeGeneration {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	return s.active
 }
 
 // shutdown atomically transfers all generation cleanup ownership to the

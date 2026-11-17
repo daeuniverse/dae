@@ -23,7 +23,10 @@ import (
 )
 
 // Route resolves a routing input with the userspace matcher. An empty domain
-// means no domain is known for this invocation.
+// means no domain is known for this invocation. A nil routingResult means no
+// kernel metadata exists for this invocation, which is the normal case for a
+// DNS query that never traversed the datapath; the MAC, process name and DSCP
+// then take their zero values instead of dereferencing the pointer.
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	var ipVersion consts.IpVersionType
 	if dst.Addr().Is4() || dst.Addr().Is4In6() {
@@ -32,7 +35,13 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		ipVersion = consts.IpVersion_6
 	}
 	var mac16 [16]uint8
-	copy(mac16[10:], routingResult.Mac[:])
+	var pname [16]uint8
+	var dscp uint8
+	if routingResult != nil {
+		copy(mac16[10:], routingResult.Mac[:])
+		pname = routingResult.Pname
+		dscp = routingResult.Dscp
+	}
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
 	outboundIndex, mark, must, err = c.routingMatcher.Match(
@@ -43,8 +52,8 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		ipVersion,
 		l4proto,
 		domain,
-		routingResult.Pname,
-		routingResult.Dscp,
+		pname,
+		dscp,
 		mac16,
 	)
 	return

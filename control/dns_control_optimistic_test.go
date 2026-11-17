@@ -134,3 +134,32 @@ func TestBackgroundRefreshResponseSemantics(t *testing.T) {
 		})
 	}
 }
+
+// A delete/flush must invalidate a resolution that started before it, even when
+// the delete matched nothing (the entry was not stored yet). The epoch used to
+// advance only when an entry matched, and only the background-refresh writer
+// checked it, so an in-flight answer could repopulate the cache the caller was
+// told had been cleared.
+func TestDeleteFlushBarrierDropsInFlightResolution(t *testing.T) {
+	ctrl := newSemanticsController(t)
+	const cacheKey = "barrier.example.com.:1|asis"
+
+	inflightEpoch := ctrl.cacheEpochSnapshot()
+	if matched, deleted := ctrl.evictDnsCacheWhere(func(string, *DnsCache) bool { return false }); matched != 0 || deleted != 0 {
+		t.Fatalf("empty delete = %d/%d, want 0/0", matched, deleted)
+	}
+	if err := ctrl.storeResolvedResponse(dnsAResponseMsg("barrier.example.com.", "203.0.113.9"), cacheKey, inflightEpoch); err != nil {
+		t.Fatalf("storeResolvedResponse: %v", err)
+	}
+	if _, present := ctrl.dnsCache.Load(cacheKey); present {
+		t.Fatal("an answer resolved before the delete repopulated the cache")
+	}
+
+	// A resolution that starts after the barrier still stores normally.
+	if err := ctrl.storeResolvedResponse(dnsAResponseMsg("barrier.example.com.", "203.0.113.9"), cacheKey, ctrl.cacheEpochSnapshot()); err != nil {
+		t.Fatalf("storeResolvedResponse after barrier: %v", err)
+	}
+	if _, present := ctrl.dnsCache.Load(cacheKey); !present {
+		t.Fatal("a fresh resolution was dropped by the barrier")
+	}
+}

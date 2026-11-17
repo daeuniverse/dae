@@ -21,6 +21,7 @@ type RoutingMatcher struct {
 
 	compiledMatches []compiledRoutingMatch
 	predicateGroups []routingMatcherPredicateGroupSpan
+	ruleSpans       []routingMatcherRuleSpan
 
 	// needs records which fact strings any compiled rule can consume, so the
 	// hot path skips building 128-char binary keys nothing will ever read.
@@ -58,11 +59,19 @@ func computeRoutingMatcherNeeds(matches []compiledRoutingMatch) routingMatcherNe
 // reconstructed from logical outbound markers because a non-final parameter
 // key group can itself end with OutboundLogicalOr.
 type routingMatcherPredicateGroupSpan struct {
-	name  string
-	key   string
-	not   bool
-	start int
-	end   int
+	name       string
+	expression string
+	not        bool
+	start      int
+	end        int
+	ruleIndex  int
+}
+
+type routingMatcherRuleSpan struct {
+	start         int
+	end           int
+	conditionFrom int
+	conditionTo   int
 }
 
 // routingMatcherFacts is the normalized userspace input shared by the legacy

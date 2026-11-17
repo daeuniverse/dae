@@ -1,0 +1,15 @@
+routing {
+    pname(NetworkManager) -> direct
+    dip(224.0.0.0/3, 'ff00::/8') -> direct
+    dip(geoip:private) -> direct
+
+    dip(1.14.5.14) -> direct
+
+    domain(geosite:openai) -> local_group
+    dip(geoip:cn) -> direct
+    domain(geosite:cn) -> direct
+    domain(geosite:category-scholar-cn) -> direct
+    domain(geosite:geolocation-cn) -> direct
+
+    fallback: my_group
+}
