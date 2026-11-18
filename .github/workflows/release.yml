@@ -344,6 +344,9 @@ jobs:
 
   docker:
     needs: [preflight, upload-release]
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/docker-image.yml
     with:
       ref: ${{ needs.preflight.outputs.sha }}

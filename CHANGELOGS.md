@@ -258,7 +258,8 @@ changed. Review them before upgrading:
 - The `daeuniverse/dae` Docker image is now built from the release assets.
   `latest` follows the newest release instead of the main branch, each release
   and prerelease is tagged with its version, the rolling build is `nightly`,
-  and no image is built for each commit on main.
+  and no image is built for each commit on main. The same image is also
+  published as `ghcr.io/daeuniverse/dae`.
 
 #### Bug Fixes
 

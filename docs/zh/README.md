@@ -386,7 +386,7 @@ nix.settings = {
 
 ### Docker
 
-预构建镜像及相关文档位于 <https://hub.docker.com/r/daeuniverse/dae>。
+预构建镜像及相关文档位于 <https://hub.docker.com/r/daeuniverse/dae>，同一镜像也发布为 `ghcr.io/daeuniverse/dae`。
 
 也可以使用 `docker compose`：
 
