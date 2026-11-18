@@ -165,7 +165,9 @@ setup_routing_epoch_lan_ingress(struct __sk_buff *skb, __u32 active_slot)
 	return ret;
 }
 
-static __always_inline int
+// Not inlined: its stack would sit under do_tproxy_lan_ingress in the
+// caller, and before 6.9 the chain then exceeds the 512-byte limit.
+static __noinline int
 set_routing_epoch_domain_rule(__u32 slot, __u8 outbound, __u32 bitmap)
 {
 	struct match_set domain_rule = {};
@@ -743,8 +745,8 @@ int testpktgen_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *sk
 				       false, true, true);
 }
 
-SEC("tc/setup/wan_egress_tcp_non_syn_stateless_passthrough")
-int testsetup_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+// Not inlined, for the same reason as set_routing_epoch_domain_rule.
+static __noinline int set_wan_egress_port_443_rule(void)
 {
 	struct match_set ms = {};
 	struct port_range pr = {443, 443};
@@ -755,8 +757,13 @@ int testsetup_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb
 	ms.outbound = OUTBOUND_USER_DEFINED_MIN;
 	ms.must = false;
 	ms.mark = 0;
-	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+	return bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+}
 
+SEC("tc/setup/wan_egress_tcp_non_syn_stateless_passthrough")
+int testsetup_wan_egress_tcp_non_syn_stateless_passthrough(struct __sk_buff *skb)
+{
+	set_wan_egress_port_443_rule();
 	set_routing_fallback(OUTBOUND_DIRECT, true);
 
 	return do_tproxy_wan_egress(skb, 14, NULL);
