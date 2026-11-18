@@ -255,6 +255,11 @@ changed. Review them before upgrading:
   receive TC=1, so no configuration change is needed; the observable difference
   is that these answers now resolve on the first query.
 
+- The `daeuniverse/dae` Docker image is now built from the release assets.
+  `latest` follows the newest release instead of the main branch, each release
+  and prerelease is tagged with its version, the rolling build is `nightly`,
+  and no image is built for each commit on main.
+
 #### Bug Fixes
 
 - fix(control): flush short TCP splice writes without corking
@@ -262,6 +267,7 @@ changed. Review them before upgrading:
 - fix(config): restore `Marshaller.Bytes` for embedding callers such as dae-wing
 - fix(config): quote the whole `name: value` entry in the digit-prefix hint, and dry-run `fixed_domain_ttl` parsing from `dae validate` so a malformed entry no longer exits 0 and then aborts daemon startup
 - fix(kern): load the L3 TC programs on strict-alignment kernels such as LoongArch, which rejected them with `misaligned packet access` at startup
+- fix(kern): load the cgroup socket programs when built with clang 23, which the verifier rejected with `invalid variable-offset read from stack` at startup
 
 ### v2.0.0 (Latest)
 

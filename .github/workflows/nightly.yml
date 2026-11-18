@@ -40,3 +40,4 @@ jobs:
     uses: ./.github/workflows/prerelease.yml
     with:
       ref: ${{ needs.changes.outputs.sha }}
+    secrets: inherit

@@ -4235,8 +4235,12 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	u8 offset = ctx.l;
 
 	for (u8 i = 0; i < TASK_COMM_LEN; i++) {
-		if (offset + i < MAX_ARG_LEN && arg_buf[offset + i] != '\0') {
-			pid_pname->pname[i] = arg_buf[offset + i];
+		__u32 idx = offset + i;
+
+		// Keep clang from splitting idx back into offset + i.
+		barrier_var(idx);
+		if (idx < MAX_ARG_LEN && arg_buf[idx] != '\0') {
+			pid_pname->pname[i] = arg_buf[idx];
 		} else {
 			pid_pname->pname[i] = '\0';
 			break;
