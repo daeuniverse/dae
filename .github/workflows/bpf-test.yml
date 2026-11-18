@@ -43,6 +43,7 @@ jobs:
   bpf_tests:
     name: BPF Unit Test (${{ matrix.env.VERSION }})
     # Each clang comes from the archive of the image that still ships it: Ubuntu 26.04 dropped 15 to 19.
+    # No image ships 23 yet, so it comes from apt.llvm.org.
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: 0
@@ -57,6 +58,7 @@ jobs:
         - {os: ubuntu-26.04, env: {VERSION: 20}}
         - {os: ubuntu-26.04, env: {VERSION: 21}}
         - {os: ubuntu-26.04, env: {VERSION: 22}}
+        - {os: ubuntu-26.04, env: {VERSION: 23}}
 
     steps:
       - name: Checkout code
@@ -78,6 +80,12 @@ jobs:
         env: ${{ matrix.env }}
         run: |
           sudo apt-get update -y
+          if ! apt-cache show clang-$VERSION >/dev/null 2>&1; then
+            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+            curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+            echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/$codename/ llvm-toolchain-$codename-$VERSION main" | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+            sudo apt-get update -y
+          fi
           sudo apt-get install -y clang-$VERSION llvm-$VERSION iproute2 iputils-ping
 
       - name: Run BPF tests
