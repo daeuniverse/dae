@@ -1,0 +1,84 @@
+name: Docker Image
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit the release was built from"
+        type: string
+        required: true
+      tag:
+        description: "Release tag the artifacts of this run belong to (vX.Y.Z or nightly)"
+        type: string
+        required: true
+      latest:
+        description: "Also move the latest tag"
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+          sparse-checkout: |
+            .github/Dockerfile
+            install/empty.dae
+          sparse-checkout-cone-mode: false
+
+      - name: Download the release builds
+        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
+        with:
+          pattern: dae-linux-{x86_64,x86_32,arm64,armv7}.tar.xz
+          path: dist/
+          merge-multiple: true
+
+      - name: Lay out the build context
+        id: prep
+        env:
+          TAG: ${{ inputs.tag }}
+          LATEST: ${{ inputs.latest }}
+        run: |
+          set -euo pipefail
+          for map in linux/amd64:x86_64 linux/386:x86_32 linux/arm64:arm64 linux/arm/v7:armv7; do
+            platform=${map%%:*}
+            mkdir -p "context/$platform"
+            tar -xJf "dist/dae-linux-${map#*:}.tar.xz" -C "context/$platform" ./usr/bin/dae ./usr/share/dae
+          done
+          cp install/empty.dae context/
+          {
+            echo "tags<<EOF"
+            echo "daeuniverse/dae:${TAG#v}"
+            if [ "$LATEST" = true ]; then echo "daeuniverse/dae:latest"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to DockerHub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: context
+          file: .github/Dockerfile
+          platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.prep.outputs.tags }}

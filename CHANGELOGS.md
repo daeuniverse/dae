@@ -255,6 +255,11 @@ changed. Review them before upgrading:
   receive TC=1, so no configuration change is needed; the observable difference
   is that these answers now resolve on the first query.
 
+- The `daeuniverse/dae` Docker image is now built from the release assets.
+  `latest` follows the newest release instead of the main branch, each release
+  and prerelease is tagged with its version, the rolling build is `nightly`,
+  and no image is built for each commit on main.
+
 #### Bug Fixes
 
 - fix(control): flush short TCP splice writes without corking
