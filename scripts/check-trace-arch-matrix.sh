@@ -151,7 +151,7 @@ matrix_archs=$(
     sed -n 's/.*goarch: *\[\(.*\)\].*/\1/p; s/.*goarch: *\([a-z0-9][a-z0-9]*\).*/\1/p' \
       .github/workflows/release.yml .github/workflows/prerelease.yml .github/workflows/seed-build.yml 2>/dev/null
     # platforms: linux/arm/v7,linux/arm64,linux/amd64,linux/386
-    sed -n 's/.*platforms: *//p' .github/workflows/docker.yml 2>/dev/null \
+    sed -n 's/.*platforms: *//p' .github/workflows/docker-image.yml 2>/dev/null \
       | tr ',' '\n' | sed 's#^linux/##; s#/v[0-9]*$##'
   } | tr ' ,' '\n\n' | sed 's/[^a-z0-9]//g' | sed '/^$/d' | sort -u
 )

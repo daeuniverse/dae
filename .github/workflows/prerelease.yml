@@ -362,3 +362,11 @@ jobs:
           files: release/*/*
           prerelease: true
           make_latest: false
+
+  docker:
+    needs: [preflight, upload-release]
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      ref: ${{ needs.preflight.outputs.sha }}
+      tag: ${{ inputs.tag || 'nightly' }}
+    secrets: inherit
