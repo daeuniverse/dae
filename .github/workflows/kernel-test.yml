@@ -32,7 +32,7 @@ permissions:
 jobs:
 
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     env:
       CGO_ENABLED: 0
     steps:
@@ -62,12 +62,12 @@ jobs:
         set -euo pipefail
         find scripts -type f -name 'semantic-refactor-*.sh' -exec bash -n {} +
 
-    # Build with the release clang: the default clang here is 14, so these
-    # kernels would verify objects that are never published.
+    # Build with the release clang, so these kernels verify the published
+    # objects rather than whatever the image's default clang produces.
     - name: Install the release clang
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y clang-15 llvm-15
+        sudo apt-get install -y clang-22 llvm-22
 
     - name: Generate and build
       run: |
@@ -75,7 +75,7 @@ jobs:
         # The Go experiment set is owned by the Makefile (DEFAULT_GOEXPERIMENT,
         # read with `make -s print-goexperiment`); `make` below exports it, so
         # this workflow must not carry a second copy (scripts/check-build-env.sh).
-        make GOFLAGS="-buildvcs=false" CC=clang CLANG=clang-15 STRIP=llvm-strip-15
+        make GOFLAGS="-buildvcs=false" CC=clang CLANG=clang-22 STRIP=llvm-strip-22
 
     - name: Verify built binary is real eBPF (not stub)
       run: |
