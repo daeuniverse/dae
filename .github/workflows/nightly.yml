@@ -37,6 +37,7 @@ jobs:
     if: needs.changes.outputs.changed == 'true'
     permissions:
       contents: write
+      packages: write
     uses: ./.github/workflows/prerelease.yml
     with:
       ref: ${{ needs.changes.outputs.sha }}

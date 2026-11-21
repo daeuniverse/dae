@@ -398,7 +398,7 @@ A workaround is available to run dae on macOS. See [Run on macOS](tutorials/run-
 
 ### Docker
 
-Pre-built images and documentation are available at <https://hub.docker.com/r/daeuniverse/dae>.
+Pre-built images and documentation are available at <https://hub.docker.com/r/daeuniverse/dae>. The same images are published as `ghcr.io/daeuniverse/dae`.
 
 Alternatively, use `docker compose`:
 
