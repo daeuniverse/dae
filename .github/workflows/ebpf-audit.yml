@@ -31,7 +31,7 @@ permissions: read-all
 jobs:
   ebpf_audit:
     name: Load, Verifier, and Dump Audit
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout code
@@ -57,12 +57,12 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang llvm linux-tools-common linux-tools-generic
+          sudo apt-get install -y clang-22 llvm-22 linux-tools-common linux-tools-generic
 
       - name: Run eBPF audit
         run: |
-          export CLANG=clang
-          export LLVM_OBJDUMP=llvm-objdump
+          export CLANG=clang-22
+          export LLVM_OBJDUMP=llvm-objdump-22
           ./scripts/ebpf-audit.sh build/ebpf-audit
 
       - name: Upload eBPF audit artifacts

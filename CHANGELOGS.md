@@ -175,12 +175,17 @@ See `api_dev.md` section 10 for the per-issue evidence and verification.
 
 - Add a 20:00 UTC+8 nightly build for days with new commits, publishing only to `nightly`.
 - Include Go modules in full-source archives and use the bundled cache automatically.
+- Build the release packages with clang 22 on Ubuntu 26.04.
+- The Dockerfile builds with clang 22 on Ubuntu 26.04 and needs BuildKit (`docker buildx`).
 
 #### Behavior changes / Upgrade notes
 
 Existing config files keep parsing, but the following defaults and semantics
 changed. Review them before upgrading:
 
+- The rpm packages use the rpm v6 format, which rpm 4.14 and newer install.
+  rpm 4.11 (CentOS 7, Amazon Linux 2) cannot install them; neither system
+  ships a kernel that dae supports.
 - The `DAE_SEMANTIC_REFACTOR_FEATURES` environment variable was removed. The
   routing epoch (lossless reload) is now the only publication path, and the
   experimental bounded UDP dispatchers were deleted in favour of the per-flow

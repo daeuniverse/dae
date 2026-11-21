@@ -114,7 +114,7 @@ jobs:
           # END Linux RISCV64 rva20u64 rva22u64 rva23u64
       fail-fast: false
 
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
@@ -188,7 +188,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15
+          sudo apt-get install -y clang-22 llvm-22
 
       - name: Get project dependencies
         run: |
@@ -211,8 +211,8 @@ jobs:
           export CGO_ENABLED=0
           export OUTPUT=pkgdir/usr/bin/dae
           export VERSION=${{ env.VERSION }}
-          export CLANG=clang-15
-          export STRIP=llvm-strip-15
+          export CLANG=clang-22
+          export STRIP=llvm-strip-22
           make
           install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
           install -Dm640 ./example.dae -t ./pkgdir/etc/dae/
