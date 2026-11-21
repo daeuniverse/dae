@@ -31,6 +31,8 @@ func TestValidateRoutingRulesRejectsUnknownOperands(t *testing.T) {
 	for _, rule := range []string{
 		"l4proto(icmp) -> block",
 		"ipversion(ipv6) -> block",
+		"dport(8080-80) -> block",
+		"sport(2-1) -> block",
 	} {
 		conf, err := parse(rule)
 		if err != nil {
@@ -45,7 +47,7 @@ func TestValidateRoutingRulesRejectsUnknownOperands(t *testing.T) {
 	}
 
 	// Positive control: a supported rule still validates.
-	conf, err := parse("l4proto(tcp) && ipversion(4) -> block")
+	conf, err := parse("l4proto(tcp) && ipversion(4) && dport(80-8080) && sport(1-1) -> block")
 	if err != nil {
 		t.Fatalf("parse supported rule: %v", err)
 	}
