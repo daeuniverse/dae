@@ -43,6 +43,7 @@ jobs:
   bpf_tests:
     name: BPF Unit Test (${{ matrix.env.VERSION }})
     # Each clang comes from the archive of the image that still ships it: Ubuntu 26.04 dropped 15 to 19.
+    # No image ships 23 yet, so it comes from apt.llvm.org.
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: 0
@@ -57,6 +58,7 @@ jobs:
         - {os: ubuntu-26.04, env: {VERSION: 20}}
         - {os: ubuntu-26.04, env: {VERSION: 21}}
         - {os: ubuntu-26.04, env: {VERSION: 22}}
+        - {os: ubuntu-26.04, env: {VERSION: 23}}
 
     steps:
       - name: Checkout code
@@ -78,6 +80,12 @@ jobs:
         env: ${{ matrix.env }}
         run: |
           sudo apt-get update -y
+          if ! apt-cache show clang-$VERSION >/dev/null 2>&1; then
+            codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+            curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+            echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/$codename/ llvm-toolchain-$codename-$VERSION main" | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+            sudo apt-get update -y
+          fi
           sudo apt-get install -y clang-$VERSION llvm-$VERSION iproute2 iputils-ping
 
       - name: Run BPF tests
@@ -195,6 +203,164 @@ jobs:
           sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED \
             CLANG=clang-$VERSION STRIP=llvm-strip-$VERSION \
             ./scripts/check-trace-arch-matrix.sh
+
+  bpf_kernel_list:
+    name: BPF Kernel list
+    runs-on: ubuntu-latest
+    outputs:
+      kernels: ${{ steps.list.outputs.kernels }}
+    steps:
+      - name: Pick a build of each supported kernel line
+        id: list
+        run: |
+          set -euo pipefail
+          fetch() { curl -fsSL --retry 5 --retry-all-errors "$@"; }
+          # dae needs 5.17 or newer (docs/en/README.md), so the oldest line
+          # tested is the oldest maintained longterm line from 5.17 on.
+          min=5.17
+          lines=$(fetch https://www.kernel.org/releases.json \
+            | jq -r '.releases[] | select((.moniker == "longterm" or .moniker == "stable") and (.iseol | not)) | .version' \
+            | cut -d. -f1,2 | sort -uV \
+            | while read -r line; do
+                if [ "$(printf '%s\n' "$min" "$line" | sort -V | head -1)" = "$min" ]; then echo "$line"; fi
+              done)
+          base=https://kernel.ubuntu.com/mainline
+          index=$(fetch "$base/")
+          list() { grep -oE "href=\"$1/\"" <<<"$index" | sed -E 's/^href="|\/"$//g' | sort -Vr || true; }
+          stable=$(list 'v[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+          kernels='[]'
+          for line in $lines mainline; do
+            if [ "$line" = mainline ]; then
+              # Right after a release the newest rc is older than stable.
+              candidates=$(list 'v[0-9]+\.[0-9]+-rc[0-9]+' | while read -r v; do
+                newer=$(printf '%s\n' "${v%-rc*}" "$stable" | sort -V | tail -1)
+                if [ "$newer" = "${v%-rc*}" ] && [ "$newer" != "$stable" ]; then echo "$v"; fi
+              done)
+            else
+              candidates=$(list "v${line//./\\.}(\\.[0-9]+)?")
+            fi
+            # Take the newest version whose amd64 build succeeded.
+            version=
+            for v in $candidates; do
+              listing=$(fetch "$base/$v/amd64/" || true)
+              if grep -qE 'linux-image-unsigned-[^"]*-generic_[^"]*_amd64\.deb' <<<"$listing"; then
+                version=$v
+                break
+              fi
+              echo "::warning::Skipping $v: no amd64 image found"
+            done
+            if [ -n "$version" ]; then
+              kernels=$(jq -c --arg k "$line" --arg v "$version" '. + [{kernel: $k, version: $v}]' <<<"$kernels")
+            elif [ "$line" = mainline ]; then
+              echo "::notice::No rc newer than $stable to test"
+            else
+              echo "::warning::No amd64 build of $line to test yet"
+            fi
+          done
+          echo "kernels=$kernels" | tee -a "$GITHUB_OUTPUT"
+
+  bpf_kernels:
+    name: BPF Kernel (${{ matrix.kernel }})
+    # The runners all boot 7.0, so this is where the longterm lines, and the
+    # 32-byte stack rounding of kernels before 6.9, are tested. Builds come
+    # from Ubuntu's mainline archive; a mainline failure does not block.
+    needs: [bpf_kernel_list]
+    if: needs.bpf_kernel_list.outputs.kernels != '[]'
+    runs-on: ubuntu-26.04
+    continue-on-error: ${{ matrix.kernel == 'mainline' }}
+    env:
+      CGO_ENABLED: 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.bpf_kernel_list.outputs.kernels) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Go 1.27
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27
+
+      - name: Apply the canonical build experiments
+        run: make -s print-goexperiment-env >> "$GITHUB_ENV"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang-22 llvm-22 qemu-system-x86 busybox-static cpio
+
+      # kernel.ubuntu.com sometimes drops TLS connections from the runners,
+      # so each build is downloaded once and then served from the cache.
+      - name: Cache the kernel
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/kernel.deb
+          key: ubuntu-mainline-kernel-${{ matrix.version }}
+
+      - name: Fetch the kernel
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          echo "Kernel $VERSION"
+          if [ ! -s ~/kernel.deb ]; then
+            fetch() { curl -fsSL --retry 5 --retry-all-errors "$@"; }
+            base=https://kernel.ubuntu.com/mainline/$VERSION/amd64
+            deb=$(fetch "$base/" | grep -oE 'linux-image-unsigned-[^"]*-generic_[^"]*_amd64\.deb' | head -1)
+            fetch -o ~/kernel.deb "$base/$deb"
+          fi
+          dpkg-deb -x ~/kernel.deb /tmp/kernel
+          cp /tmp/kernel/boot/vmlinuz-* /tmp/vmlinuz
+
+      - name: Build the tests
+        run: |
+          set -euo pipefail
+          git submodule update --init
+          root=/tmp/initrd
+          mkdir -p $root/bin $root/proc $root/sys $root/dev $root/tmp
+          as_root() { sudo --preserve-env=PATH,HOME,GOCACHE,GOMODCACHE,GOPATH,GOFLAGS,GOEXPERIMENT,CGO_ENABLED "$@"; }
+          # `make ebpf` removes the test objects, so it runs first.
+          as_root CLANG=clang-22 make ebpf
+          as_root CLANG=clang-22 make ebpf-test
+          as_root go test -c ./control -o $root/load.test
+          as_root go test -c -tags dae_bpf_tests ./control/kern/tests/ -o $root/kernel.test
+          cp /usr/bin/busybox $root/bin/busybox
+          cat > $root/init <<'EOF'
+          #!/bin/busybox sh
+          /bin/busybox --install -s /bin
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          mount -t devtmpfs devtmpfs /dev
+          mount -t bpf bpf /sys/fs/bpf
+          mount -t cgroup2 cgroup2 /sys/fs/cgroup
+          mount -t tracefs tracefs /sys/kernel/tracing
+          mount -t tmpfs tmpfs /tmp
+          ip link set lo up
+          uname -r
+          # The tests back-date state by 10 s with bpf_ktime_get_ns().
+          sleep 30
+          /load.test -test.run '^TestProductionProgramsLoad$' -test.count=1 -test.v
+          echo "load exit $?"
+          /kernel.test -test.count=1 -test.v
+          echo "kernel exit $?"
+          poweroff -f
+          EOF
+          chmod +x $root/init
+          (cd $root && sudo find . | sudo cpio -o -H newc --quiet | gzip -1 > /tmp/initrd.gz)
+
+      - name: Run the tests in a VM
+        run: |
+          set -euo pipefail
+          sudo timeout 900 qemu-system-x86_64 -enable-kvm -cpu host -m 4096 -smp 4 -nographic -no-reboot \
+            -kernel /tmp/vmlinuz -initrd /tmp/initrd.gz -append "console=ttyS0 quiet panic=-1" -net none | tee /tmp/vm.log
+          grep -q '^load exit 0' /tmp/vm.log
+          grep -q '^kernel exit 0' /tmp/vm.log
 
   bpf_abi_big_endian:
     name: BPF ABI (s390x)

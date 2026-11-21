@@ -2,16 +2,27 @@
 # skopeo cannot reach registry-1.docker.io from the audit environment, so no
 # digest is recorded here — do not invent one. Replace the tags below with
 # `<repo>@sha256:<digest>` once a registry lookup is available.
-FROM golang:1.27-bookworm AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends llvm-15 clang-15 make \
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS go
+
+# Build with the release clang (22, from the Ubuntu 26.04 archive). The
+# builder runs on the build platform and cross-compiles, as the release
+# does: there is no i386 Ubuntu image, and the eBPF objects do not depend
+# on the target.
+FROM --platform=$BUILDPLATFORM ubuntu:26.04 AS builder
+COPY --from=go /usr/local/go /usr/local/go
+ENV GOPATH=/go PATH=/go/bin:/usr/local/go/bin:$PATH GOTOOLCHAIN=local
+RUN apt-get update && apt-get install -y --no-install-recommends llvm-22 clang-22 make git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-ENV CLANG=clang-15
+ENV CLANG=clang-22
 WORKDIR /build/
 ARG VERSION=unstable-docker
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN make OUTPUT=dae VERSION="${VERSION}" GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN if [ "$TARGETARCH" = arm ]; then export GOARM="${TARGETVARIANT#v}"; fi; \
+    GOARCH="$TARGETARCH" make OUTPUT=dae VERSION="${VERSION}" GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0
 
 # TODO: same digest pin pending (the `alpine` tag is mutable).
 FROM alpine

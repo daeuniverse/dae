@@ -32,7 +32,7 @@ permissions:
 jobs:
 
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-26.04
     env:
       CGO_ENABLED: 0
     steps:
@@ -62,13 +62,20 @@ jobs:
         set -euo pipefail
         find scripts -type f -name 'semantic-refactor-*.sh' -exec bash -n {} +
 
+    # Build with the release clang, so these kernels verify the published
+    # objects rather than whatever the image's default clang produces.
+    - name: Install the release clang
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y clang-22 llvm-22
+
     - name: Generate and build
       run: |
         git submodule update --init
         # The Go experiment set is owned by the Makefile (DEFAULT_GOEXPERIMENT,
         # read with `make -s print-goexperiment`); `make` below exports it, so
         # this workflow must not carry a second copy (scripts/check-build-env.sh).
-        make GOFLAGS="-buildvcs=false" CC=clang
+        make GOFLAGS="-buildvcs=false" CC=clang CLANG=clang-22 STRIP=llvm-strip-22
 
     - name: Verify built binary is real eBPF (not stub)
       run: |
@@ -99,7 +106,7 @@ jobs:
       matrix:
         # Only support 6.6 and 6.12 kernels
         # 6.1 support has been dropped due to BPF verifier limitations
-        kernel: [ '6.6-20250527.055456', '6.12-20250527.055456' ]
+        kernel: [ '6.6', '6.12' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -109,6 +116,19 @@ jobs:
         with:
           name: dae
           path: dae
+
+      # Take the newest dated LVH image of the line. The action cannot use the
+      # floating -main tags: it derives the image file name from a dated tag.
+      - name: Resolve the LVH image
+        id: lvh
+        env:
+          KERNEL: ${{ matrix.kernel }}
+        run: |
+          set -euo pipefail
+          version=$(curl -fsSL "https://quay.io/api/v1/repository/lvh-images/kind/tag/?onlyActiveTags=true&limit=100&filter_tag_name=like:$KERNEL-" \
+            | jq -r '.tags[].name' | grep -E "^${KERNEL//./\\.}-[0-9]{8}\.[0-9]{6}$" | sort | tail -1)
+          echo "LVH image kind:$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       # NOTE: do NOT pre-install the LVH host dependencies (qemu, libvirt,
       # virtinst, ...) before the Provision step. find-lvh-cli inside
@@ -124,7 +144,7 @@ jobs:
         uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:
           test-name: dae-test
-          image-version: ${{ matrix.kernel }}
+          image-version: ${{ steps.lvh.outputs.version }}
           host-mount: ./
           install-dependencies: 'true'
           cmd: |
