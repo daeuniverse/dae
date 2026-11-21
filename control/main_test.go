@@ -45,6 +45,15 @@ func TestMain(m *testing.M) {
 		goleak.IgnoreAnyFunction("github.com/daeuniverse/dae/control.NewAnyfromPool.(*AnyfromPool).startJanitor.func1.1"),
 		// DNS cache janitor (explicitly does NOT watch baseContext).
 		goleak.IgnoreAnyFunction("github.com/daeuniverse/dae/control.(*DnsController).startDnsCacheJanitor.func1"),
+		// L3-reject sweepers: process-lifetime background goroutines that
+		// evict stale entries from the per-client ICMP budget map
+		// (rejectSweeper, linux only) and the reject-flow map
+		// (rejectFlowSweeper). They must run for the whole process to bound
+		// memory under a QUIC client that rotates source ports (each new port
+		// is a fresh key that is never re-accessed, so lazy on-access eviction
+		// alone would not reclaim it). Alive for the process lifetime by design.
+		goleak.IgnoreAnyFunction("github.com/daeuniverse/dae/control.rejectFlowSweeper"),
+		goleak.IgnoreAnyFunction("github.com/daeuniverse/dae/control.rejectSweeper"),
 		// Third-party goroutine-pool supervisors (ants) — background by design.
 		goleak.IgnoreAnyFunction("github.com/panjf2000/ants/v2.(*poolCommon).purgeStaleWorkers"),
 		goleak.IgnoreAnyFunction("github.com/panjf2000/ants/v2.(*poolCommon).ticktock"),

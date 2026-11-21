@@ -1113,6 +1113,12 @@ getNew:
 
 				res, err := c.chooseProxyDialer(dialParam)
 				if err != nil {
+					if stderrors.Is(err, ErrReservedOutboundReject) {
+						// domain-rule reject resolved to the reserved reject index:
+						// chooseProxyDialer already injected the ICMP port-unreachable
+						// and marked the flow. Stop dialing and drop the packet.
+						return nil, ErrReservedOutboundReject
+					}
 					if res != nil {
 						c.noteOutboundDialError(res)
 					} else if dialParam.Outbound != consts.OutboundBlock {
@@ -1162,6 +1168,11 @@ getNew:
 			},
 		})
 		if err != nil {
+			if stderrors.Is(err, ErrReservedOutboundReject) {
+				// ICMP already injected by chooseProxyDialer for this rejected
+				// flow; drop the packet silently without a connection error log.
+				return nil
+			}
 			if stderrors.Is(err, ob.ErrNoAliveDialer) || stderrors.Is(err, ErrEndpointFailed) ||
 				stderrors.Is(err, errUdpEndpointAdmissionClosed) {
 				// Already emitted a rate-limited diagnostic log above, or hit negative cache.

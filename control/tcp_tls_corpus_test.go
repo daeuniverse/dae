@@ -206,6 +206,8 @@ func phase0TCPTLSActionForOutbound(outbound consts.OutboundIndex) phase0TCPTLSAc
 		return phase0TCPTLSActionDirect
 	case consts.OutboundBlock:
 		return phase0TCPTLSActionBlock
+	case consts.OutboundReject:
+		return phase0TCPTLSActionBlock
 	default:
 		return phase0TCPTLSActionProxy
 	}

@@ -300,6 +300,14 @@ func (t *udpIngressTask) Run() {
 		}
 	}
 
+	// L3 reject fast-drop: the data plane hands off every packet of a rejected
+	// flow; once we have injected the ICMP error for this flow, skip the
+	// userspace routing lookup and re-injection for the rest of its lifetime so
+	// the control-plane cost stays at O(flows) instead of O(packets).
+	if isRejectFlow(convergeSrc, realDst) {
+		return
+	}
+
 	var cacheLookup cachedRoutingLookup
 	if !c.udpRouteScopeSensitive && c.ownsActiveRoutingEpoch() {
 		cacheLookup = lookupCachedRoutingBinding(flowDecision, realDst)
@@ -341,6 +349,29 @@ func (t *udpIngressTask) Run() {
 			rrCopy := *routingResult
 			freshRoutingResult = &rrCopy
 		}
+	}
+
+	// L3 reject: inject an ICMP port-unreachable so the client's QUIC handshake
+	// fails instantly and falls back to TCP (instant downgrade). The original
+	// packet was already consumed by the dataplane handoff, so it is dropped.
+	if routingResult != nil && routingResult.Outbound == uint8(consts.OutboundReject) {
+		if !rejectAllowed(convergeSrc) {
+			if c.log.IsLevelEnabled(logrus.DebugLevel) {
+				c.log.WithField("src", convergeSrc.String()).
+					Debug("reject: per-client ICMP budget exhausted; silently dropping")
+			}
+		} else if e := sendICMPPortUnreachable(convergeSrc, realDst); e != nil {
+			if c.log.IsLevelEnabled(logrus.WarnLevel) {
+				c.log.WithFields(logrus.Fields{
+					"src": convergeSrc.String(),
+					"dst": realDst.String(),
+				}).WithError(e).Warn("reject: failed to inject ICMP port-unreachable")
+			}
+		}
+		// Mark the flow so later packets of it are dropped in userspace
+		// without re-running the routing lookup (see isRejectFlow).
+		markRejectFlow(convergeSrc, realDst)
+		return
 	}
 
 	if e := c.handlePktWithPrefetch(data, convergeSrc, realDst, routingResult, flowDecision, cacheLookup.prefetch, cacheLookup.prefetchKey, cacheLookup.prefetchOK); e != nil {

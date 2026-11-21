@@ -5,7 +5,7 @@
 ### 内置出站
 
 ```shell
-### Built-in outbounds: block, direct, must_rules
+### Built-in outbounds: block, direct, must_rules, reject
 
 # must_rules means no redirecting DNS traffic to dae and continue to matching.
 # For single rule, the difference between "direct" and "must_direct" is that "direct" will hijack and process DNS request
@@ -13,6 +13,12 @@
 # "must_direct" can also be written as "direct(must)".
 # Similarly, "must_groupname" is also supported to NOT hijack and process DNS traffic, which equals to "groupname(must)".
 ```
+
+`reject` 与 `block` 一样丢弃匹配的数据包，但对 UDP/QUIC 会额外注入一个 ICMP
+端口不可达（源地址为 dae 主机自身），使客户端的 QUIC 握手立即失败并回退到
+TCP。适合在不完全封锁的情况下强制关闭 HTTP/3。在 WAN 侧（本机发出的流量）
+`reject` 的行为与 `block` 完全一致——静默丢弃、不注入 ICMP——因为本机操作系统
+已经会把失败结果通知给应用程序。
 
 ### 默认出站
 

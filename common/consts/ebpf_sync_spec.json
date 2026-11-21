@@ -53,6 +53,10 @@
       "value": 1
     },
     {
+      "name": "REJECT",
+      "value": 251
+    },
+    {
       "name": "MUST_RULES",
       "value": 252
     },
