@@ -7,7 +7,7 @@
 ```shell
 clang >= 10
 llvm >= 10 (optional)
-golang >= 1.26
+golang >= 1.27
 make
 ```
 
@@ -92,6 +92,12 @@ curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 ```
 
 See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
+
+dae refuses a configuration file that is writable by its group or accessible by others, so restrict the mode:
+
+```shell
+chmod 600 example.dae
+```
 
 After editing the configuration, run dae:
 

@@ -386,11 +386,11 @@ func TestReleaseFlowDeleteHonorsSameTupleRepins(t *testing.T) {
 	binding := TcpFlowBinding{}
 	binding.Route.PolicyEpoch = 0
 	binding.Egress.Dialer = d
-	oldFlow, err := manager.adoptTCP(&memoryLayoutConn{id: 1}, nil, binding, rt, []bpfTuplesKey{key})
+	oldFlow, err := manager.adoptTCP(&memoryLayoutConn{id: 1}, nil, binding, rt, []bpfTuplesKey{key}, netip.AddrPort{}, netip.AddrPort{}, nil)
 	if err != nil {
 		t.Fatalf("adopt old flow: %v", err)
 	}
-	newFlow, err := manager.adoptTCP(&memoryLayoutConn{id: 2}, nil, binding, rt, []bpfTuplesKey{key})
+	newFlow, err := manager.adoptTCP(&memoryLayoutConn{id: 2}, nil, binding, rt, []bpfTuplesKey{key}, netip.AddrPort{}, netip.AddrPort{}, nil)
 	if err != nil {
 		t.Fatalf("adopt reconnecting flow on the same tuple: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestReleaseFlowSameTupleHammer(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for round := range 50 {
-				flow, err := manager.adoptTCP(&memoryLayoutConn{id: uint64(id*1000 + round)}, nil, binding, rt, []bpfTuplesKey{key})
+				flow, err := manager.adoptTCP(&memoryLayoutConn{id: uint64(id*1000 + round)}, nil, binding, rt, []bpfTuplesKey{key}, netip.AddrPort{}, netip.AddrPort{}, nil)
 				if err != nil {
 					t.Errorf("adopt round %d: %v", round, err)
 					return

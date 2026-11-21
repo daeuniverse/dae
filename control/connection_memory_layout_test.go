@@ -77,6 +77,9 @@ func TestConnectionMemoryLayout(t *testing.T) {
 			TcpFlowBinding{},
 			runtime,
 			nil,
+			netip.AddrPort{},
+			netip.AddrPort{},
+			nil,
 		)
 		if err != nil {
 			lifecycleErr = err

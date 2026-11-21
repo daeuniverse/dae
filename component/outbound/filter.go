@@ -54,9 +54,12 @@ const (
 )
 
 type DialerSet struct {
-	log          *logrus.Logger
-	dialers      []*dialer.Dialer
-	nodeToTagMap map[*dialer.Dialer]string
+	log     *logrus.Logger
+	dialers []*dialer.Dialer
+	// nodeToTagMap holds the display tag subtag() matches; nodeToProviderMap the
+	// provider identity used for ownership and parse accounting.
+	nodeToTagMap      map[*dialer.Dialer]string
+	nodeToProviderMap map[*dialer.Dialer]string
 
 	// parseFailures counts nodes that were dropped because their link could
 	// not be parsed into a dialer. They are not routable, so the count is a
@@ -147,25 +150,80 @@ func (s *DialerSet) logParseFailureSummary() {
 		batch, strings.Join(parts, ", "), total)
 }
 
-func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
+// NewDialerSetFromLinksContext builds one dialer per node link. tagToNodeList is
+// keyed by provider identity: a configured subscription tag, or the subscription
+// package's URL-derived key for an untagged one. displayTags maps a provider
+// identity to the tag the engine's subtag() filters and DNS rules see; an
+// entry whose value is empty keeps the node tagless, which is what an untagged
+// subscription has always been for those rules.
+func NewDialerSetFromLinksContext(ctx context.Context, option *dialer.GlobalOption, tagToNodeList map[string][]string, displayTags map[string]string) *DialerSet {
 	s := &DialerSet{
-		log:          option.Log,
-		dialers:      make([]*dialer.Dialer, 0),
-		nodeToTagMap: make(map[*dialer.Dialer]string),
+		log:               option.Log,
+		dialers:           make([]*dialer.Dialer, 0),
+		nodeToTagMap:      make(map[*dialer.Dialer]string),
+		nodeToProviderMap: make(map[*dialer.Dialer]string),
 	}
-	for subscriptionTag, nodes := range tagToNodeList {
+	// Providers are visited in a fixed order: a group's member indexes are the
+	// dialer order, and `fixed(n)`/`select(n)` plus the API's member list name a
+	// member by that index. Go randomises map iteration, so ranging the map
+	// directly made the same configuration resolve index n to a different node
+	// on every start and reload. The empty key sorts first, which keeps the
+	// inline node section ahead of the subscriptions.
+	providerTags := make([]string, 0, len(tagToNodeList))
+	for providerTag := range tagToNodeList {
+		providerTags = append(providerTags, providerTag)
+	}
+	sort.Strings(providerTags)
+	for _, providerTag := range providerTags {
+		nodes := tagToNodeList[providerTag]
+		displayTag := providerTag
+		if tag, ok := displayTags[providerTag]; ok {
+			displayTag = tag
+		}
 		for _, node := range nodes {
-			d, err := dialer.NewFromLinkContext(ctx, option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
+			d, err := dialer.NewFromLinkContext(ctx, option, dialer.InstanceOption{DisableCheck: false}, node, displayTag)
 			if err != nil {
-				s.noteParseFailure(subscriptionTag, err)
+				s.noteParseFailure(providerTag, err)
 				continue
 			}
+			d.SetProviderTag(providerTag)
 			s.dialers = append(s.dialers, d)
-			s.nodeToTagMap[d] = subscriptionTag
+			s.nodeToTagMap[d] = displayTag
+			s.nodeToProviderMap[d] = providerTag
 		}
 	}
 	s.logParseFailureSummary()
 	return s
+}
+
+// NodeParseCount is how many links one subscription supplied and how many of
+// them became dialers.
+type NodeParseCount struct {
+	Links  int
+	Parsed int
+}
+
+// ParseReport reports per subscription tag whether the build could use the
+// links. A tag with Links > 0 and Parsed == 0 is a payload that looked like
+// share links but produced no dialer: persisting it would destroy the last good
+// copy and leave the groups empty.
+func (s *DialerSet) ParseReport(tagToNodeList map[string][]string) map[string]NodeParseCount {
+	report := make(map[string]NodeParseCount, len(tagToNodeList))
+	for tag, links := range tagToNodeList {
+		report[tag] = NodeParseCount{Links: len(links)}
+	}
+	if s == nil {
+		return report
+	}
+	parsed := make(map[string]int, len(report))
+	for _, tag := range s.nodeToProviderMap {
+		parsed[tag]++
+	}
+	for tag, count := range report {
+		count.Parsed = parsed[tag]
+		report[tag] = count
+	}
+	return report
 }
 
 func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, err error) {

@@ -126,13 +126,30 @@ type dnsControllerStore struct {
 	runtimeState      atomic.Pointer[dnsControllerRuntimeState]
 	runtimeMu         sync.RWMutex // Serializes runtime publication with reload cache projection.
 	cacheProjectionMu sync.RWMutex // Serializes cache membership with BPF projection callbacks.
-	dnsForwarderCache sync.Map     // map[dnsForwarderKey]*cachedDnsForwarder
+	// cacheMutationMu serializes cache deletion (delete/flush) with background
+	// refresh publication. cacheEpoch invalidates a refresh that resolved
+	// while an entry was deleted: the refresh must not write the deleted id
+	// back after the client was told it was gone.
+	cacheMutationMu   sync.Mutex
+	cacheEpoch        uint64
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]*cachedDnsForwarder
 	// dnsForwardersClosed is set before closeAllDnsForwarders sweeps the
 	// cache. getOrCreateDnsForwarder re-checks it after a store so an
 	// in-flight query admitted before the close handle-gate expired cannot
 	// repopulate a forwarder that nothing will ever sweep or close again.
 	dnsForwardersClosed atomic.Bool
 	sf                  singleflight.Group
+
+	// dnsLog is the bounded query log served by GET /dns/log. It lives on the
+	// shared store so a reload that reuses the DNS controller keeps it.
+	// dnsLogEpoch names this store. A replaced store restarts the record ids,
+	// so a cursor from the previous one must not resolve against the new log.
+	dnsLogEpoch uint64
+	dnsLogMu    sync.Mutex
+	dnsLogSeq   uint64
+	dnsLogRing  []dnsLogRecord
+	dnsLogStart int
+	dnsLogLen   int
 
 	janitorStop  chan struct{}
 	janitorDone  chan struct{}
@@ -218,8 +235,11 @@ type DnsController struct {
 	log *logrus.Logger
 }
 
+var dnsLogEpochSeq atomic.Uint64
+
 func newDnsControllerStore() *dnsControllerStore {
 	return &dnsControllerStore{
+		dnsLogEpoch:       dnsLogEpochSeq.Add(1),
 		dnsCache:          sync.Map{},
 		dnsForwarderCache: sync.Map{},
 		janitorStop:       make(chan struct{}),

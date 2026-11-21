@@ -28,6 +28,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/daedns"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/sirupsen/logrus"
@@ -73,6 +74,7 @@ func buildControlPlaneRuntime(
 	bpf any,
 	dnsCache map[string]*control.DnsCache,
 	tagToNodeList map[string][]string,
+	nodeDisplayTags map[string]string,
 	groups []config.Group,
 	routing *config.Routing,
 	global *config.Global,
@@ -84,6 +86,7 @@ func buildControlPlaneRuntime(
 	prepareOnly bool,
 	dnsRoutingUnchanged bool,
 	isReloadBuild bool,
+	routingTrace bool,
 ) (*control.ControlPlane, error) {
 	return control.NewControlPlaneWithContextOptions(
 		ctx,
@@ -104,8 +107,74 @@ func buildControlPlaneRuntime(
 			DirectDialer:          directDialer,
 			FullconeDirectDialer:  fullconeDirectDialer,
 			SystemDNSResolver:     systemDNSResolver,
+			NodeDisplayTags:       nodeDisplayTags,
+			RoutingTraceEnabled:   routingTrace,
 		},
 	)
+}
+
+type subscriptionResult struct {
+	tag      string
+	nodes    []string
+	err      error
+	sub      config.KeyableString
+	elapsed  time.Duration
+	stale    bool
+	fetchErr error
+	payload  []byte
+	cacheKey string
+}
+
+// newSubscriptionResult carries everything the caller needs from Resolve. The
+// payload and cache key must travel with it, or the fetched body is never
+// persisted and an outage empties the groups.
+func newSubscriptionResult(sub config.KeyableString, resolved subscription.Resolution, err error, elapsed time.Duration) subscriptionResult {
+	return subscriptionResult{
+		tag:      resolved.Tag,
+		nodes:    resolved.Nodes,
+		err:      err,
+		sub:      sub,
+		elapsed:  elapsed,
+		stale:    resolved.CacheFallback,
+		fetchErr: resolved.FetchErr,
+		payload:  resolved.Payload,
+		cacheKey: resolved.CacheKey,
+	}
+}
+
+// fetchedSubscription is one successful fetch whose body has not been persisted
+// yet: its links must become dialers first.
+type fetchedSubscription struct {
+	tag      string
+	cacheKey string
+	payload  []byte
+}
+
+// persistFetchedSubscriptions stores the fetched bodies whose links became
+// dialers and reports the tags whose payload produced no usable node. Those
+// keep the previous cached copy: persisting them would destroy the last good
+// copy a later failed fetch falls back to.
+//
+// The cache is an optimization, not a requirement: a read-only configuration
+// directory must not turn a successful subscription fetch into a startup
+// failure. A write error is logged and the generation keeps running without a
+// cached copy, exactly like a deployment that never had one.
+func persistFetchedSubscriptions(log *logrus.Logger, configDir string, fetched []fetchedSubscription, report map[string]outbound.NodeParseCount) []string {
+	var rejected []string
+	for _, item := range fetched {
+		if count, ok := report[item.tag]; ok && count.Links > 0 && count.Parsed == 0 {
+			log.Warnf(`subscription %q returned %d link(s) but none of them could be parsed; keeping the previous cached copy`, item.tag, count.Links)
+			rejected = append(rejected, item.tag)
+			continue
+		}
+		if item.cacheKey == "" || len(item.payload) == 0 {
+			continue
+		}
+		if err := subscription.PersistPayload(configDir, item.cacheKey, item.payload); err != nil {
+			log.WithError(err).Warnf(`cannot cache subscription %q; keeping the resolved nodes for this generation`, item.tag)
+		}
+	}
+	return rejected
 }
 
 func configureTransparentHugePages(log *logrus.Logger, disable bool) {
@@ -181,6 +250,10 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
+	// displayTags keeps subtag() filters and DNS rules on their historical
+	// semantics: an untagged subscription is tagless there, while the API still
+	// reports it under its own provider identity.
+	displayTags := make(map[string]string, len(conf.Subscription))
 	// On initial startup (not reload), purge stale TC filters left by any previous process.
 	if bpf == nil && !isReloadBuild {
 		control.PurgeStaleTCFilters(log)
@@ -213,6 +286,10 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
+	// Health is reported only for a generation that actually becomes active: a
+	// candidate whose build is rejected must not make the running generation
+	// look stale.
+	subscriptionHealthUpdates := map[string]error{}
 	if !conf.Global.DisableWaitingNetwork {
 		networkWaitStart := time.Now()
 		epo := 5 * time.Second
@@ -249,13 +326,10 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	}
 	// Parallelize subscription resolution to improve startup performance.
 	// Use a semaphore to limit concurrency and avoid overwhelming the network.
-	type subscriptionResult struct {
-		tag     string
-		nodes   []string
-		err     error
-		sub     config.KeyableString
-		elapsed time.Duration
-	}
+	// fetched holds the bodies whose links must become dialers before they may
+	// replace the cached copy. A payload nobody can load would otherwise
+	// destroy the last good copy and empty the groups on the next reload.
+	var fetched []fetchedSubscription
 	numSubscriptions := len(conf.Subscription)
 	if numSubscriptions > 0 {
 		// Reset to cover only the fetch itself; the network-wait phase above is
@@ -277,7 +351,9 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 				if daeDNSRouter != nil {
 					wrappedDialer, wrapErr := daeDNSRouter.WrapSubscriptionDialer(subDialer, string(s))
 					if wrapErr != nil {
+						wrapTag, _ := common.GetTagFromLinkLikePlaintext(string(s))
 						results <- subscriptionResult{
+							tag: wrapTag,
 							err: wrapErr,
 							sub: s,
 						}
@@ -286,28 +362,39 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 					subDialer = wrappedDialer
 				}
 				client := newHTTPClientForDialer(subDialer, 30*time.Second, conf.Global.SoMarkFromDae, conf.Global.Mptcp)
-				tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(s))
-				results <- subscriptionResult{
-					tag:     tag,
-					nodes:   nodes,
-					err:     err,
-					sub:     s,
-					elapsed: time.Since(subStart),
-				}
+				resolved, err := subscription.Resolve(log, &client, filepath.Dir(cfgFile), string(s))
+				results <- newSubscriptionResult(s, resolved, err, time.Since(subStart))
 			}(sub)
 		}
 
 		// Collect results
 		for range numSubscriptions {
 			result := <-results
+			providerKey := subscription.ProviderKey(result.tag, string(result.sub))
+			displayTags[providerKey] = result.tag
 			if result.err != nil {
-				log.Warnf(`failed to resolve subscription "%v" after %v: %v`, result.sub, result.elapsed, result.err)
+				log.Warnf(`failed to resolve subscription "%v" after %v: %v`, common.RedactURL(string(result.sub)), result.elapsed, common.RedactInlineURLs(result.err.Error()))
 				resolvingfailed = true
+				subscriptionHealthUpdates[providerKey] = result.err
 			} else {
 				log.Infof(`subscription "%v" resolved %d node(s) in %v`, result.tag, len(result.nodes), result.elapsed)
+				if result.stale {
+					// Served from the last good copy: the nodes stay in the
+					// generation, but the subscription did not refresh.
+					subscriptionHealthUpdates[providerKey] = result.fetchErr
+				} else {
+					subscriptionHealthUpdates[providerKey] = nil
+				}
 			}
 			if len(result.nodes) > 0 {
-				tagToNodeList[result.tag] = append(tagToNodeList[result.tag], result.nodes...)
+				tagToNodeList[providerKey] = append(tagToNodeList[providerKey], result.nodes...)
+			}
+			if result.err == nil && !result.stale && len(result.payload) > 0 {
+				fetched = append(fetched, fetchedSubscription{
+					tag:      providerKey,
+					cacheKey: result.cacheKey,
+					payload:  result.payload,
+				})
 			}
 		}
 		close(results)
@@ -316,16 +403,28 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 
 	// Delete all files in persist.d that are not in tagToNodeList
 	files, err := os.ReadDir(filepath.Join(filepath.Dir(cfgFile), "persist.d"))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.WithError(err).Warnln("cannot read the subscription cache directory; continuing without cache maintenance")
+		}
+		files = nil
+	}
+	// Delete cached copies of subscriptions that are no longer configured. The
+	// key is derived from the configured list, not from tagToNodeList: a
+	// subscription that failed on its very first fetch has no nodes, and an
+	// untagged one is keyed by its URL, so neither shape appears there.
+	liveCacheKeys := make(map[string]struct{}, len(conf.Subscription))
+	for _, sub := range conf.Subscription {
+		tag, _ := common.GetTagFromLinkLikePlaintext(string(sub))
+		liveCacheKeys[subscription.ProviderKey(tag, string(sub))] = struct{}{}
 	}
 	for _, file := range files {
-		tag := strings.TrimSuffix(file.Name(), ".sub")
-		if _, ok := tagToNodeList[tag]; !ok {
-			err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name()))
-			if err != nil {
-				return nil, err
-			}
+		key := strings.TrimSuffix(file.Name(), ".sub")
+		if _, ok := liveCacheKeys[key]; ok {
+			continue
+		}
+		if err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name())); err != nil {
+			log.WithError(err).Warnf("cannot remove stale subscription cache %q; continuing", file.Name())
 		}
 	}
 
@@ -378,12 +477,20 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 	// Start timing the control plane creation
 	log.Infoln("Building control plane and routing rules...")
 	stageStart = time.Now()
+	// The DNS log and the per-flow bookkeeping are only useful while the API
+	// can read them, and the direct observer costs datapath time per packet.
+	// With api.enabled=false none of them may cost anything, so they follow
+	// the API switch; the direct observer additionally needs its own opt-in.
+	control.ConfigureDnsLog(conf.Api.Enabled)
+	control.ConfigureFlowStats(conf.Api.Enabled)
+	control.ConfigureDirectStats(control.ResolveDirectStats(log, conf.Api.Enabled && conf.Api.DirectStats))
 	c, err = buildControlPlaneRuntime(
 		ctx,
 		log,
 		bpf,
 		dnsCache,
 		tagToNodeList,
+		displayTags,
 		conf.Group,
 		&conf.Routing,
 		&conf.Global,
@@ -395,9 +502,31 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 		prepareOnly,
 		dnsRoutingUnchanged,
 		isReloadBuild,
+		conf.Api.Enabled,
 	)
 	if err != nil {
 		return nil, err
+	}
+	// A subscription body only replaces its cached copy once its links became
+	// dialers. A link-shaped payload that produced no dialer would otherwise
+	// leave the groups empty while the refresh reported success.
+	rejected := persistFetchedSubscriptions(log, filepath.Dir(cfgFile), fetched, c.NodeParseReport())
+	if len(rejected) > 0 {
+		for _, tag := range rejected {
+			subscriptionHealthUpdates[tag] = fmt.Errorf("subscription resolved links but none of them could be parsed; the previous copy is kept")
+		}
+		if isReloadBuild {
+			_ = c.Close()
+			return nil, fmt.Errorf(`refusing reload: subscription %q resolved links but no usable node; keeping the current generation`, rejected[0])
+		}
+	}
+	// A reload candidate may still be rejected after this build, so its outcome
+	// is shown only once the generation is published. Startup has no previous
+	// generation to protect and publishes at once.
+	if isReloadBuild {
+		c.SetOnPublished(func() { publishSubscriptionHealth(subscriptionHealthUpdates) })
+	} else {
+		publishSubscriptionHealth(subscriptionHealthUpdates)
 	}
 	log.Infof("Control plane built in %v", time.Since(stageStart))
 	log.Infof("Total startup time: %v", time.Since(startTime))

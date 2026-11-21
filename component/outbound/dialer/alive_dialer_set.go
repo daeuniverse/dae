@@ -188,6 +188,24 @@ type latencySnapshot struct {
 	entries []latencySnapshotEntry
 }
 
+// Selected reports the dialer this set currently dials with and the sorting
+// latency that won, which is the one an automatic policy uses. ok is false when
+// no dialer is alive or the policy ignores health state.
+//
+// Selection() on the group only reports a selector's runtime switch, so without
+// this accessor an automatic group had no way to say which member was in use.
+func (a *AliveDialerSet) Selected() (d *Dialer, sorting time.Duration, ok bool) {
+	if a == nil {
+		return nil, 0, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.minLatency.dialer == nil {
+		return nil, 0, false
+	}
+	return a.minLatency.dialer, a.minLatency.sortingLatency, true
+}
+
 // snapshotLatenciesLocked copies the per-dialer display state while a.mu is
 // held. It must be called with a.mu held (read or write); it performs no I/O
 // and no logging.
@@ -219,6 +237,52 @@ func (a *AliveDialerSet) snapshotLatenciesLocked() (latencySnapshot, bool) {
 		snap.entries = append(snap.entries, entry)
 	}
 	return snap, true
+}
+
+// LatencyRank is one dialer's latency as the set sorts by, plus its position in
+// that order.
+type LatencyRank struct {
+	Dialer  *Dialer
+	Latency time.Duration // policy metric plus the recovery/backoff penalty
+	Offset  time.Duration // manual per-group latency offset
+	Sorting time.Duration // Latency + Offset: the value the selection compares
+	Rank    int           // 1-based; dialers with no latency yet are absent
+}
+
+// SortingSnapshot renders the ordering the selection decision uses, whatever
+// the log level is.
+//
+// The debug latency table is built from the same maps, but it is skipped
+// entirely unless debug logging is on, so it can never be the API's source. The
+// API needs this exported view because re-deriving the metric alone (for
+// example the moving average) reports a number the engine never compares: it
+// misses the recovery penalty and the manual offset.
+func (a *AliveDialerSet) SortingSnapshot() []LatencyRank {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	ranks := make([]LatencyRank, 0, len(a.aliveEntries))
+	for i := range a.aliveEntries {
+		d := a.aliveEntries[i].dialer
+		latency, ok := a.dialerToLatency[d]
+		if !ok {
+			continue
+		}
+		offset := a.dialerToLatencyOffset[d]
+		ranks = append(ranks, LatencyRank{
+			Dialer:  d,
+			Latency: latency,
+			Offset:  offset,
+			Sorting: latency + offset,
+		})
+	}
+	a.mu.RUnlock()
+	sort.SliceStable(ranks, func(i, j int) bool { return ranks[i].Sorting < ranks[j].Sorting })
+	for i := range ranks {
+		ranks[i].Rank = i + 1
+	}
+	return ranks
 }
 
 // printLatenciesOutOfLock sorts and renders a snapshot taken by

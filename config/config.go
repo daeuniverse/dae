@@ -24,9 +24,15 @@ type Global struct {
 	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	// DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
-	TcpCheckUrl           []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
-	TcpCheckHttpMethod    string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
-	UdpCheckDns           []string      `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
+	TcpCheckUrl        []string `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
+	TcpCheckHttpMethod string   `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
+	UdpCheckDns        []string `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
+	// CheckDnsTcp also probes udp_check_dns' host over TCP, for deployments
+	// whose dns.upstream uses the tcp scheme. The probe is advisory: it never
+	// feeds node selection. Set it false to skip the two extra probes per
+	// check_interval, which is the right choice when dns.upstream is DoH or
+	// udp:// and the legs would only consume quota.
+	CheckDnsTcp           bool          `mapstructure:"check_dns_tcp" default:"true"`
 	CheckInterval         time.Duration `mapstructure:"check_interval" default:"30s"`
 	CheckTolerance        time.Duration `mapstructure:"check_tolerance" default:"0"`
 	LanInterface          []string      `mapstructure:"lan_interface"`
@@ -160,6 +166,33 @@ type Config struct {
 	Group        []Group         `mapstructure:"group" desc:"GroupDesc"`
 	Routing      Routing         `mapstructure:"routing" required:""`
 	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
+	Api          Api             `mapstructure:"api" desc:"ApiDesc"`
+}
+
+// Api configures the native HTTP control-plane API.
+//
+// It is a top-level section on purpose: enabling and securing the listener is
+// an engine concern, not part of global datapath tuning.
+type Api struct {
+	Enabled                bool     `mapstructure:"enabled" default:"false"`
+	Listen                 string   `mapstructure:"listen" default:"127.0.0.1:9527"`
+	Secret                 string   `mapstructure:"secret"`
+	AllowAnonymousLoopback bool     `mapstructure:"allow_anonymous_loopback" default:"false"`
+	AllowOrigins           []string `mapstructure:"allow_origins"`
+	AllowedHosts           []string `mapstructure:"allowed_hosts"`
+	UI                     string   `mapstructure:"ui"`
+	// ConfigWrite permits control callers to replace editable config sources
+	// over the native API. It requires a listener secret.
+	ConfigWrite bool `mapstructure:"config_write" default:"false"`
+	// DisableConnectionBytes stops the control API from reporting cumulative
+	// bytes per connection. Only userspace flows carry those counters, so a
+	// figure aggregated from them covers a fraction of the traffic; an operator
+	// who does not want that number reported can drop it here.
+	DisableConnectionBytes bool `mapstructure:"disable_connection_bytes" default:"false"`
+	// DirectStats attaches a read-only observer to the WAN/LAN hooks that
+	// counts traffic dae routes directly, the part the userspace relay cannot
+	// see. It is off by default and never changes forwarding.
+	DirectStats bool `mapstructure:"direct_stats" default:"false"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {
