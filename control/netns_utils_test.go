@@ -44,6 +44,28 @@ func newDaeNetnsWithCurrentHandles(t *testing.T) *DaeNetns {
 	return ns
 }
 
+// TestReleaseNetnsHandleGuardsBareZeroValueHandle pins the fd-0 hazard: a
+// bare DaeNetns zero-value daeNs handle reads as open (fd 0), so releasing it
+// must be a no-op instead of closing stdin — closing fd 0 lets a later
+// NewNamed recycle the descriptor for a real namespace fd, which turns the
+// expected "switch to host netns" failure on the zero hostNs handle into a
+// bogus success (seen as a nil-deref panic in the kernel-locked-mount
+// harness).
+func TestReleaseNetnsHandleGuardsBareZeroValueHandle(t *testing.T) {
+	bare := &DaeNetns{}
+	bare.releaseNetnsHandle()
+	if _, err := unix.FcntlInt(0, unix.F_GETFD, 0); err != nil {
+		t.Fatalf("releaseNetnsHandle closed fd 0 on a bare DaeNetns: %v", err)
+	}
+
+	ns := newDaeNetnsWithCurrentHandles(t)
+	ns.releaseNetnsHandle()
+	if ns.daeNs.IsOpen() {
+		t.Fatal("daeNs handle still open after releaseNetnsHandle")
+	}
+	ns.releaseNetnsHandle() // Must stay a no-op once released.
+}
+
 func TestDaeNetnsWithReportsCallbackAndRestoreFailures(t *testing.T) {
 	previousSetNetns := setNetnsFunc
 	t.Cleanup(func() { setNetnsFunc = previousSetNetns })
