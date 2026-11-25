@@ -40,6 +40,10 @@ OOMScoreAdjust=-100
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
 ExecReload=/usr/bin/dae reload $MAINPID
+# Clean up leftover classic-TC filters, dae0, /run/netns/daens, and
+# /sys/fs/bpf/dae if dae exited abnormally (e.g., SIGKILL or OOM kill).
+# Prefixed with '-' so cleanup warnings never mask the service exit status.
+ExecStopPost=-/usr/bin/dae cleanup --disable-sudo
 
 # Restart policy. on-abnormal keeps a rejected config (non-zero exit from
 # ExecStartPre) from looping forever; the burst limit bounds crash loops.

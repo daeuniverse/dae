@@ -135,6 +135,18 @@ If another service uses port 53, stop it or change its listening port.
 Update `/etc/resolv.conf` so DNS remains accessible. For example, use
 `nameserver 223.5.5.5`, not `nameserver 127.0.0.1`.
 
+## No network after `dae` is killed (`SIGKILL` / OOM)
+
+When `dae` terminates abnormally (for example via `SIGKILL`, the kernel OOM killer, or `TimeoutStopSec`), its in-process shutdown handler cannot run. On kernels using classic TC filters (handles `0x2022` / `0x2023`), surviving filters continue redirecting host traffic to the dead datapath until removed; `dae0`, `/run/netns/daens`, and `/sys/fs/bpf/dae` may also remain behind.
+
+Run the cleanup command to purge leftover kernel and runtime state:
+
+```bash
+sudo dae cleanup
+```
+
+`dae cleanup` refuses to run while a live `dae` process is detected (pass `--force` to override). The shipped `install/dae.service` unit invokes `dae cleanup --disable-sudo` automatically in `ExecStopPost=`.
+
 ## Failed to load eBPF objects
 
 > FATA[0022] load eBPF objects: field TproxyWanEgress: program tproxy_wan_egress: load program: argument list too long: 1617: (bf) r2 = r6: 1618: (85) call bpf_map_loo (truncated, 992 line(s) omitted)

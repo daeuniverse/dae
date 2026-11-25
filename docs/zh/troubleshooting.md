@@ -98,6 +98,18 @@ netstat -ulpen|grep 53
 
 若端口被占用，请停止该服务进程，或将其监听端口从 53 改为其他端口。同时修改 `/etc/resolv.conf`，确保 DNS 可访问。例如，写入 `nameserver 223.5.5.5`，不要使用 `nameserver 127.0.0.1`。
 
+## `dae` 异常终止（`SIGKILL` / OOM）后无网络
+
+当 `dae` 异常退出（例如收到 `SIGKILL`、触发内核 OOM Killer 或 `TimeoutStopSec` 超时强杀）时，进程内的退出清理逻辑无法执行。在使用 classic TC filter（主句柄 `0x2022` / `0x2023`）的内核上，残留的 filter 会继续把宿主机流量重定向到已停止的数据面，导致断网；`dae0`、`/run/netns/daens` 与 `/sys/fs/bpf/dae` 也可能残留在系统中。
+
+运行清理命令即可清除残留的内核与运行时状态：
+
+```bash
+sudo dae cleanup
+```
+
+若检测到仍有存活的 `dae` 进程，`dae cleanup` 会拒绝执行（如需强制清理可加 `--force`）。仓库自带的 `install/dae.service` 已通过 `ExecStopPost=` 自动调用 `dae cleanup --disable-sudo`。
+
 ## 无法加载 eBPF 对象
 
 > FATA[0022] load eBPF objects: field TproxyWanEgress: program tproxy_wan_egress: load program: argument list too long: 1617: (bf) r2 = r6: 1618: (85) call bpf_map_loo (truncated, 992 line(s) omitted)
