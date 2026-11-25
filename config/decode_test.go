@@ -223,3 +223,47 @@ routing {
 	require.NoError(t, err)
 	require.Zero(t, conf.Dns.MaxCacheSize)
 }
+
+func TestGlobalCheckDnsTcpDefaultsToTrueAndOptOut(t *testing.T) {
+	// Absent key: the TCP-DNS legs stay on, which is the historical behaviour
+	// of the hardcoded `CheckDnsTcp: true` in NewGlobalOption and what desc.go
+	// documents.
+	sections, err := config_parser.Parse(`
+global {}
+routing {
+  fallback: direct
+}
+`)
+	require.NoError(t, err)
+	conf, err := New(sections)
+	require.NoError(t, err)
+	require.True(t, conf.Global.CheckDnsTcp, "check_dns_tcp must default to true")
+
+	// Explicit opt-out, for dns.upstream shapes the legs cannot observe.
+	sections, err = config_parser.Parse(`
+global {
+  check_dns_tcp: false
+}
+routing {
+  fallback: direct
+}
+`)
+	require.NoError(t, err)
+	conf, err = New(sections)
+	require.NoError(t, err)
+	require.False(t, conf.Global.CheckDnsTcp)
+
+	// Explicit opt-in stays supported.
+	sections, err = config_parser.Parse(`
+global {
+  check_dns_tcp: true
+}
+routing {
+  fallback: direct
+}
+`)
+	require.NoError(t, err)
+	conf, err = New(sections)
+	require.NoError(t, err)
+	require.True(t, conf.Global.CheckDnsTcp)
+}

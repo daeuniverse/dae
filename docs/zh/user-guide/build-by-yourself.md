@@ -7,7 +7,7 @@
 ```shell
 clang >= 10
 llvm >= 10 (optional)
-golang >= 1.26
+golang >= 1.27
 make
 ```
 
@@ -83,6 +83,12 @@ curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 ```
 
 请参阅 [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae)。
+
+dae 拒绝加载组可写或其他用户可访问的配置文件，因此需限制权限：
+
+```shell
+chmod 600 example.dae
+```
 
 调整配置后，运行 dae：
 

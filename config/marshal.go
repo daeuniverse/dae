@@ -29,6 +29,11 @@ func (c *Config) Marshal(indentSpace int) (b []byte, err error) {
 		if !ok {
 			return nil, fmt.Errorf("section %v misses tag mapstructure", t.Field(i).Name)
 		}
+		// Keep disabled API configuration out of marshalled output so consumers
+		// that predate the section do not reject an otherwise unchanged config.
+		if k == "api" && !c.Api.Enabled {
+			continue
+		}
 		if err = m.MarshalSection(k, v.Field(i), 0); err != nil {
 			return nil, err
 		}
