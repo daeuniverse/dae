@@ -170,6 +170,8 @@ See `api_dev.md` section 10 for the per-issue evidence and verification.
   the stale timeout (5 s). Rebuilding the endpoint deleted the flow's
   conn-state, the proxied reply recreated it as an inbound flow, and later
   client packets went direct, for example a game's next round (#1137).
+- Fix false SYN rebind diagnostics for unchanged routing decisions, including
+  handshake retransmissions, while preserving the live-flow routing lock.
 
 #### Build and release
 
