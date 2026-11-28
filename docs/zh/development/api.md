@@ -248,6 +248,12 @@ DNS 资源读取运行中的解析器，因此只有 DNS controller 工作时可
 加端点与开始时间的哈希，连接通过 `flow_id` 引用同一 ID。flow 详情里的 `trace` 在本
 引擎恒为 `disabled` 且 `missing: ["not_instrumented"]`：trace 所需证据未被记录。
 
+同一条活跃 flow 的连接条目、flow 摘要和详情具有相同的 `rule_id`、
+`rule_expression` 和 `rule_source`。摘要和详情还返回 `rule_generation_id`，
+用于标识实际作出路由决策的规则字典。跨 reload 存续的 flow 保留原规则证据。
+如果 dae 无法确定实际命中的规则，规则 ID 和表达式均为 `null`，来源为
+`unknown`，摘要和详情的规则代际也为 `null`。
+
 ### 事件流与日志流
 
 `GET /api/v1/events` 与 `GET /api/v1/logs` 是 SSE 流。两者都以 `stream.ready` 开场，

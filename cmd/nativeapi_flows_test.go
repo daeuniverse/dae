@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -86,5 +87,49 @@ func TestFlowListConnectionIDIncludesActiveFlows(t *testing.T) {
 	}
 	if got := matchingFlows([]control.SessionFlowSnapshot{active}, history, nativeapi.FlowFilter{ConnectionID: "c_other"}); len(got) != 0 {
 		t.Fatalf("unknown connection filter matched %+v", got)
+	}
+}
+
+func TestNativeFlowJSONUnknownRule(t *testing.T) {
+	flow := flowWithBytes()
+	provider := &nativeAPIProvider{}
+	check := func(t *testing.T, value any, wantGeneration bool) {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal(data, &row); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"rule_id", "rule_expression"} {
+			if string(row[key]) != "null" {
+				t.Errorf("%s = %s, want an explicit null", key, row[key])
+			}
+		}
+		if got, present := row["rule_generation_id"]; wantGeneration {
+			if string(got) != "null" {
+				t.Errorf("rule_generation_id = %s, want an explicit null", got)
+			}
+		} else if present {
+			t.Errorf("connection includes rule_generation_id: %s", got)
+		}
+		if string(row["rule_source"]) != `"unknown"` {
+			t.Errorf("rule_source = %s, want unknown", row["rule_source"])
+		}
+	}
+	t.Run("connection", func(t *testing.T) {
+		check(t, provider.nativeConnectionOf(flow), false)
+	})
+	for _, state := range []string{"active", "closed"} {
+		summary := nativeFlowSummary(control.SessionFlowHistoryEntry{
+			SessionFlowSnapshot: flow,
+			State:               state,
+		}, "fixture")
+		t.Run(state+"/summary", func(t *testing.T) { check(t, summary, true) })
+		t.Run(state+"/detail", func(t *testing.T) {
+			check(t, nativeapi.FlowDetail{FlowSummary: summary, Input: summary.Input}, true)
+		})
 	}
 }

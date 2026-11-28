@@ -1158,6 +1158,7 @@ getNew:
 					NowNano:       nowNano,
 				}
 				option.Binding = newUdpFlowBinding(c.PolicyEpoch(), res.OutboundIndex, res.Mark, res.Must, option)
+				option.Binding.Route.rule = res.rule
 				return option, nil
 			},
 		})

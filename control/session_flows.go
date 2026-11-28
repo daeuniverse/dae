@@ -56,6 +56,16 @@ type SessionFlowSnapshot struct {
 	UploadBytes   uint64
 	DownloadBytes uint64
 	HasBytes      bool
+	rule          *flowRuleEvidence
+}
+
+// RuleEvidence returns the recorded userspace rule and its dictionary generation.
+// Empty strings indicate that the deciding rule was unavailable.
+func (s *SessionFlowSnapshot) RuleEvidence() (id, generation, expression string) {
+	if s.rule == nil {
+		return "", "", ""
+	}
+	return s.rule.id, s.rule.generation, s.rule.expression
 }
 
 // SessionFlowHistoryEntry is one finished flow.
@@ -131,6 +141,7 @@ func (f *FlowRuntime) snapshot() SessionFlowSnapshot {
 		UploadBytes:   f.uploadBytes.Load(),
 		DownloadBytes: f.downloadBytes.Load(),
 		HasBytes:      true,
+		rule:          f.binding.Route.rule,
 	}
 	if group := f.binding.Egress.Outbound; group != nil {
 		snapshot.Outbound = group.Name
@@ -154,6 +165,7 @@ func (f *UDPFlowRuntime) snapshot() SessionFlowSnapshot {
 		Src:       f.src,
 		Dst:       f.dst,
 		Mark:      f.binding.Route.Mark,
+		rule:      f.binding.Route.rule,
 		StartedAt: f.startedAt,
 	}
 	if f.endpoint != nil {
@@ -310,6 +322,7 @@ func (m *SessionManager) pruneFlowHistoryLocked(now time.Time) {
 		if !oldest.EndedAt.Before(cutoff) {
 			break
 		}
+		m.flowHistory[m.flowHistoryStart] = SessionFlowHistoryEntry{}
 		m.flowHistoryStart = (m.flowHistoryStart + 1) % len(m.flowHistory)
 		m.flowHistoryLen--
 	}

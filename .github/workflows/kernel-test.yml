@@ -176,6 +176,13 @@ jobs:
             ! ip netns list 2>/dev/null | grep -q '^daens'
             ! ip link show dsmoke-udp0 >/dev/null 2>&1
             ! ip netns list 2>/dev/null | grep -q '^dae-semantic-udp-server'
+
+      - name: Check native API flow rule evidence across reload
+        uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
+        with:
+          provision: 'false'
+          cmd: /host/scripts/semantic-refactor-smoke.sh flow-rule-local /host/dae/dae
+
       - name: Setup network
         uses: cilium/little-vm-helper@5ae749011735fd77f30f38add52f1a53a5568671 # v0.0.30
         with:

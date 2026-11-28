@@ -52,7 +52,7 @@ func (p *nativeAPIProvider) RoutingRules(ctx context.Context) (nativeapi.RuleLis
 	}
 	for index, rule := range snapshot.Rules {
 		list.Rules = append(list.Rules, nativeapi.RoutingRule{
-			RuleID:     "traffic:" + strconv.Itoa(index),
+			RuleID:     control.TrafficRuleID(index),
 			Index:      uint64(index),
 			Expression: rule.Expression,
 			Outbound:   rule.Outbound,
@@ -63,7 +63,7 @@ func (p *nativeAPIProvider) RoutingRules(ctx context.Context) (nativeapi.RuleLis
 	}
 	fallbackIndex := len(list.Rules)
 	list.Rules = append(list.Rules, nativeapi.RoutingRule{
-		RuleID:     "traffic:fallback",
+		RuleID:     control.TrafficFallbackRuleID,
 		Index:      uint64(fallbackIndex),
 		Expression: "fallback: " + snapshot.FallbackOutbound,
 		Outbound:   snapshot.FallbackOutbound,

@@ -27,7 +27,23 @@ func connectionIDOfFlow(flowID string) string {
 	return "c_" + flowID
 }
 
+type nativeRuleEvidence struct {
+	id         *string
+	generation *string
+	expression *string
+	source     string
+}
+
+func nativeRuleEvidenceOf(flow *control.SessionFlowSnapshot) nativeRuleEvidence {
+	id, generation, expression := flow.RuleEvidence()
+	if id == "" || generation == "" {
+		return nativeRuleEvidence{source: "unknown"}
+	}
+	return nativeRuleEvidence{id: &id, generation: &generation, expression: &expression, source: "userspace"}
+}
+
 func (p *nativeAPIProvider) nativeConnectionOf(flow control.SessionFlowSnapshot) nativeapi.Connection {
+	rule := nativeRuleEvidenceOf(&flow)
 	connection := nativeapi.Connection{
 		ID:             connectionIDOfFlow(flow.ID),
 		State:          "active",
@@ -35,11 +51,11 @@ func (p *nativeAPIProvider) nativeConnectionOf(flow control.SessionFlowSnapshot)
 		Dst:            flow.Dst.String(),
 		Chain:          []string{},
 		ChainSource:    "unknown",
-		RuleSource:     "unknown",
+		RuleSource:     rule.source,
 		ObservedBy:     "userspace",
 		StartedAt:      formatTime(flow.StartedAt),
-		RuleID:         nil,
-		RuleExpression: nil,
+		RuleID:         rule.id,
+		RuleExpression: rule.expression,
 	}
 	if flow.ID != "" {
 		id := flow.ID
@@ -312,20 +328,24 @@ func nativeFlowInput(flow control.SessionFlowSnapshot) *nativeapi.FlowInput {
 }
 
 func nativeFlowSummary(flow control.SessionFlowHistoryEntry, instanceID string) nativeapi.FlowSummary {
+	rule := nativeRuleEvidenceOf(&flow.SessionFlowSnapshot)
 	summary := nativeapi.FlowSummary{
-		ID:          flow.ID,
-		InstanceID:  instanceID,
-		Revision:    flow.Revision,
-		Network:     flow.Network,
-		State:       flow.State,
-		Chain:       []string{},
-		ChainSource: "unknown",
-		RuleSource:  "unknown",
-		ObservedBy:  "userspace",
-		StartedAt:   formatTime(flow.StartedAt),
-		EndedAt:     formatTime(flow.EndedAt),
-		TraceStatus: "disabled",
-		Input:       nativeFlowInput(flow.SessionFlowSnapshot),
+		ID:               flow.ID,
+		InstanceID:       instanceID,
+		Revision:         flow.Revision,
+		Network:          flow.Network,
+		State:            flow.State,
+		Chain:            []string{},
+		ChainSource:      "unknown",
+		RuleID:           rule.id,
+		RuleGenerationID: rule.generation,
+		RuleExpression:   rule.expression,
+		RuleSource:       rule.source,
+		ObservedBy:       "userspace",
+		StartedAt:        formatTime(flow.StartedAt),
+		EndedAt:          formatTime(flow.EndedAt),
+		TraceStatus:      "disabled",
+		Input:            nativeFlowInput(flow.SessionFlowSnapshot),
 	}
 	if flow.ID != "" {
 		// The id a client can pass to /connections; it is derived from the flow id

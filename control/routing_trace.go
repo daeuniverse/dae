@@ -127,7 +127,7 @@ func (m *RoutingMatcher) TraceRouting(
 		if err := ctx.Err(); err != nil {
 			return RoutingTraceEvaluation{}, err
 		}
-		ruleID := fmt.Sprintf("traffic:%d", index)
+		ruleID := TrafficRuleID(index)
 		expression := rule.Expression
 		outcome := RoutingTraceRule{
 			RuleID:        ruleID,
@@ -178,7 +178,7 @@ func (m *RoutingMatcher) TraceRouting(
 	}
 	fallbackExpression := "fallback: " + fallback
 	evaluation.Rules = append(evaluation.Rules, RoutingTraceRule{
-		RuleID:        "traffic:fallback",
+		RuleID:        TrafficFallbackRuleID,
 		Expression:    &fallbackExpression,
 		Result:        fallbackResult,
 		MissingInputs: []string{},

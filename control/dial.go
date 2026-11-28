@@ -34,7 +34,7 @@ type proxyDialParam struct {
 }
 
 type proxyDialResult struct {
-	OutboundIndex           consts.OutboundIndex
+	rule                    *flowRuleEvidence
 	Outbound                *ob.DialerGroup
 	Dialer                  *dialer.Dialer
 	DialTarget              string
@@ -42,6 +42,7 @@ type proxyDialResult struct {
 	Mark                    uint32
 	Must                    bool
 	SniffedDomain           string
+	OutboundIndex           consts.OutboundIndex
 	IsDialIp                bool
 	OrigNetworkType         string
 	SelectionNetworkType    string
@@ -117,6 +118,7 @@ func (c *ControlPlane) chooseProxyDialer(p *proxyDialParam) (*proxyDialResult, e
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
+	var rule *flowRuleEvidence
 	if outboundIndex == consts.OutboundControlPlaneRouting {
 		routingResult := &bpfRoutingResult{
 			Mark:     mark,
@@ -131,12 +133,17 @@ func (c *ControlPlane) chooseProxyDialer(p *proxyDialParam) (*proxyDialResult, e
 		if p.Network == "udp" {
 			proto = consts.L4ProtoType_UDP
 		}
-		if outboundIndex, newMark, must, err = c.Route(
+		var observed **flowRuleEvidence
+		if c.routingMatcher.flowRules != nil {
+			observed = &rule
+		}
+		if outboundIndex, newMark, must, err = c.route(
 			src,
 			dst,
 			domain,
 			proto,
 			routingResult,
+			observed,
 		); err != nil {
 			return nil, err
 		}
@@ -217,6 +224,7 @@ func (c *ControlPlane) chooseProxyDialer(p *proxyDialParam) (*proxyDialResult, e
 	selectionNetworkType = endpointNetworkTypeForSelection(selectionNetworkType, admissionNetworkType)
 
 	return &proxyDialResult{
+		rule:          rule,
 		OutboundIndex: outboundIndex,
 		Outbound:      outbound,
 		Dialer:        d,
