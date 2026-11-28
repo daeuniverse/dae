@@ -15,8 +15,9 @@ import (
 // UdpRouteBinding records the immutable policy result selected for a UDP endpoint.
 type UdpRouteBinding struct {
 	PolicyEpoch routing.PolicyEpoch
-	Outbound    consts.OutboundIndex
+	rule        *flowRuleEvidence
 	Mark        uint32
+	Outbound    consts.OutboundIndex
 	Must        bool
 }
 

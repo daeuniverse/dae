@@ -14,6 +14,14 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
+// TrafficFallbackRuleID is the fallback entry in the traffic rule dictionary.
+const TrafficFallbackRuleID = "traffic:fallback"
+
+// TrafficRuleID names a configured rule by its index in the traffic rule dictionary.
+func TrafficRuleID(index int) string {
+	return "traffic:" + strconv.Itoa(index)
+}
+
 // RoutingRuleSnapshot is one rendered rule of a running routing generation.
 type RoutingRuleSnapshot struct {
 	Expression string

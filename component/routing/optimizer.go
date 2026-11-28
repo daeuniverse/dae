@@ -72,6 +72,8 @@ func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config
 }
 
 type MergeAndSortRulesOptimizer struct {
+	// OnRuleGroup reports the half-open input range represented by each output rule.
+	OnRuleGroup func(rule *config_parser.RoutingRule, first, end int)
 }
 
 func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
@@ -91,6 +93,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 	// because sequential rule matching is OR while params within one
 	// function are OR'd first and then inverted as a whole.
 	var newRules []*config_parser.RoutingRule
+	first := 0
 	mergingRule := rules[0]
 	for i := 1; i < len(rules); i++ {
 		if len(mergingRule.AndFunctions) == 1 &&
@@ -102,10 +105,17 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 			mergingRule.AndFunctions[0].Params = append(mergingRule.AndFunctions[0].Params, rules[i].AndFunctions[0].Params...)
 		} else {
 			newRules = append(newRules, mergingRule)
+			if o.OnRuleGroup != nil {
+				o.OnRuleGroup(mergingRule, first, i)
+			}
+			first = i
 			mergingRule = rules[i]
 		}
 	}
 	newRules = append(newRules, mergingRule)
+	if o.OnRuleGroup != nil {
+		o.OnRuleGroup(mergingRule, first, len(rules))
+	}
 	// Sort ParamList.
 	for i := range newRules {
 		for _, function := range newRules[i].AndFunctions {

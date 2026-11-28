@@ -15,8 +15,9 @@ import (
 // TcpRouteBinding records the immutable policy result selected for a TCP connection.
 type TcpRouteBinding struct {
 	PolicyEpoch routing.PolicyEpoch
-	Outbound    consts.OutboundIndex
+	rule        *flowRuleEvidence
 	Mark        uint32
+	Outbound    consts.OutboundIndex
 	Must        bool
 }
 
@@ -48,6 +49,7 @@ func newTcpFlowBinding(policyEpoch routing.PolicyEpoch, result *proxyDialResult)
 	binding.Route.Outbound = result.OutboundIndex
 	binding.Route.Mark = result.Mark
 	binding.Route.Must = result.Must
+	binding.Route.rule = result.rule
 	binding.Egress = TcpEgressBinding{
 		Dialer:        result.Dialer,
 		Outbound:      result.Outbound,

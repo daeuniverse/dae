@@ -327,6 +327,14 @@ and connections reference the same ID through `flow_id`. Flow detail carries a
 `trace`, which this engine reports as `disabled` with
 `missing: ["not_instrumented"]`: the evidence a trace needs is not recorded.
 
+For the same live flow, the connection, flow summary and flow detail report
+the same `rule_id`, `rule_expression` and `rule_source`. The summary and
+detail also report `rule_generation_id`, identifying the rule dictionary
+that supplied the decision. A flow that survives a reload keeps its recorded
+rule evidence. If dae cannot identify the deciding rule, the rule ID and
+expression are null, the source is `unknown`, and the generation on the flow
+summary and detail is null.
+
 ### Event streams and logs
 
 `GET /api/v1/events` and `GET /api/v1/logs` are server-sent event streams. Both

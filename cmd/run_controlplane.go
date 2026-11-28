@@ -86,7 +86,7 @@ func buildControlPlaneRuntime(
 	prepareOnly bool,
 	dnsRoutingUnchanged bool,
 	isReloadBuild bool,
-	routingTrace bool,
+	apiEnabled bool,
 ) (*control.ControlPlane, error) {
 	return control.NewControlPlaneWithContextOptions(
 		ctx,
@@ -100,15 +100,16 @@ func buildControlPlaneRuntime(
 		dns,
 		externGeoDataDirs,
 		control.ControlPlaneBuildOptions{
-			DelayDatapathCommit:   prepareOnly,
-			DelayDNSListenerStart: prepareOnly,
-			DNSRoutingUnchanged:   dnsRoutingUnchanged,
-			IsReload:              isReloadBuild || bpf != nil,
-			DirectDialer:          directDialer,
-			FullconeDirectDialer:  fullconeDirectDialer,
-			SystemDNSResolver:     systemDNSResolver,
-			NodeDisplayTags:       nodeDisplayTags,
-			RoutingTraceEnabled:   routingTrace,
+			DelayDatapathCommit:     prepareOnly,
+			DelayDNSListenerStart:   prepareOnly,
+			DNSRoutingUnchanged:     dnsRoutingUnchanged,
+			IsReload:                isReloadBuild || bpf != nil,
+			DirectDialer:            directDialer,
+			FullconeDirectDialer:    fullconeDirectDialer,
+			SystemDNSResolver:       systemDNSResolver,
+			NodeDisplayTags:         nodeDisplayTags,
+			RoutingTraceEnabled:     apiEnabled,
+			FlowRuleEvidenceEnabled: apiEnabled,
 		},
 	)
 }

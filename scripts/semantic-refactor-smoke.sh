@@ -8,6 +8,7 @@
 #   tcp-local   <binary> [rounds]                  WAN-hook TCP over veth (deterministic)
 #   udp-local   <binary> [rounds]                  WAN-hook UDP over veth (deterministic)
 #   quic-local  <binary> [rounds]                  WAN-hook QUIC datagrams over veth
+#   flow-rule-local <binary>                     LAN-hook native API rule evidence
 #   iperf-local <binary> [duration] [udp-rate]     TCP+UDP throughput over veth
 #   tcp-public  <binary> [host] [rounds]           WAN-hook HTTPS via public endpoint
 #   udp-public  <binary> [resolver] [rounds]       public DNS UDP during reload
@@ -622,6 +623,66 @@ PY
 	echo "semantic refactor udp-local smoke passed: $rounds veth WAN-hook UDP requests during reload, daemon-fd-baseline=$baseline_fd_count max=$max_fd_count, $latency_summary"
 }
 
+# Use a synthetic domain whitelist to punt the client's TCP/UDP traffic to
+# userspace even though no DNS answers have populated the kernel domain map.
+run_flow_rule_local() {
+	binary=${1:-$repo_root/dae}
+	require_root
+	require_commands ip mountpoint python3
+	require_positive_int DAE_SMOKE_SHUTDOWN_TIMEOUT_SECONDS "$shutdown_timeout_seconds"
+	require_binary
+
+	local server=dae-flow-rule-server client=dae-flow-rule-client
+	extra_links=(dflow-server dflow-client)
+	extra_namespaces=("$server" "$client")
+	refuse_existing_deployment
+	tmp_dir=$(mktemp -d /tmp/dae-smoke.flow-rule.XXXXXX)
+	trap cleanup EXIT INT TERM
+	ensure_bpffs
+	setup_veth_env "$server" dflow-server dflow-speer 198.18.0.1 198.18.0.2
+	setup_veth_env "$client" dflow-client dflow-cpeer 192.0.2.1 192.0.2.2
+	ip -n "$client" route add 198.18.0.2 via 192.0.2.1
+
+	config_file="$tmp_dir/config.dae"
+	cat >"$config_file" <<'EOF'
+global {
+    lan_interface: dflow-client
+    auto_config_kernel_parameter: true
+    disable_waiting_network: true
+    dial_mode: 'domain+'
+    auto_sniff_punt: true
+}
+group {
+    whitelist {
+        policy: fixed(0)
+    }
+}
+api {
+    enabled: true
+    listen: '127.0.0.1:19527'
+    allow_anonymous_loopback: true
+}
+routing {
+    sip(192.0.2.2) && domain(full:unused.invalid) -> whitelist
+    sip(192.0.2.2) && domain(full:flow-rule.invalid) -> direct
+    sip(192.0.2.2) -> direct
+    fallback: block
+}
+EOF
+	chmod 600 "$config_file"
+	local test_script="$repo_root/scripts/semantic-refactor-flow-rule/check.py"
+	ip netns exec "$server" python3 "$test_script" server >"$tmp_dir/server.log" 2>&1 &
+	server_pid=$!
+	start_daemon "$tmp_dir/daemon.log"
+	wait_for_text "$tmp_dir/daemon.log" "Control plane built"
+	if ! python3 "$test_script" check "$client" "$config_file" "$daemon_pid"; then
+		cat "$tmp_dir/server.log" "$tmp_dir/daemon.log" >&2
+		return 1
+	fi
+	stop_daemon "$tmp_dir/daemon.log"
+	finish_smoke
+}
+
 # ---------------------------------------------------------------------------
 # tcp-local: deterministic WAN-hook HTTP transfer against python http.server.
 # ---------------------------------------------------------------------------
@@ -1117,6 +1178,7 @@ lifecycle) shift; run_lifecycle "$@" ;;
 udp-local) shift; run_udp_local "$@" ;;
 tcp-local) shift; run_tcp_local "$@" ;;
 quic-local) shift; run_quic_local "$@" ;;
+flow-rule-local) shift; run_flow_rule_local "$@" ;;
 iperf-local) shift; run_iperf_local "$@" ;;
 tcp-public) shift; run_tcp_public "$@" ;;
 udp-public) shift; run_udp_public "$@" ;;

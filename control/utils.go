@@ -28,6 +28,10 @@ import (
 // DNS query that never traversed the datapath; the MAC, process name and DSCP
 // then take their zero values instead of dereferencing the pointer.
 func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+	return c.route(src, dst, domain, l4proto, routingResult, nil)
+}
+
+func (c *ControlPlane) route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult, observed **flowRuleEvidence) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	var ipVersion consts.IpVersionType
 	if dst.Addr().Is4() || dst.Addr().Is4In6() {
 		ipVersion = consts.IpVersion_4
@@ -44,7 +48,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	}
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
-	outboundIndex, mark, must, err = c.routingMatcher.Match(
+	outboundIndex, mark, must, err = c.routingMatcher.match(
 		bSrc,
 		bDst,
 		src.Port(),
@@ -55,6 +59,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		pname,
 		dscp,
 		mac16,
+		observed,
 	)
 	return
 }

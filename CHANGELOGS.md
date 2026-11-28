@@ -103,6 +103,9 @@ curl --silent "https://api.github.com/repos/daeuniverse/dae/releases" | jq -r '.
 
 #### Bug Fixes
 
+- Report the same deciding rule in native API connections and flow responses.
+  Flow summaries and details include the deciding rule's generation when known
+  and retain it for flows that survive a reload.
 - Fix the native API's real-time speed being wrong (often `0 B/s`) in
   dashboards: traffic buckets only rotated when a snapshot was taken, so every
   byte between two polls landed in the first finished 250ms bucket and the

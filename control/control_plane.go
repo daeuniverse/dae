@@ -194,6 +194,8 @@ type ControlPlaneBuildOptions struct {
 	// listener settings cannot change on reload, so deciding this at build time
 	// is safe.
 	RoutingTraceEnabled bool
+	// FlowRuleEvidenceEnabled records provable userspace routing decisions for Flows.
+	FlowRuleEvidenceEnabled bool
 }
 
 var (
@@ -772,10 +774,11 @@ func NewControlPlaneWithContextOptions(
 			routingTraceProgram = traceProgram
 		}
 	}
+	mergeRules, ruleOrigins := flowRuleOrigins(buildOpts.FlowRuleEvidenceEnabled)
 	routingProgram, err := routing.NewNormalizedProgram(routingA.Rules, routingA.Fallback,
 		&routing.AliasOptimizer{},
 		datReader,
-		&routing.MergeAndSortRulesOptimizer{},
+		mergeRules,
 		&routing.DeduplicateParamsOptimizer{},
 	)
 	if err != nil {
@@ -843,6 +846,8 @@ func NewControlPlaneWithContextOptions(
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
+	routingGeneration := routingGenerationID(policyIdentity.Epoch())
+	routingMatcher.bindFlowRules(routingProgram, ruleOrigins, routingRules, routingFallback, routingGeneration)
 	var routingTraceMatcher *RoutingMatcher
 	if routingTraceProgram != nil {
 		traceBuilder, traceErr := NewRoutingMatcherBuilderFromProgram(log, routingTraceProgram, outboundName2Id, core.bpf.Load())
@@ -924,10 +929,10 @@ func NewControlPlaneWithContextOptions(
 		egressRuntime: egressRuntime,
 		controlPlaneGenerationState: controlPlaneGenerationState{
 			outbounds:           outbounds,
-			dnsRules:            dnsRulesFromConfig(&dnsConfig.Routing, routingGenerationID(policyIdentity.Epoch())),
+			dnsRules:            dnsRulesFromConfig(&dnsConfig.Routing, routingGeneration),
 			routingRules:        routingRules,
 			routingFallback:     routingFallback,
-			routingGeneration:   routingGenerationID(policyIdentity.Epoch()),
+			routingGeneration:   routingGeneration,
 			referencedOutbounds: referencedOutbounds,
 			dialMode:            dialMode,
 			policyIdentity:      policyIdentity,

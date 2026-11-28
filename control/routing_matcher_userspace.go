@@ -22,6 +22,7 @@ type RoutingMatcher struct {
 	compiledMatches []compiledRoutingMatch
 	predicateGroups []routingMatcherPredicateGroupSpan
 	ruleSpans       []routingMatcherRuleSpan
+	flowRules       map[int]*flowRuleEvidence
 
 	// needs records which fact strings any compiled rule can consume, so the
 	// hot path skips building 128-char binary keys nothing will ever read.
@@ -242,7 +243,7 @@ func (m *RoutingMatcher) matchCompiledMatch(index int, match compiledRoutingMatc
 	}
 }
 
-// Match is modified from kern/tproxy.c; please keep sync.
+// Match resolves a routing input without collecting flow evidence.
 func (m *RoutingMatcher) Match(
 	sourceAddr [16]uint8,
 	destAddr [16]uint8,
@@ -254,6 +255,23 @@ func (m *RoutingMatcher) Match(
 	processName [16]uint8,
 	dscp uint8,
 	mac [16]uint8,
+) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+	return m.match(sourceAddr, destAddr, sourcePort, destPort, ipVersion, l4proto, domain, processName, dscp, mac, nil)
+}
+
+// match is modified from kern/tproxy.c; please keep sync.
+func (m *RoutingMatcher) match(
+	sourceAddr [16]uint8,
+	destAddr [16]uint8,
+	sourcePort uint16,
+	destPort uint16,
+	ipVersion consts.IpVersionType,
+	l4proto consts.L4ProtoType,
+	domain string,
+	processName [16]uint8,
+	dscp uint8,
+	mac [16]uint8,
+	observed **flowRuleEvidence,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	facts, err := m.newFacts(
 		sourceAddr,
@@ -319,6 +337,9 @@ func (m *RoutingMatcher) Match(
 					// rules as if this line did not exist.
 					badRule = false
 					continue
+				}
+				if observed != nil {
+					*observed = m.flowRules[i]
 				}
 				return outbound, match.mark, match.must || must, nil
 			}
