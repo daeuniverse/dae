@@ -50,14 +50,13 @@ var (
 
 const relayConnChainMaxDepth = 8
 
-// unwrapRelayTCPConn resolves transparent wrappers down to a concrete TCP
-// socket. Generic wrapper traversal is delegated to outbound/netproxy's
-// UnwrapTCPConn so dae stays aligned with wrapper capabilities added there,
-// while prefixedConn remains a dae-local relay wrapper that must be peeled
-// explicitly.
-//
-// Iterative implementation reduces function call overhead and improves CPU
-// branch prediction compared to the previous recursive approach.
+// unwrapRelayTCPConn resolves known byte-transparent wrappers down to a
+// concrete TCP socket safe for kernel splice(2), gather writev, eBPF sockmap
+// offload, and raw TCP CloseWrite. It deliberately does not walk generic
+// netproxy.UnderlyingConnProvider chains: outbound protocol and TLS layers
+// (vmess, trojan, vless, UnderlyingConnForwarder) implement UnderlyingConn
+// for socket-queue inspection, and peeling past them would bypass framing
+// and encryption.
 func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
 	for range relayConnChainMaxDepth {
 		if conn == nil {
@@ -69,19 +68,18 @@ func unwrapRelayTCPConn(conn any) (*net.TCPConn, bool) {
 			return c, true
 		case *prefixedConn:
 			conn = c.Conn
+		case *bufioConn:
+			conn = c.Conn
 		case *sniffing.ConnSniffer:
 			// ConnSniffer now supports UnwrapTCPConn for splice after sniffing.
 			if tcpConn, ok := c.UnwrapTCPConn(); ok {
 				return tcpConn, true
 			}
 			conn = c.Conn
-		case netproxy.UnderlyingConnProvider:
-			if tcpConn, ok := netproxy.UnwrapTCPConn(c); ok {
-				return tcpConn, true
-			}
-			conn = c.UnderlyingConn()
+		case *netproxy.FakeNetConn:
+			conn = c.Conn
 		default:
-			return netproxy.UnwrapTCPConn(conn)
+			return nil, false
 		}
 	}
 	return nil, false
